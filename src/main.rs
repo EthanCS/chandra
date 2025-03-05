@@ -1,10 +1,7 @@
-#![feature(more_float_constants)]
-
-use std::f32::consts::PHI;
 use std::mem::forget;
 
-use dot_vox::{DotVoxData, Frame, SceneNode};
-use glam::Vec3Swizzles;
+use dot_vox::{DotVoxData, SceneNode};
+use glam::{IVec3, Mat3 as FMat3, UVec3, Vec3 as FVec3};
 use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3};
 use keter::prelude::*;
 use keter::rtx::{Aabb, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, Ray};
@@ -19,15 +16,14 @@ struct Camera {
     fov: f32,
 }
 impl Camera {
-    fn rotation(&self) -> glam::Mat3 {
-        let view =
-            glam::Mat3::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0).transpose();
-        glam::Mat3::from_cols(view.x_axis, view.z_axis, view.y_axis).transpose()
+    fn rotation(&self) -> FMat3 {
+        let view = FMat3::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0).transpose();
+        FMat3::from_cols(view.x_axis, view.z_axis, view.y_axis).transpose()
     }
     fn view(&self) -> View {
         let view = self.rotation();
         let ratio = (self.fov / 2.0).tan() / (self.screen_size.y / 2.0);
-        let view = glam::Mat3::from_cols(view.x_axis * ratio, -view.y_axis * ratio, view.z_axis);
+        let view = FMat3::from_cols(view.x_axis * ratio, -view.y_axis * ratio, view.z_axis);
 
         View {
             screen_size: self.screen_size,
@@ -121,38 +117,26 @@ struct RenderedModel {
     index: u32,
 }
 
-fn to_transform(
-    translation: glam::IVec3,
-    rotation: dot_vox::Rotation,
-    size: glam::UVec3,
-) -> (Vec3<f32>, Mat3) {
-    let mut translation = translation.as_vec3().xzy();
-    translation.z *= -1.0;
+fn to_transform(position: IVec3, rotation: dot_vox::Rotation, size: UVec3) -> (Vec3<f32>, Mat3) {
+    let position = position.as_vec3();
 
-    let (quat, scale) = rotation.to_quat_scale();
-    let quat = glam::Quat::from_array(quat);
-    let quat = glam::Quat::from_xyzw(quat.x, quat.z, -quat.y, quat.w);
-    let scale = glam::Vec3::from_array(scale).xzy(); // no need to negate scale.y because scale is not a coordinate
+    let rotation = FMat3::from_cols_array_2d(&rotation.to_cols_array_2d());
 
-    let mut offset = glam::Vec3::new(
-        if size.x % 2 == 0 { 0.0 } else { 0.5 },
-        if size.z % 2 == 0 { 0.0 } else { 0.5 },
-        if size.y % 2 == 0 { 0.0 } else { -0.5 },
+    let mut offset = FVec3::select(
+        (size % 2).cmpeq(UVec3::ZERO),
+        FVec3::ZERO,
+        FVec3::splat(0.5),
     );
-    offset = quat.mul_vec3(offset); // If another seam shows up in the future, try multiplying this with `scale`
-    let center = quat * (size.xzy().as_vec3() / 2.0);
-    assert!(scale.x == scale.y && scale.y == scale.z);
-    (
-        (translation - center * scale + offset).into(),
-        (glam::Mat3::from_quat(quat) * scale.x).into(),
-    )
+    offset = rotation.mul_vec3(offset); // If another seam shows up in the future, try multiplying this with `scale`
+    let center = rotation * (size.as_vec3() / 2.0);
+    ((position - center + offset).into(), rotation.into())
 }
 
 fn visit(
     file: &DotVoxData,
     rendered: &mut Vec<RenderedModel>,
-    position: glam::Vec3,
-    rotation: glam::Mat3,
+    position: glam::IVec3,
+    rotation: dot_vox::Rotation,
     index: u32,
 ) {
     match &file.scenes[index as usize] {
@@ -163,10 +147,13 @@ fn visit(
         }
         SceneNode::Shape { models, .. } => {
             for model in models {
+                let size = file.models[model.model_id as usize].size;
+                let (position, rotation) =
+                    to_transform(position, rotation, glam::UVec3::new(size.x, size.y, size.z));
                 rendered.push(RenderedModel {
                     index: model.model_id,
-                    position: position.into(),
-                    rotation: rotation.into(),
+                    position,
+                    rotation,
                 });
             }
         }
@@ -174,14 +161,11 @@ fn visit(
             let frame = frames.first().unwrap();
             let position = frame
                 .position()
-                .map(|pos| glam::Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32))
-                .unwrap_or(glam::Vec3::ZERO)
+                .map(|pos| glam::IVec3::new(pos.x, pos.y, pos.z))
+                .unwrap_or(glam::IVec3::ZERO)
                 + position;
 
-            let rotation = frame
-                .orientation()
-                .map(|rot| glam::Mat3::from_cols_array_2d(&rot.to_cols_array_2d()))
-                .unwrap_or(glam::Mat3::IDENTITY); // * rotation;
+            let rotation = frame.orientation().unwrap_or(dot_vox::Rotation::IDENTITY); // * rotation;
 
             visit(file, rendered, position, rotation, *child);
         }
@@ -220,18 +204,17 @@ fn main() {
     visit(
         &file,
         &mut rendered_models,
-        glam::Vec3::ZERO,
-        glam::Mat3::IDENTITY,
+        glam::IVec3::ZERO,
+        dot_vox::Rotation::IDENTITY,
         0,
     );
     let rendered_aabbs = rendered_models
         .iter()
         .map(|model| {
             let s = file.models[model.index as usize].size;
-            let aabb_x = glam::Vec3::new(model.position.x, model.position.y, model.position.z);
+            let aabb_x = FVec3::new(model.position.x, model.position.y, model.position.z);
             let aabb_y = aabb_x
-                + glam::Mat3::from(model.rotation)
-                    * glam::Vec3::new(s.x as f32, s.y as f32, s.z as f32);
+                + FMat3::from(model.rotation) * FVec3::new(s.x as f32, s.y as f32, s.z as f32);
             Aabb {
                 min: aabb_x.min(aabb_y).into(),
                 max: aabb_x.max(aabb_y).into(),
@@ -337,7 +320,11 @@ fn main() {
 
     app.run(|rt| {
         let rot_speed = 1.5 * rt.frame_time();
-        let move_speed = 200.0 * rt.frame_time();
+        let move_speed = if rt.key_down(KeyCode::ControlLeft) {
+            5.0
+        } else {
+            200.0
+        } * rt.frame_time();
         rt.process_keys_down(|key| match key {
             KeyCode::ArrowLeft => camera.yaw -= 1.0 * rot_speed,
             KeyCode::ArrowRight => camera.yaw += 1.0 * rot_speed,
