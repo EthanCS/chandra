@@ -1,5 +1,13 @@
-use keter::lang::types::vector::{Mat3, Vec2, Vec3};
+#![feature(more_float_constants)]
+
+use std::f32::consts::PHI;
+use std::mem::forget;
+
+use dot_vox::{DotVoxData, Frame, SceneNode};
+use glam::Vec3Swizzles;
+use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3};
 use keter::prelude::*;
+use keter::rtx::{Aabb, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, Ray};
 use keter_testbed::{App, KeyCode};
 
 #[derive(Debug, Clone, Copy)]
@@ -12,7 +20,9 @@ struct Camera {
 }
 impl Camera {
     fn rotation(&self) -> glam::Mat3 {
-        glam::Mat3::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0)
+        let view =
+            glam::Mat3::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0).transpose();
+        glam::Mat3::from_cols(view.x_axis, view.z_axis, view.y_axis).transpose()
     }
     fn view(&self) -> View {
         let view = self.rotation();
@@ -61,7 +71,7 @@ fn dda(
     ray_dir: Expr<Vec3<f32>>,
     length: Expr<f32>,
     bounds: (Expr<Vec3<f32>>, Expr<Vec3<f32>>),
-    f: impl Fn(Expr<Vec3<u32>>) -> Expr<bool>,
+    f: impl Fn(Expr<Vec3<u32>>, Expr<f32>, Expr<f32>) -> Expr<bool>,
 ) {
     let inv_dir = (ray_dir + f32::EPSILON).recip();
     let interval = aabb_intersect(start, inv_dir, bounds.0, bounds.1);
@@ -80,12 +90,17 @@ fn dda(
             * delta_dist;
         let side_dist = side_dist.var();
 
+        let last_t = start_t.var();
+
         loop {
             let next_t = side_dist.reduce_min();
 
-            if f(**pos) {
+            let next_adj_t = next_t + start_t;
+
+            if f(**pos, **last_t, next_adj_t) {
                 break;
             }
+            *last_t = next_adj_t;
 
             if next_t >= end_t {
                 break;
@@ -98,8 +113,83 @@ fn dda(
     }
 }
 
+#[derive(Debug, Clone, Copy, Value)]
+#[repr(C)]
+struct RenderedModel {
+    position: Vec3<f32>,
+    rotation: Mat3,
+    index: u32,
+}
+
+fn to_transform(
+    translation: glam::IVec3,
+    rotation: dot_vox::Rotation,
+    size: glam::UVec3,
+) -> (Vec3<f32>, Mat3) {
+    let mut translation = translation.as_vec3().xzy();
+    translation.z *= -1.0;
+
+    let (quat, scale) = rotation.to_quat_scale();
+    let quat = glam::Quat::from_array(quat);
+    let quat = glam::Quat::from_xyzw(quat.x, quat.z, -quat.y, quat.w);
+    let scale = glam::Vec3::from_array(scale).xzy(); // no need to negate scale.y because scale is not a coordinate
+
+    let mut offset = glam::Vec3::new(
+        if size.x % 2 == 0 { 0.0 } else { 0.5 },
+        if size.z % 2 == 0 { 0.0 } else { 0.5 },
+        if size.y % 2 == 0 { 0.0 } else { -0.5 },
+    );
+    offset = quat.mul_vec3(offset); // If another seam shows up in the future, try multiplying this with `scale`
+    let center = quat * (size.xzy().as_vec3() / 2.0);
+    assert!(scale.x == scale.y && scale.y == scale.z);
+    (
+        (translation - center * scale + offset).into(),
+        (glam::Mat3::from_quat(quat) * scale.x).into(),
+    )
+}
+
+fn visit(
+    file: &DotVoxData,
+    rendered: &mut Vec<RenderedModel>,
+    position: glam::Vec3,
+    rotation: glam::Mat3,
+    index: u32,
+) {
+    match &file.scenes[index as usize] {
+        SceneNode::Group { children, .. } => {
+            for child in children {
+                visit(file, rendered, position, rotation, *child);
+            }
+        }
+        SceneNode::Shape { models, .. } => {
+            for model in models {
+                rendered.push(RenderedModel {
+                    index: model.model_id,
+                    position: position.into(),
+                    rotation: rotation.into(),
+                });
+            }
+        }
+        SceneNode::Transform { frames, child, .. } => {
+            let frame = frames.first().unwrap();
+            let position = frame
+                .position()
+                .map(|pos| glam::Vec3::new(pos.x as f32, pos.y as f32, pos.z as f32))
+                .unwrap_or(glam::Vec3::ZERO)
+                + position;
+
+            let rotation = frame
+                .orientation()
+                .map(|rot| glam::Mat3::from_cols_array_2d(&rot.to_cols_array_2d()))
+                .unwrap_or(glam::Mat3::IDENTITY); // * rotation;
+
+            visit(file, rendered, position, rotation, *child);
+        }
+    }
+}
+
 fn main() {
-    let app = App::new("Amitayus", [2048; 2]).agx().resize().init();
+    let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
 
     let file = dot_vox::load("assets/castle.vox").unwrap();
 
@@ -108,27 +198,132 @@ fn main() {
         Vec3::new(color.r as f32, color.g as f32, color.b as f32) * (1.0 / 255.0_f32)
     });
 
-    let voxels = DEVICE.create_buffer::<u8>(256 * 256 * 256);
+    let bindless = DEVICE.create_bindless_array(file.models.len());
+
+    for (i, model) in file.models.iter().enumerate() {
+        let s = model.size;
+        let mut voxels = vec![255; (s.x * s.y * s.z) as usize];
+        for voxel in &model.voxels {
+            voxels[(voxel.x as u32 + voxel.y as u32 * s.x + voxel.z as u32 * s.x * s.y) as usize] =
+                voxel.i;
+        }
+        let buffer = DEVICE.create_buffer_from_slice(&voxels);
+        bindless.emplace_buffer(i, &buffer);
+        forget(buffer);
+    }
+    let model_sizes = DEVICE.create_buffer_from_fn(file.models.len(), |i| {
+        let s = file.models[i].size;
+        Vec3::new(s.x, s.y, s.z)
+    });
+
+    let mut rendered_models = Vec::new();
+    visit(
+        &file,
+        &mut rendered_models,
+        glam::Vec3::ZERO,
+        glam::Mat3::IDENTITY,
+        0,
+    );
+    let rendered_aabbs = rendered_models
+        .iter()
+        .map(|model| {
+            let s = file.models[model.index as usize].size;
+            let aabb_x = glam::Vec3::new(model.position.x, model.position.y, model.position.z);
+            let aabb_y = aabb_x
+                + glam::Mat3::from(model.rotation)
+                    * glam::Vec3::new(s.x as f32, s.y as f32, s.z as f32);
+            Aabb {
+                min: aabb_x.min(aabb_y).into(),
+                max: aabb_x.max(aabb_y).into(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let rendered_aabbs = DEVICE.create_buffer_from_slice(&rendered_aabbs);
+
+    let rendered_models = DEVICE.create_buffer_from_slice(&rendered_models);
+
+    let model_accel = DEVICE.create_procedural_primitive(
+        rendered_aabbs.view(..),
+        AccelOption {
+            hint: AccelUsageHint::FastTrace,
+            allow_compaction: true,
+            allow_update: false,
+        },
+    );
+    model_accel.build(AccelBuildRequest::ForceBuild);
+
+    let accel = DEVICE.create_accel(AccelOption {
+        hint: AccelUsageHint::FastTrace,
+        allow_compaction: true,
+        allow_update: false,
+    });
+    accel.push_procedural_primitive(&model_accel, Mat4::identity(), 0xFF);
+    accel.build(AccelBuildRequest::ForceBuild);
 
     let draw_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
         let pixel = dispatch_id().xy();
         let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
         let ray_dir = ray_dir.normalize();
 
-        let color_index = 255_u8.var();
-        dda(
-            view.pos,
-            ray_dir,
-            10000.0.expr(),
-            (Vec3::splat_expr(0.01), Vec3::splat_expr(254.9)),
-            |pos| {
-                let voxel_index = pos.x + pos.y * 256 + pos.z * 256 * 256;
-                *color_index = voxels.read(voxel_index);
-                color_index != 255
-            },
-        );
-        if color_index != 255 {
-            app.set_pixel(pixel.cast_i32(), palette.read(color_index.cast_u32()));
+        let hit = accel
+            .traverse(
+                Ray::new_expr(
+                    Expr::<[f32; 3]>::from(view.pos),
+                    0.0,
+                    Expr::<[f32; 3]>::from(ray_dir),
+                    10000.0,
+                ),
+                AccelTraceOptions {
+                    mask: 0xFF.expr(),
+                    ..Default::default()
+                },
+            )
+            .on_procedural_hit(|candidate| {
+                let index = candidate.prim;
+                let model = rendered_models.read(index);
+
+                let ray_start = model.rotation.transpose() * (view.pos - model.position);
+                let ray_dir = model.rotation.transpose() * ray_dir;
+                let size = model_sizes.read(model.index);
+                let voxels = bindless.buffer::<u8>(model.index);
+
+                dda(
+                    ray_start,
+                    ray_dir,
+                    10000.0.expr(),
+                    (Vec3::splat_expr(0.01), size.cast_f32() - 0.01),
+                    |pos, last_t, next_t| {
+                        let voxel_index = pos.x + pos.y * size.x + pos.z * size.x * size.y;
+                        let voxel = voxels.read(voxel_index);
+                        if voxel != 255 {
+                            candidate.commit((last_t + next_t) / 2.0);
+                            true.expr()
+                        } else {
+                            false.expr()
+                        }
+                    },
+                );
+            })
+            .trace();
+
+        if hit.procedural_hit() {
+            let model = rendered_models.read(hit.prim);
+            let ray_start = model.rotation.transpose() * (view.pos - model.position);
+            let ray_dir = model.rotation.transpose() * ray_dir;
+            let size = model_sizes.read(model.index);
+            let voxels = bindless.buffer::<u8>(model.index);
+            let pos = ray_start + ray_dir * hit.committed_ray_t;
+            let pos = pos
+                .floor()
+                .cast_i32()
+                .clamp(Vec3::splat(0), size.cast_i32() - 1)
+                .cast_u32();
+            let color = palette.read(
+                voxels
+                    .read(pos.x + pos.y * size.x + pos.z * size.x * size.y)
+                    .cast_u32(),
+            );
+            app.set_pixel(pixel.cast_i32(), color);
         }
     }));
 
@@ -136,11 +331,9 @@ fn main() {
         screen_size: app.size().map(|x| x as f32).into(),
         yaw: 0.0,
         pitch: 0.0,
-        pos: Vec3::new(128.0, 128.0, -256.0),
+        pos: Vec3::new(0.0, 0.0, 0.0),
         fov: 1.15,
     };
-
-    let mut model_index = 0;
 
     app.run(|rt| {
         let rot_speed = 1.5 * rt.frame_time();
@@ -154,27 +347,12 @@ fn main() {
             KeyCode::KeyS => camera.pos = camera.pos - camera.forward() * move_speed,
             KeyCode::KeyA => camera.pos = camera.pos - camera.right() * move_speed,
             KeyCode::KeyD => camera.pos = camera.pos + camera.right() * move_speed,
-            KeyCode::Space => camera.pos = camera.pos + Vec3::new(0.0, 1.0, 0.0) * move_speed,
-            KeyCode::ShiftLeft => camera.pos = camera.pos - Vec3::new(0.0, 1.0, 0.0) * move_speed,
+            KeyCode::Space => camera.pos = camera.pos + Vec3::new(0.0, 0.0, 1.0) * move_speed,
+            KeyCode::ShiftLeft => camera.pos = camera.pos - Vec3::new(0.0, 0.0, 1.0) * move_speed,
             _ => (),
         });
 
-        let mut model_changed = rt.tick == 0;
-
-        if rt.key_pressed(KeyCode::KeyQ) {
-            model_index = (model_index + 1) % file.models.len();
-            model_changed = true;
-        }
-
-        if model_changed {
-            let model = &file.models[model_index];
-            let mut host_voxels = vec![255; 256 * 256 * 256];
-            for voxel in &model.voxels {
-                host_voxels[(voxel.x as u32 + voxel.y as u32 * 256 + voxel.z as u32 * 256 * 256)
-                    as usize] = voxel.i;
-            }
-            voxels.copy_from(&host_voxels);
-        }
+        rt.log_fps();
 
         draw_kernel.dispatch(rt.dispatch_size(), &camera.view());
     });
