@@ -139,6 +139,14 @@ fn visit(
     rotation: dot_vox::Rotation,
     index: u32,
 ) {
+    if file.scenes.is_empty() && index == 0 {
+        rendered.push(RenderedModel {
+            index: 0,
+            position: Vec3::splat(0.0),
+            rotation: Mat3::identity(),
+        });
+        return;
+    }
     match &file.scenes[index as usize] {
         SceneNode::Group { children, .. } => {
             for child in children {
@@ -312,9 +320,9 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 0.0,
-        pitch: 0.0,
-        pos: Vec3::new(0.0, 0.0, 0.0),
+        yaw: 0.5,
+        pitch: 0.6,
+        pos: Vec3::new(-500.0, -500.0, 500.0),
         fov: 1.15,
     };
 
