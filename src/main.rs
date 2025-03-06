@@ -2,10 +2,20 @@ use std::mem::forget;
 
 use dot_vox::{DotVoxData, SceneNode};
 use glam::{IVec3, Mat3 as FMat3, UVec3, Vec3 as FVec3};
-use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3};
+use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::{Aabb, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, Ray};
 use keter_testbed::{App, KeyCode};
+
+fn to_linear(pos: UVec3, size: UVec3) -> usize {
+    (pos.x + pos.y * size.x + pos.z * size.x * size.y) as usize
+}
+
+fn iter_vec(size: UVec3) -> impl Iterator<Item = UVec3> {
+    (0..size.x)
+        .flat_map(move |x| (0..size.y).map(move |y| (x, y)))
+        .flat_map(move |(x, y)| (0..size.z).map(move |z| UVec3::new(x, y, z)))
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Camera {
@@ -180,6 +190,28 @@ fn visit(
     }
 }
 
+const BRICK_SIZE: u32 = 8;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Value)]
+struct BrickMask {
+    values: [u64; 8],
+}
+impl BrickMask {
+    fn empty() -> Self {
+        Self { values: [0; 8] }
+    }
+    fn set(&mut self, pos: UVec3, value: bool) {
+        self.values[pos.x as usize] |= (value as u64) << (pos.y + pos.z * BRICK_SIZE);
+    }
+}
+impl BrickMaskExpr {
+    #[tracked]
+    fn read(&self, pos: Expr<Vec3<u32>>) -> Expr<bool> {
+        (self.values.read(pos.x) >> (pos.y + pos.z * BRICK_SIZE).cast_u64()) & 1 != 0
+    }
+}
+
 fn main() {
     let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
 
@@ -187,26 +219,85 @@ fn main() {
 
     let palette = DEVICE.create_buffer_from_fn(file.palette.len(), |i| {
         let color = file.palette[i];
-        Vec3::new(color.r as f32, color.g as f32, color.b as f32) * (1.0 / 255.0_f32)
+        Vec3::new(color.r as f32, color.g as f32, color.b as f32).map(|x| (x / 255.0).powf(2.2))
     });
 
     let bindless = DEVICE.create_bindless_array(file.models.len());
 
-    for (i, model) in file.models.iter().enumerate() {
+    let mut brick_masks = Vec::<BrickMask>::new();
+    let mut brick_colors = Vec::<u8>::new();
+    let mut brick_positions = Vec::<Vec3<u32>>::new();
+    let mut model_bvhs = Vec::new();
+    let mut model_sizes = Vec::<Vec3<u32>>::new();
+    let mut model_brick_offsets = Vec::<u32>::new();
+    for (index, model) in file.models.iter().enumerate() {
         let s = model.size;
-        let mut voxels = vec![255; (s.x * s.y * s.z) as usize];
+        let s = UVec3::new(s.x, s.y, s.z);
+        let bricks = s.map(|x| x.div_ceil(BRICK_SIZE));
+        let s = bricks * BRICK_SIZE;
+        model_brick_offsets.push(brick_masks.len() as u32);
+        let mut aabbs = Vec::<Aabb>::new();
+        let mut brick_map = vec![u32::MAX; bricks.element_product() as usize];
+        let mut voxels = vec![255; s.element_product() as usize];
         for voxel in &model.voxels {
-            voxels[(voxel.x as u32 + voxel.y as u32 * s.x + voxel.z as u32 * s.x * s.y) as usize] =
-                voxel.i;
+            let pos = UVec3::new(voxel.x as u32, voxel.y as u32, voxel.z as u32);
+            voxels[to_linear(pos, s)] = voxel.i;
         }
-        let buffer = DEVICE.create_buffer_from_slice(&voxels);
-        bindless.emplace_buffer(i, &buffer);
-        forget(buffer);
+        if model.voxels.is_empty() {
+            voxels[0] = 0;
+        }
+        for brick in iter_vec(bricks) {
+            let mut mask = BrickMask::empty();
+            let mut colors = [255; (BRICK_SIZE * BRICK_SIZE * BRICK_SIZE) as usize];
+            for brick_pos in iter_vec(UVec3::splat(BRICK_SIZE)) {
+                let pos = brick * BRICK_SIZE + brick_pos;
+                let voxel = voxels[to_linear(pos, s)];
+                mask.set(brick_pos, voxel != 255);
+                colors[to_linear(brick_pos, UVec3::splat(BRICK_SIZE))] = voxel;
+            }
+            if mask != BrickMask::empty() {
+                brick_map[to_linear(brick, bricks)] = brick_masks.len() as u32;
+                brick_masks.push(mask);
+                brick_colors.extend_from_slice(&colors);
+                brick_positions.push((brick * BRICK_SIZE).into());
+                aabbs.push(Aabb {
+                    min: (brick * BRICK_SIZE).as_vec3().into(),
+                    max: ((brick + UVec3::splat(1)) * BRICK_SIZE).as_vec3().into(),
+                });
+            }
+        }
+        let brick_map = DEVICE.create_buffer_from_slice(&brick_map);
+        bindless.emplace_buffer(index, &brick_map);
+        forget(brick_map);
+        if aabbs.is_empty() {
+            println!("Voxels: {:?}", model.voxels);
+            println!("Bricks: {:?}", bricks);
+            println!("Size: {:?}", s);
+            panic!("Shit");
+        }
+        let aabbs = DEVICE.create_buffer_from_slice(&aabbs);
+        let bvh = DEVICE.create_procedural_primitive(
+            aabbs.view(..),
+            AccelOption {
+                hint: AccelUsageHint::FastTrace,
+                allow_compaction: true,
+                allow_update: false,
+            },
+        );
+        bvh.build(AccelBuildRequest::ForceBuild);
+        model_bvhs.push(bvh);
+        forget(aabbs);
+        model_sizes.push(bricks.into());
+        if index % 20 == 0 {
+            println!("Loading: {:?}", index);
+        }
     }
-    let model_sizes = DEVICE.create_buffer_from_fn(file.models.len(), |i| {
-        let s = file.models[i].size;
-        Vec3::new(s.x, s.y, s.z)
-    });
+    println!("Loaded");
+    let model_brick_offsets = DEVICE.create_buffer_from_slice(&model_brick_offsets);
+    let brick_masks = DEVICE.create_buffer_from_slice(&brick_masks);
+    let brick_colors = DEVICE.create_buffer_from_slice(&brick_colors);
+    let brick_positions = DEVICE.create_buffer_from_slice(&brick_positions);
+    // let model_sizes = DEVICE.create_buffer_from_slice(&model_sizes);
 
     let mut rendered_models = Vec::new();
     visit(
@@ -216,42 +307,36 @@ fn main() {
         dot_vox::Rotation::IDENTITY,
         0,
     );
-    let rendered_aabbs = rendered_models
-        .iter()
-        .map(|model| {
-            let s = file.models[model.index as usize].size;
-            let aabb_x = FVec3::new(model.position.x, model.position.y, model.position.z);
-            let aabb_y = aabb_x
-                + FMat3::from(model.rotation) * FVec3::new(s.x as f32, s.y as f32, s.z as f32);
-            Aabb {
-                min: aabb_x.min(aabb_y).into(),
-                max: aabb_x.max(aabb_y).into(),
-            }
-        })
-        .collect::<Vec<_>>();
-    let rendered_aabbs = DEVICE.create_buffer_from_slice(&rendered_aabbs);
-
-    let rendered_models = DEVICE.create_buffer_from_slice(&rendered_models);
-
-    let model_accel = DEVICE.create_procedural_primitive(
-        rendered_aabbs.view(..),
-        AccelOption {
-            hint: AccelUsageHint::FastTrace,
-            allow_compaction: true,
-            allow_update: false,
-        },
-    );
-    model_accel.build(AccelBuildRequest::ForceBuild);
 
     let accel = DEVICE.create_accel(AccelOption {
         hint: AccelUsageHint::FastTrace,
         allow_compaction: true,
         allow_update: false,
     });
-    accel.push_procedural_primitive(&model_accel, Mat4::identity(), 0xFF);
+
+    for model in &rendered_models {
+        fn extend(a: Vec3<f32>, b: f32) -> Vec4<f32> {
+            Vec4::new(a.x, a.y, a.z, b)
+        }
+        accel.push_procedural_primitive(
+            &model_bvhs[model.index as usize],
+            Mat4 {
+                cols: [
+                    extend(model.rotation.cols[0], 0.0),
+                    extend(model.rotation.cols[1], 0.0),
+                    extend(model.rotation.cols[2], 0.0),
+                    extend(model.position, 1.0),
+                ],
+            },
+            0xFF,
+        );
+    }
+
+    let rendered_models = DEVICE.create_buffer_from_slice(&rendered_models);
     accel.build(AccelBuildRequest::ForceBuild);
 
     let draw_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
+        set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
         let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
         let ray_dir = ray_dir.normalize();
@@ -270,23 +355,24 @@ fn main() {
                 },
             )
             .on_procedural_hit(|candidate| {
-                let index = candidate.prim;
-                let model = rendered_models.read(index);
+                let model = rendered_models.read(candidate.inst);
+                let brick = model_brick_offsets.read(model.index) + candidate.prim;
+                let mask = brick_masks.read(brick);
 
-                let ray_start = model.rotation.transpose() * (view.pos - model.position);
+                let ray_start = model.rotation.transpose() * (view.pos - model.position)
+                    - brick_positions.read(brick).cast_f32();
                 let ray_dir = model.rotation.transpose() * ray_dir;
-                let size = model_sizes.read(model.index);
-                let voxels = bindless.buffer::<u8>(model.index);
 
                 dda(
                     ray_start,
                     ray_dir,
                     10000.0.expr(),
-                    (Vec3::splat_expr(0.01), size.cast_f32() - 0.01),
+                    (
+                        Vec3::splat_expr(0.01),
+                        Vec3::splat_expr(BRICK_SIZE as f32 - 0.01),
+                    ),
                     |pos, last_t, next_t| {
-                        let voxel_index = pos.x + pos.y * size.x + pos.z * size.x * size.y;
-                        let voxel = voxels.read(voxel_index);
-                        if voxel != 255 {
+                        if mask.read(pos) {
                             candidate.commit((last_t + next_t) / 2.0);
                             true.expr()
                         } else {
@@ -298,22 +384,24 @@ fn main() {
             .trace();
 
         if hit.procedural_hit() {
-            let model = rendered_models.read(hit.prim);
+            let model = rendered_models.read(hit.inst);
             let ray_start = model.rotation.transpose() * (view.pos - model.position);
             let ray_dir = model.rotation.transpose() * ray_dir;
-            let size = model_sizes.read(model.index);
-            let voxels = bindless.buffer::<u8>(model.index);
-            let pos = ray_start + ray_dir * hit.committed_ray_t;
+            let brick = model_brick_offsets.read(model.index) + hit.prim;
+            let pos =
+                ray_start + ray_dir * hit.committed_ray_t - brick_positions.read(brick).cast_f32();
             let pos = pos
                 .floor()
                 .cast_i32()
-                .clamp(Vec3::splat(0), size.cast_i32() - 1)
+                .clamp(Vec3::splat(0), Vec3::splat(BRICK_SIZE as i32 - 1))
                 .cast_u32();
-            let color = palette.read(
-                voxels
-                    .read(pos.x + pos.y * size.x + pos.z * size.x * size.y)
-                    .cast_u32(),
+            let color = brick_colors.read(
+                brick * (BRICK_SIZE * BRICK_SIZE * BRICK_SIZE)
+                    + pos.x
+                    + pos.y * BRICK_SIZE
+                    + pos.z * BRICK_SIZE * BRICK_SIZE,
             );
+            let color = palette.read(color.cast_u32());
             app.set_pixel(pixel.cast_i32(), color);
         }
     }));
