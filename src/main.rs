@@ -369,13 +369,57 @@ fn main() {
     let rendered_models = DEVICE.create_buffer_from_slice(&rendered_models);
     accel.build(AccelBuildRequest::ForceBuild);
 
+    let trace = track!(|ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>| {
+        accel
+            .traverse(
+                Ray::new_expr(
+                    Expr::<[f32; 3]>::from(ray_start),
+                    0.0,
+                    Expr::<[f32; 3]>::from(ray_dir),
+                    10000.0,
+                ),
+                AccelTraceOptions {
+                    mask: 0xFF.expr(),
+                    ..Default::default()
+                },
+            )
+            .on_procedural_hit(|candidate| {
+                let model = rendered_models.read(candidate.inst);
+                let brick = model_brick_offsets.read(model.index) + candidate.prim;
+                let mask = brick_masks.read(brick);
+
+                let ray_start = model.rotation.transpose() * (ray_start - model.position)
+                    - brick_positions.read(brick).cast_f32();
+                let ray_dir = model.rotation.transpose() * ray_dir;
+
+                dda(
+                    ray_start,
+                    ray_dir,
+                    10000.0.expr(),
+                    (
+                        Vec3::splat_expr(0.0001),
+                        Vec3::splat_expr(BRICK_SIZE as f32 - 0.0001),
+                    ),
+                    |pos, last_t, next_t| {
+                        if mask.read(pos) {
+                            candidate.commit((last_t + next_t) / 2.0);
+                            true.expr()
+                        } else {
+                            false.expr()
+                        }
+                    },
+                );
+            })
+            .trace()
+    });
+
     let draw_kernel = DEVICE.create_kernel_with_options::<fn(View)>(
         KernelBuildOptions {
             name: Some("draw_kernel_4".into()),
             enable_debug_info: true,
             enable_optimization: true,
             enable_cache: true,
-            enable_fast_math: true,
+            enable_fast_math: false,
             ..Default::default()
         },
         &track!(|view| {
@@ -384,49 +428,25 @@ fn main() {
             let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
             let ray_dir = ray_dir.normalize();
 
-            let hit = accel
-                .traverse(
-                    Ray::new_expr(
-                        Expr::<[f32; 3]>::from(view.pos),
-                        0.0,
-                        Expr::<[f32; 3]>::from(ray_dir),
-                        10000.0,
-                    ),
-                    AccelTraceOptions {
-                        mask: 0xFF.expr(),
-                        ..Default::default()
-                    },
-                )
-                .on_procedural_hit(|candidate| {
-                    let model = rendered_models.read(candidate.inst);
-                    let brick = model_brick_offsets.read(model.index) + candidate.prim;
-                    let mask = brick_masks.read(brick);
-
-                    let ray_start = model.rotation.transpose() * (view.pos - model.position)
-                        - brick_positions.read(brick).cast_f32();
-                    let ray_dir = model.rotation.transpose() * ray_dir;
-
-                    dda(
-                        ray_start,
-                        ray_dir,
-                        10000.0.expr(),
-                        (
-                            Vec3::splat_expr(0.01),
-                            Vec3::splat_expr(BRICK_SIZE as f32 - 0.01),
-                        ),
-                        |pos, last_t, next_t| {
-                            if mask.read(pos) {
-                                candidate.commit((last_t + next_t) / 2.0);
-                                true.expr()
-                            } else {
-                                false.expr()
-                            }
-                        },
-                    );
-                })
-                .trace();
+            let hit = trace(view.pos, ray_dir);
 
             if hit.procedural_hit() {
+                let world_pos = view.pos + ray_dir * hit.committed_ray_t;
+                let world_voxel = world_pos.floor().cast_i32();
+                let delta_dist = (1.0 / ray_dir).abs();
+                let side_dist = ((-ray_dir).signum() * (world_voxel.cast_f32() - world_pos)
+                    + (-ray_dir).signum() * 0.5
+                    + 0.5)
+                    * delta_dist;
+                let mask = side_dist <= keter::min(side_dist.yzx(), side_dist.zxy());
+                let normal = -mask.select(ray_dir.signum().cast_i32(), Vec3::splat_expr(0));
+                let prev_voxel = world_voxel + normal;
+                let shadowed = trace(
+                    prev_voxel.cast_f32() + 0.5,
+                    Vec3::<f32>::expr(0.3, 0.2, 1.0).normalize(),
+                )
+                .procedural_hit();
+
                 let model = rendered_models.read(hit.inst);
                 let ray_start = model.rotation.transpose() * (view.pos - model.position);
                 let ray_dir = model.rotation.transpose() * ray_dir;
@@ -438,6 +458,7 @@ fn main() {
                     .cast_i32()
                     .clamp(Vec3::splat(0), Vec3::splat(BRICK_SIZE as i32 - 1))
                     .cast_u32();
+
                 let color = brick_colors.read(
                     brick * (BRICK_SIZE * BRICK_SIZE * BRICK_SIZE)
                         + pos.x
@@ -446,7 +467,15 @@ fn main() {
                 );
                 // Vec3::splat_expr(num_ddas.cast_f32() * 0.1); // pcg3df(Vec3::expr(hit.inst, hit.prim, 1));
                 let color = palette.read(color.cast_u32());
-                app.set_pixel(pixel.cast_i32(), color);
+                app.set_pixel(
+                    pixel.cast_i32(),
+                    color
+                        * if shadowed {
+                            0.1_f32.expr()
+                        } else {
+                            1.0_f32.expr()
+                        },
+                );
             }
         }),
     );
