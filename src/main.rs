@@ -213,28 +213,33 @@ fn visit(
     }
 }
 
-const BRICK_SIZE: u32 = 8;
+const BRICK_SIZE: u32 = 4;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Value)]
 struct BrickMask {
-    values: [u64; 8],
+    values: u64,
 }
 impl BrickMask {
     fn empty() -> Self {
-        Self { values: [0; 8] }
+        Self { values: 0 }
     }
     fn set(&mut self, pos: UVec3, value: bool) {
-        self.values[pos.x as usize] |= (value as u64) << (pos.y + pos.z * BRICK_SIZE);
+        self.values |=
+            (value as u64) << (pos.x + pos.y * BRICK_SIZE + pos.z * BRICK_SIZE * BRICK_SIZE);
     }
 }
 impl BrickMaskExpr {
     #[tracked]
     fn read(&self, pos: Expr<Vec3<u32>>) -> Expr<bool> {
-        (self.values.read(pos.x) >> (pos.y + pos.z * BRICK_SIZE).cast_u64()) & 1 != 0
+        (self.values >> (pos.x + pos.y * BRICK_SIZE + pos.z * BRICK_SIZE * BRICK_SIZE).cast_u64())
+            & 1
+            != 0
     }
 }
 
+// do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
+// nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
     let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
 
