@@ -2,7 +2,7 @@ use std::mem::forget;
 
 use dot_vox::{DotVoxData, SceneNode};
 use glam::{IVec3, Mat3 as FMat3, UVec3, Vec3 as FVec3};
-use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3, Vec4};
+use keter::lang::types::vector::{Mat3, Mat4, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::{
     Aabb, Accel, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, CommittedHit,
@@ -13,16 +13,18 @@ use crate::utils::*;
 
 pub struct World {
     // bindless: BindlessArray,
-    accel: Accel,
-    rendered_models: Buffer<RenderedModel>,
-    model_brick_offsets: Buffer<u32>,
-    brick_masks: Buffer<BrickMask>,
-    brick_positions: Buffer<Vec3<u32>>,
+    pub accel: Accel,
+    pub rendered_models: Buffer<RenderedModel>,
+    pub model_brick_offsets: Buffer<u32>,
+    pub brick_masks: Buffer<BrickMask>,
+    pub brick_positions: Buffer<Vec3<u32>>,
+    pub brick_colors: Buffer<u8>,
+    pub palette: Buffer<Vec3<f32>>,
 }
 
 impl World {
     pub fn new(data: DotVoxData) -> Self {
-        let bindless = DEVICE.create_bindless_array(data.models.len());
+        // let bindless = DEVICE.create_bindless_array(data.models.len());
 
         let mut brick_masks = Vec::<BrickMask>::new();
         let mut brick_colors = Vec::<u8>::new();
@@ -77,8 +79,8 @@ impl World {
             // forget(brick_map);
             if aabbs.is_empty() {
                 println!("Voxels: {:?}", model.voxels);
-                println!("Bricks: {:?}", bricks);
-                println!("Size: {:?}", s);
+                println!("Bricks: {bricks:?}");
+                println!("Size: {s:?}");
                 panic!("Shit");
             }
             let aabbs = DEVICE.create_buffer_from_slice(&aabbs);
@@ -94,8 +96,8 @@ impl World {
             model_bvhs.push(bvh);
             forget(aabbs);
             model_sizes.push(bricks.into());
-            if index % 20 == 0 {
-                println!("Loading: {:?}", index);
+            if index.is_multiple_of(20) {
+                println!("Loading: {index:?}");
             }
         }
         println!("Loaded");
@@ -141,6 +143,11 @@ impl World {
         let rendered_models = DEVICE.create_buffer_from_slice(&rendered_models);
         accel.build(AccelBuildRequest::ForceBuild);
 
+        let palette = DEVICE.create_buffer_from_fn(data.palette.len(), |i| {
+            let color = data.palette[i];
+            Vec3::new(color.r as f32, color.g as f32, color.b as f32).map(|x| (x / 255.0).powf(2.2))
+        });
+
         Self {
             // bindless,
             accel,
@@ -148,6 +155,8 @@ impl World {
             model_brick_offsets,
             brick_masks,
             brick_positions,
+            brick_colors,
+            palette,
         }
     }
 
@@ -199,14 +208,53 @@ impl World {
             })
             .trace()
     }
+
+    #[tracked]
+    pub fn get_color(
+        &self,
+        ray_start: Expr<Vec3<f32>>,
+        ray_dir: Expr<Vec3<f32>>,
+        hit: Expr<CommittedHit>,
+    ) -> Expr<Vec3<f32>> {
+        self.palette.read(
+            self.brick_colors
+                .read(self.get_local(ray_start, ray_dir, hit))
+                .cast_u32(),
+        )
+    }
+
+    #[tracked]
+    pub fn get_local(
+        &self,
+        ray_start: Expr<Vec3<f32>>,
+        ray_dir: Expr<Vec3<f32>>,
+        hit: Expr<CommittedHit>,
+    ) -> Expr<u32> {
+        let model = self.rendered_models.read(hit.inst);
+        let ray_start = model.rotation.transpose() * (ray_start - model.position);
+        let ray_dir = model.rotation.transpose() * ray_dir;
+        let brick = self.model_brick_offsets.read(model.index) + hit.prim;
+        let pos =
+            ray_start + ray_dir * hit.committed_ray_t - self.brick_positions.read(brick).cast_f32();
+        let pos = pos
+            .floor()
+            .cast_i32()
+            .clamp(Vec3::splat(0), Vec3::splat(BRICK_SIZE as i32 - 1))
+            .cast_u32();
+
+        brick * (BRICK_SIZE * BRICK_SIZE * BRICK_SIZE)
+            + pos.x
+            + pos.y * BRICK_SIZE
+            + pos.z * BRICK_SIZE * BRICK_SIZE
+    }
 }
 
 #[derive(Debug, Clone, Copy, Value)]
 #[repr(C)]
-struct RenderedModel {
-    position: Vec3<f32>,
-    rotation: Mat3,
-    index: u32,
+pub struct RenderedModel {
+    pub position: Vec3<f32>,
+    pub rotation: Mat3,
+    pub index: u32,
 }
 
 fn to_transform(position: IVec3, rotation: dot_vox::Rotation, size: UVec3) -> (Vec3<f32>, Mat3) {
@@ -272,12 +320,12 @@ fn visit(
     }
 }
 
-const BRICK_SIZE: u32 = 4;
+pub const BRICK_SIZE: u32 = 4;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Value)]
-struct BrickMask {
-    values: u64,
+pub struct BrickMask {
+    pub values: u64,
 }
 impl BrickMask {
     fn empty() -> Self {
