@@ -7,7 +7,7 @@ use keter_testbed::utils::{inferno, pcg3df, reinhard};
 use keter_testbed::{App, KeyCode};
 
 use crate::cache::HashCache;
-use crate::world::{BRICK_SIZE, World};
+use crate::world::World;
 
 pub mod cache;
 pub mod color;
@@ -127,7 +127,12 @@ fn main() {
                 let bounce_radiance = if bounce_hit.procedural_hit() {
                     let bounce_pos = bounce_start + bounce_ray * bounce_hit.committed_ray_t;
                     let color = world.get_color(bounce_start, bounce_ray, bounce_hit);
-                    cache.query(bounce_pos) * color
+                    let value = cache.query(bounce_pos);
+                    if value.x == -1.0 {
+                        Vec3::splat_expr(0.0)
+                    } else {
+                        value * color
+                    }
                 } else {
                     0.3_f32.expr() * Vec3::splat_expr(1.0) // ambient
                 };
