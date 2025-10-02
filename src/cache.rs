@@ -1,7 +1,7 @@
 use keter::lang::types::vector::{Vec3, Vec4};
 use keter::prelude::*;
-use keter_testbed::utils::pcg3d;
 use static_assertions::assert_eq_size;
+use yesod::rand::pcg3d;
 
 // type Fluence = fluence::Fluence<fluence::RgbF16>;
 type Radiance = Vec3<f32>;
@@ -66,6 +66,27 @@ impl HashCache {
             let rc = node.radiance_count;
             rc.xyz() / rc.w
         }
+    }
+    #[tracked]
+    pub fn query_interp(&self, pos: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        let cell = pos / self.grid_size;
+        let base = cell.floor().cast_i32();
+        let frac = cell - cell.floor();
+        let total_radiance = Vec3::<f32>::var_zeroed();
+        let total_weight = 0.0_f32.var();
+        for offset in (0..8) {
+            let off = Vec3::from(std::array::from_fn(|i| ((offset >> i) & 1)));
+            let cell = base + off;
+            let node = self.nodes.read(self.get_index(cell));
+            if node.position == encode_position(cell) && node.radiance_count.w != 0.0 {
+                let rc = node.radiance_count;
+                let radiance = rc.xyz() / rc.w;
+                let weight = (off.expr() == 1).select(frac, 1.0 - frac).reduce_prod();
+                *total_radiance += radiance * weight;
+                *total_weight += weight;
+            }
+        }
+        total_radiance / keter::max(total_weight, 0.0001)
     }
     #[tracked]
     pub fn try_deposit(&self, pos: Expr<Vec3<f32>>, f: impl Fn() -> Expr<Radiance>) {

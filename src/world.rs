@@ -1,4 +1,6 @@
+use std::fmt::Debug;
 use std::mem::forget;
+use std::path::Path;
 
 use dot_vox::{DotVoxData, SceneNode};
 use glam::{IVec3, Mat3 as FMat3, UVec3, Vec3 as FVec3};
@@ -6,23 +8,141 @@ use keter::lang::types::vector::{Mat3, Mat4, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::{
     Aabb, Accel, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, CommittedHit,
-    Ray,
+    Ray, TriangleInterpolate,
 };
+use tobj::LoadOptions;
 
 use crate::utils::*;
 
-pub struct World {
-    // bindless: BindlessArray,
-    pub accel: Accel,
-    pub rendered_models: Buffer<RenderedModel>,
-    pub model_brick_offsets: Buffer<u32>,
-    pub brick_masks: Buffer<BrickMask>,
-    pub brick_positions: Buffer<Vec3<u32>>,
-    pub brick_colors: Buffer<u8>,
-    pub palette: Buffer<Vec3<f32>>,
+pub struct TriangleWorld {
+    accel: Accel,
+    pub positions: Buffer<[f32; 3]>,
+    pub normals: Buffer<[f32; 3]>,
+    pub indices: Buffer<[u32; 3]>,
+    pub offsets: Buffer<[u32; 2]>,
+}
+impl TriangleWorld {
+    pub fn new(path: impl AsRef<Path> + Debug) -> Self {
+        let (models, _materials) = tobj::load_obj(
+            path,
+            &LoadOptions {
+                single_index: true,
+                triangulate: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let accel = DEVICE.create_accel(AccelOption {
+            hint: AccelUsageHint::FastTrace,
+            allow_compaction: true,
+            allow_update: false,
+        });
+        let mut positions: Vec<[f32; 3]> = vec![];
+        let mut normals: Vec<[f32; 3]> = vec![];
+        let mut indices: Vec<[u32; 3]> = vec![];
+        let mut offsets: Vec<[u32; 2]> = vec![];
+        for model in models {
+            println!("Loading model: {:?}", model.name);
+            let mesh = model.mesh;
+
+            assert_eq!(mesh.normals.len() / 3, mesh.positions.len() / 3);
+
+            offsets.push([indices.len() as u32, positions.len() as u32]);
+
+            positions.extend(bytemuck::cast_slice(&mesh.positions));
+            normals.extend(bytemuck::cast_slice(&mesh.normals));
+            indices.extend(bytemuck::cast_slice(&mesh.indices));
+        }
+        let position_buffer = DEVICE.create_buffer_from_slice(&positions);
+        let normal_buffer = DEVICE.create_buffer_from_slice(&normals);
+        let index_buffer = DEVICE.create_buffer_from_slice(&indices);
+        let offset_buffer = DEVICE.create_buffer_from_slice(&offsets);
+        offsets.push([indices.len() as u32, positions.len() as u32]);
+        for [start, end] in offsets.array_windows() {
+            let mesh = DEVICE.create_mesh(
+                position_buffer.view(start[1] as usize..end[1] as usize),
+                index_buffer.view(start[0] as usize..end[0] as usize),
+                AccelOption {
+                    hint: AccelUsageHint::FastTrace,
+                    allow_compaction: true,
+                    allow_update: false,
+                },
+            );
+            mesh.build(AccelBuildRequest::ForceBuild);
+            accel.push_mesh(&mesh, Mat4::identity(), 0xFF, true);
+        }
+        accel.build(AccelBuildRequest::ForceBuild);
+        println!("Loaded");
+        println!("Materials: {:?}", _materials.unwrap());
+        Self {
+            accel,
+            positions: position_buffer,
+            normals: normal_buffer,
+            indices: index_buffer,
+            offsets: offset_buffer,
+        }
+    }
+
+    #[tracked]
+    pub fn trace(
+        &self,
+        ray_start: Expr<Vec3<f32>>,
+        ray_dir: Expr<Vec3<f32>>,
+    ) -> Expr<CommittedHit> {
+        self.accel
+            .traverse(
+                Ray::new_expr(
+                    Expr::<[f32; 3]>::from(ray_start),
+                    0.0,
+                    Expr::<[f32; 3]>::from(ray_dir),
+                    10000.0,
+                ),
+                AccelTraceOptions {
+                    mask: 0xFF.expr(),
+                    ..Default::default()
+                },
+            )
+            .on_surface_hit(|candidate| {
+                candidate.commit();
+            })
+            .trace()
+    }
+
+    #[tracked]
+    pub fn get_normal_flat(&self, hit: Expr<CommittedHit>) -> Expr<Vec3<f32>> {
+        let offsets = self.offsets.read(hit.inst);
+        let triangle = self.indices.read(offsets[0] + hit.prim);
+        let positions: [_; 3] = std::array::from_fn(|i| {
+            Expr::<Vec3<f32>>::from(self.positions.read(triangle[i as u32] + offsets[1]))
+        });
+        (positions[1] - positions[0])
+            .cross(positions[2] - positions[0])
+            .normalize()
+    }
+
+    #[tracked]
+    pub fn get_normal(&self, hit: Expr<CommittedHit>) -> Expr<Vec3<f32>> {
+        let offsets = self.offsets.read(hit.inst);
+        let triangle = self.indices.read(offsets[0] + hit.prim);
+        let normals: [_; 3] = std::array::from_fn(|i| {
+            Expr::<Vec3<f32>>::from(self.normals.read(triangle[i as u32] + offsets[1]))
+        });
+        hit.interpolate(normals[0], normals[1], normals[2])
+    }
 }
 
-impl World {
+pub struct VoxelWorld {
+    // bindless: BindlessArray,
+    accel: Accel,
+    rendered_models: Buffer<RenderedModel>,
+    model_brick_offsets: Buffer<u32>,
+    brick_masks: Buffer<BrickMask>,
+    brick_positions: Buffer<Vec3<u32>>,
+    brick_colors: Buffer<u8>,
+    palette: Buffer<Vec3<f32>>,
+}
+
+impl VoxelWorld {
     pub fn new(data: DotVoxData) -> Self {
         // let bindless = DEVICE.create_bindless_array(data.models.len());
 
@@ -198,6 +318,7 @@ impl World {
                     ),
                     |pos, last_t, next_t| {
                         if mask.read(pos) {
+                            // TODO: Commit the actual position instead of this stupid hack
                             candidate.commit((last_t + next_t) / 2.0);
                             true.expr()
                         } else {

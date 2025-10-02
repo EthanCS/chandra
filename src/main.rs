@@ -1,13 +1,16 @@
+#![feature(array_windows)]
+
 use std::f32::consts::TAU;
 
 use glam::Mat3 as FMat3;
 use keter::lang::types::vector::{Mat3, Vec2, Vec3};
 use keter::prelude::*;
-use keter_testbed::utils::{inferno, pcg3df, reinhard};
 use keter_testbed::{App, KeyCode};
+use yesod::color::{inferno, reinhard};
+use yesod::rand::pcg3df;
 
 use crate::cache::HashCache;
-use crate::world::World;
+use crate::world::{TriangleWorld, VoxelWorld};
 
 pub mod cache;
 pub mod color;
@@ -60,16 +63,14 @@ struct View {
 fn main() {
     let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
 
-    let file = dot_vox::load("assets/castle.vox").unwrap();
+    let world = TriangleWorld::new("assets/sponza.obj");
 
-    let world = World::new(file);
-
-    let cache = HashCache::new(4.0, 1 << 20);
+    let cache = HashCache::new(8.0, 1 << 20);
 
     let lower_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
         let index = dispatch_id().x;
         let value = cache.nodes.read(index).var();
-        value.reduce(0.5_f32.expr(), 5.0.expr());
+        value.reduce(0.9_f32.expr(), 5.0.expr());
         cache.nodes.write(index, value);
     }));
 
@@ -90,23 +91,13 @@ fn main() {
 
             let hit = world.trace(view.pos, ray_dir);
 
-            if hit.procedural_hit() {
+            if hit.triangle_hit() {
                 let world_pos = view.pos + ray_dir * hit.committed_ray_t;
-                let world_voxel = world_pos.floor().cast_i32();
-                let delta_dist = (1.0 / ray_dir).abs();
-                let side_dist = ((-ray_dir).signum() * (world_voxel.cast_f32() - world_pos)
-                    + (-ray_dir).signum() * 0.5
-                    + 0.5)
-                    * delta_dist;
-                let mask = side_dist <= keter::min(side_dist.yzx(), side_dist.zxy());
-                let normal = -mask.select(ray_dir.signum().cast_i32(), Vec3::splat_expr(0));
-                let prev_voxel = world_voxel + normal;
+                let normal = world.get_normal_flat(hit);
+                let offset_pos = world_pos + normal * 0.01;
                 let shadowed = world
-                    .trace(
-                        prev_voxel.cast_f32() + 0.5,
-                        Vec3::<f32>::expr(0.3, 1.5, 1.0).normalize(),
-                    )
-                    .procedural_hit();
+                    .trace(offset_pos, Vec3::<f32>::expr(0.3, 1.5, 1.0).normalize())
+                    .triangle_hit();
                 let sun_radiance =
                     shadowed.select(0.0_f32.expr(), 1.0_f32.expr()) * Vec3::new(1.0, 0.95, 0.8);
 
@@ -118,15 +109,13 @@ fn main() {
                     theta.sin() * phi.sin(),
                     theta.cos(),
                 );
-                let normal = normal.cast_f32();
                 let perp1 = normal.yzx();
                 let perp2 = normal.zxy();
                 let bounce_ray = v.x * perp1 + v.y * perp2 + v.z * normal;
-                let bounce_start = world_pos + normal;
-                let bounce_hit = world.trace(bounce_start, bounce_ray);
-                let bounce_radiance = if bounce_hit.procedural_hit() {
-                    let bounce_pos = bounce_start + bounce_ray * bounce_hit.committed_ray_t;
-                    let color = world.get_color(bounce_start, bounce_ray, bounce_hit);
+                let bounce_hit = world.trace(offset_pos, bounce_ray);
+                let bounce_radiance = if bounce_hit.triangle_hit() {
+                    let bounce_pos = offset_pos + bounce_ray * bounce_hit.committed_ray_t;
+                    let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
                     let value = cache.query(bounce_pos);
                     if value.x == -1.0 {
                         Vec3::splat_expr(0.0)
@@ -141,7 +130,7 @@ fn main() {
                 cache.deposit(world_pos, radiance);
 
                 // Vec3::splat_expr(num_ddas.cast_f32() * 0.1); // pcg3df(Vec3::expr(hit.inst, hit.prim, 1));
-                let color = world.get_color(view.pos, ray_dir, hit) * cache.query(world_pos); // inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0)); //
+                let color = cache.query_interp(world_pos); // inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0));
                 app.set_pixel(pixel.cast_i32(), color);
             }
         }),
@@ -149,25 +138,25 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 0.5,
-        pitch: 0.6,
-        pos: Vec3::new(-500.0, -500.0, 500.0),
+        yaw: 2.1,
+        pitch: 0.15,
+        pos: Vec3::new(-360.0, 1250.0, 10.0),
         fov: 1.15,
     };
 
     app.run(|rt| {
         let rot_speed = 1.5 * rt.frame_time();
         let move_speed = if rt.key_down(KeyCode::ControlLeft) {
-            5.0
+            20.0
         } else {
-            200.0
+            800.0
         } * rt.frame_time();
         for key in &rt.keys_down {
             match key {
-                KeyCode::ArrowLeft => camera.yaw -= 1.0 * rot_speed,
-                KeyCode::ArrowRight => camera.yaw += 1.0 * rot_speed,
-                KeyCode::ArrowUp => camera.pitch -= 1.0 * rot_speed,
-                KeyCode::ArrowDown => camera.pitch += 1.0 * rot_speed,
+                KeyCode::ArrowLeft => camera.yaw -= rot_speed,
+                KeyCode::ArrowRight => camera.yaw += rot_speed,
+                KeyCode::ArrowUp => camera.pitch -= rot_speed,
+                KeyCode::ArrowDown => camera.pitch += rot_speed,
                 KeyCode::KeyW => camera.pos = camera.pos + camera.forward() * move_speed,
                 KeyCode::KeyS => camera.pos = camera.pos - camera.forward() * move_speed,
                 KeyCode::KeyA => camera.pos = camera.pos - camera.right() * move_speed,
@@ -178,6 +167,9 @@ fn main() {
                 }
                 _ => (),
             }
+        }
+        if rt.key_pressed(KeyCode::KeyP) {
+            println!("Camera: {camera:?}");
         }
 
         rt.log_fps();
