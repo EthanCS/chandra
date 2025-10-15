@@ -4,11 +4,11 @@ use std::path::Path;
 
 use dot_vox::{DotVoxData, SceneNode};
 use glam::{IVec3, Mat3 as FMat3, UVec3, Vec3 as FVec3};
-use keter::lang::types::vector::{Mat3, Mat4, Vec3, Vec4};
+use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::{
     Aabb, Accel, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, CommittedHit,
-    Ray, TriangleInterpolate,
+    Ray, SurfaceHit, TriangleInterpolate,
 };
 use tobj::LoadOptions;
 
@@ -84,32 +84,33 @@ impl TriangleWorld {
     }
 
     #[tracked]
-    pub fn trace(
+    pub fn trace_segment(
         &self,
         ray_start: Expr<Vec3<f32>>,
         ray_dir: Expr<Vec3<f32>>,
-    ) -> Expr<CommittedHit> {
-        self.accel
-            .traverse(
-                Ray::new_expr(
-                    Expr::<[f32; 3]>::from(ray_start),
-                    0.0,
-                    Expr::<[f32; 3]>::from(ray_dir),
-                    10000.0,
-                ),
-                AccelTraceOptions {
-                    mask: 0xFF.expr(),
-                    ..Default::default()
-                },
-            )
-            .on_surface_hit(|candidate| {
-                candidate.commit();
-            })
-            .trace()
+        interval: Expr<Vec2<f32>>,
+    ) -> Expr<SurfaceHit> {
+        self.accel.intersect(
+            Ray::new_expr(
+                Expr::<[f32; 3]>::from(ray_start),
+                interval.x,
+                Expr::<[f32; 3]>::from(ray_dir),
+                interval.y,
+            ),
+            AccelTraceOptions {
+                mask: 0xFF.expr(),
+                ..Default::default()
+            },
+        )
     }
 
     #[tracked]
-    pub fn get_normal_flat(&self, hit: Expr<CommittedHit>) -> Expr<Vec3<f32>> {
+    pub fn trace(&self, ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>) -> Expr<SurfaceHit> {
+        self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, 10000.0))
+    }
+
+    #[tracked]
+    pub fn get_normal_flat(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
         let offsets = self.offsets.read(hit.inst);
         let triangle = self.indices.read(offsets[0] + hit.prim);
         let positions: [_; 3] = std::array::from_fn(|i| {
@@ -121,13 +122,14 @@ impl TriangleWorld {
     }
 
     #[tracked]
-    pub fn get_normal(&self, hit: Expr<CommittedHit>) -> Expr<Vec3<f32>> {
+    pub fn get_normal(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
         let offsets = self.offsets.read(hit.inst);
         let triangle = self.indices.read(offsets[0] + hit.prim);
         let normals: [_; 3] = std::array::from_fn(|i| {
             Expr::<Vec3<f32>>::from(self.normals.read(triangle[i as u32] + offsets[1]))
         });
         hit.interpolate(normals[0], normals[1], normals[2])
+            .normalize()
     }
 }
 
