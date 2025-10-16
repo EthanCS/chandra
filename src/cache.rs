@@ -78,6 +78,16 @@ pub struct OctahedralEncoder {
 }
 impl OctahedralEncoderExpr {
     #[tracked]
+    pub fn get_dir_from_grid(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
+        let v = (index.cast_f32() + 0.5) / self.resolution.cast_f32() * 2.0 - 1.0;
+        OctahedralVector::expr(v).decode()
+    }
+    #[tracked]
+    pub fn get_dir_from_linear(&self, index: Expr<u32>) -> Expr<Vec3<f32>> {
+        let index = self.linear_to_grid(index);
+        self.get_dir_from_grid(index)
+    }
+    #[tracked]
     pub fn get_grid_index(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
         let v = OctahedralVector::encode(dir);
         ((v.value + 1.0) / 2.0 * next_float_down_pos((self.resolution).cast_f32()))
@@ -104,11 +114,7 @@ impl OctahedralEncoderExpr {
     #[tracked]
     pub fn foreach(&self, f: impl Fn(Expr<Vec3<f32>>, Expr<u32>)) {
         for index in 0_u32.expr()..(self.resolution * self.resolution) {
-            let dir = self.linear_to_grid(index);
-            let dir = (dir.cast_f32() + 0.5) / self.resolution.cast_f32();
-            let dir = dir * 2.0 - 1.0;
-            let dir = OctahedralVector::expr(dir).decode();
-            f(dir, index);
+            f(self.get_dir_from_linear(index), index);
         }
     }
 }
@@ -210,6 +216,9 @@ impl HashCache {
     pub fn num_nodes_at_level(&self, level: u32) -> u32 {
         self.base_nodes >> (level * 2)
     }
+    pub fn num_data(&self) -> u32 {
+        self.base_nodes * self.base_angular_resolution.pow(2)
+    }
     #[tracked]
     pub fn get_encoder_by_level(&self, level: Expr<u32>) -> Expr<OctahedralEncoder> {
         OctahedralEncoder::from_comps_expr(OctahedralEncoderComps {
@@ -233,7 +242,7 @@ impl HashCache {
         let encoder = self.get_encoder_by_level(level);
         (node_index - self.get_node_offset(level)) * encoder.linear_size()
             + dir
-            + level * self.base_nodes
+            + level * self.num_data()
     }
     #[tracked]
     pub fn get_data_index(
@@ -245,7 +254,7 @@ impl HashCache {
         let encoder = self.get_encoder_by_level(level);
         (node_index - self.get_node_offset(level)) * encoder.linear_size()
             + encoder.get_linear_index(dir)
-            + level * self.base_nodes
+            + level * self.num_data()
     }
     #[tracked]
     pub fn get_node_index(&self, probe: Expr<Probe>) -> Expr<u32> {
@@ -271,17 +280,17 @@ impl HashCache {
             fail()
         }
     }
-    // #[tracked]
-    // pub fn query(&self, probe: Expr<Probe>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-    //     let node_index = self.get_node_index(probe);
-    //     let node = self.nodes.read(node_index);
-    //     if node.position != encode_position(probe.position) {
-    //         Vec3::splat_expr(-1.0)
-    //     } else {
-    //         let data_index = self.get_data_index(node_index, probe.level, dir);
-    //         self.data.read(data_index).radiance_count.xyz()
-    //     }
-    // }
+    #[tracked]
+    pub fn query(&self, probe: Expr<Probe>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        self.query_node(
+            probe,
+            |node_index| {
+                let data_index = self.get_data_index(node_index, probe.level, dir);
+                self.data.read(data_index).radiance_count.xyz()
+            },
+            || Vec3::splat_expr(-1.0),
+        )
+    }
     #[tracked]
     pub fn query_diffuse(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
         let probe = Probe::from_comps_expr(ProbeComps {
@@ -327,6 +336,14 @@ impl HashCache {
         } else {
             false.expr()
         }
+    }
+    #[tracked]
+    pub fn init(&self, probe: Expr<Probe>) -> Expr<bool> {
+        let node_index = self.get_node_index(probe);
+        let node = self.nodes.atomic_ref(node_index);
+        let pos_enc = encode_position(probe.position);
+        let prev = node.position.compare_exchange(POSITION_INVALID, pos_enc);
+        prev == POSITION_INVALID || prev == pos_enc
     }
     #[tracked]
     pub fn deposit(
