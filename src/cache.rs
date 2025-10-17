@@ -78,17 +78,12 @@ pub struct OctahedralEncoder {
 }
 impl OctahedralEncoderExpr {
     #[tracked]
-    pub fn get_dir_from_grid(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
+    pub fn grid_to_dir(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
         let v = (index.cast_f32() + 0.5) / self.resolution.cast_f32() * 2.0 - 1.0;
         OctahedralVector::expr(v).decode()
     }
     #[tracked]
-    pub fn get_dir_from_linear(&self, index: Expr<u32>) -> Expr<Vec3<f32>> {
-        let index = self.linear_to_grid(index);
-        self.get_dir_from_grid(index)
-    }
-    #[tracked]
-    pub fn get_grid_index(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
+    pub fn dir_to_grid(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
         let v = OctahedralVector::encode(dir);
         ((v.value + 1.0) / 2.0 * next_float_down_pos((self.resolution).cast_f32()))
             .floor()
@@ -103,9 +98,12 @@ impl OctahedralEncoderExpr {
         Vec2::expr(index / self.resolution, index % self.resolution)
     }
     #[tracked]
-    pub fn get_linear_index(&self, dir: Expr<Vec3<f32>>) -> Expr<u32> {
-        let index = self.get_grid_index(dir);
-        self.grid_to_linear(index)
+    pub fn linear_to_dir(&self, index: Expr<u32>) -> Expr<Vec3<f32>> {
+        self.grid_to_dir(self.linear_to_grid(index))
+    }
+    #[tracked]
+    pub fn dir_to_linear(&self, dir: Expr<Vec3<f32>>) -> Expr<u32> {
+        self.grid_to_linear(self.dir_to_grid(dir))
     }
     #[tracked]
     pub fn linear_size(&self) -> Expr<u32> {
@@ -114,7 +112,7 @@ impl OctahedralEncoderExpr {
     #[tracked]
     pub fn foreach(&self, f: impl Fn(Expr<Vec3<f32>>, Expr<u32>)) {
         for index in 0_u32.expr()..(self.resolution * self.resolution) {
-            f(self.get_dir_from_linear(index), index);
+            f(self.linear_to_dir(index), index);
         }
     }
 }
@@ -253,7 +251,7 @@ impl HashCache {
     ) -> Expr<u32> {
         let encoder = self.get_encoder_by_level(level);
         (node_index - self.get_node_offset(level)) * encoder.linear_size()
-            + encoder.get_linear_index(dir)
+            + encoder.dir_to_linear(dir)
             + level * self.num_data()
     }
     #[tracked]

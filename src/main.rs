@@ -137,7 +137,7 @@ fn main() {
         }
         let encoder = cache.get_encoder_by_level(level);
         for index in 0_u32.expr()..encoder.linear_size() {
-            let dir = encoder.get_dir_from_linear(index);
+            let dir = encoder.linear_to_dir(index);
             let sunlight_dir = Vec3::expr(0.3_f32, 1.5, 1.0).normalize();
             let data_index = cache.get_data_index_raw(node_index, level, index);
             let radiance_deposit = cache.data.read(data_index).var();
@@ -242,6 +242,7 @@ fn main() {
                     }
                 }
 
+                // TODO: Add sphere rendering.
                 let color = if mode == 0 {
                     cache.query_diffuse(world_pos, normal)
                 } else if mode == 1 {
