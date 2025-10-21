@@ -87,8 +87,8 @@ fn main() {
         cache.data.write(
             dispatch_id().x,
             RadianceDeposit {
-                fluence: Vec4::new(0.0, 0.0, 0.0, 1.0),
-                radiance_count: Vec4::new(0.0, 0.0, 0.0, 1.0),
+                fluence: Vec4::new(0.0, 0.0, 0.0, 0.0),
+                radiance_count: Vec4::new(0.0, 0.0, 0.0, 0.01),
             },
         );
     }));
@@ -174,11 +174,6 @@ fn main() {
             if hit.valid() {
                 let world_pos = view.pos + ray_dir * hit.committed_ray_t;
                 let normal = world.get_normal_flat(hit);
-                // let shadowed = world
-                //     .trace(offset_pos, Vec3::<f32>::expr(0.3, 1.5, 1.0).normalize())
-                //     .valid();
-                // let sun_radiance =
-                //     shadowed.select(0.0_f32.expr(), 1.0_f32.expr()) * Vec3::new(1.0, 0.95, 0.8);
 
                 // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
@@ -214,18 +209,17 @@ fn main() {
                         Vec2::expr(ray_start_t, ray_end_t),
                     );
                     let fluence = if bounce_hit.valid() {
-                        Vec4::splat_expr(0.0)
-                        /*
                         let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-                        let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        let value =
-                            cache.query_diffuse(bounce_pos, world.get_normal_flat(bounce_hit));
+                        let color = Vec3::splat_expr(0.3); // world.get_color(bounce_start, bounce_ray, bounce_hit);
+                        let value = cache.query_diffuse(
+                            Probe::base(cache.quantize(bounce_pos)),
+                            world.get_normal_flat(bounce_hit),
+                        );
                         if value.x == -1.0 {
                             Vec3::splat_expr(0.0_f32).extend(-1.0) // skip because undefined
                         } else {
                             (value * color).extend(0.0)
                         }
-                        */
                     } else {
                         Vec3::splat_expr(0.0_f32).extend(1.0) // miss
                     };
@@ -256,10 +250,8 @@ fn main() {
                     } else {
                         Vec3::splat_expr(0.0)
                     }
-                } else if mode == 2 {
-                    inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
                 } else if mode == 3 {
-                    world_pos / 1000.0
+                    inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
                 } else {
                     Vec3::expr(1.0, 0.0, 0.0)
                 };
@@ -310,7 +302,7 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 5;
+            mode = (mode + 1) % 4;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {
@@ -321,6 +313,7 @@ fn main() {
         rt.log_fps();
 
         draw_kernel.dispatch(rt.dispatch_size(), &camera.view(), &rt.tick, &mode, &level);
+
         lower_cache.dispatch([cache.data.len() as u32, 1, 1]);
 
         merge_final_cache.dispatch([cache.num_nodes_at_level(cache.num_levels - 1), 1, 1]);

@@ -49,7 +49,11 @@ impl TriangleWorld {
 
             offsets.push([indices.len() as u32, positions.len() as u32]);
 
-            positions.extend(bytemuck::cast_slice(&mesh.positions));
+            positions.extend(
+                bytemuck::cast_slice::<_, [f32; 3]>(&mesh.positions)
+                    .iter()
+                    .map(|&p| [p[2], p[0], p[1]]),
+            ); // Z-up to Y-up
             normals.extend(bytemuck::cast_slice(&mesh.normals));
             indices.extend(bytemuck::cast_slice(&mesh.indices));
         }
