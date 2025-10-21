@@ -6,7 +6,7 @@ use glam::Mat3 as FMat3;
 use keter::lang::types::vector::{Mat3, Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
-use yesod::color::{inferno, reinhard};
+use yesod::color::{inferno, plasma, reinhard};
 use yesod::rand::pcg3df;
 
 use crate::cache::{
@@ -250,9 +250,9 @@ fn main() {
                         Vec3::splat_expr(0.0)
                     }
                 } else if mode == 2 {
-                    let has_probe = cache.contains(probe.shift_level(level));
+                    let (has_probe, cost) = cache.contains_cost(probe.shift_level(level));
                     if has_probe {
-                        pcg3df(probe.position)
+                        plasma(cost.cast_f32() / 9.0)
                     } else {
                         Vec3::splat_expr(0.0)
                     }

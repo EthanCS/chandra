@@ -367,6 +367,30 @@ impl HashCache {
     pub fn contains(&self, probe: Expr<Probe>) -> Expr<bool> {
         self.query(probe, |_| true.expr(), || false.expr())
     }
+    // TODO: Deduplicate.
+    #[tracked]
+    pub fn contains_cost(&self, probe: Expr<Probe>) -> (Expr<bool>, Expr<u32>) {
+        let node_offset = self.get_node_offset(probe.level);
+        let table_size = self.base_nodes >> (2 * probe.level);
+        let node_index = (pcg3d(probe.position).x % table_size).var();
+        let position = encode_position(probe.position);
+        let loaded = false.var();
+        let i = 0_u32.var();
+        for j in 0..10_u32 {
+            *i = j;
+            let node = self.nodes.read(node_offset + node_index);
+            if node.position == position {
+                // Success.
+                *loaded = true;
+                break;
+            } else if node.position == POSITION_INVALID {
+                // Fail.
+                break;
+            }
+            *node_index = (node_index + 1) % table_size;
+        }
+        (**loaded, **i)
+    }
     #[tracked]
     pub fn deposit(
         &self,
