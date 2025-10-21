@@ -109,19 +109,23 @@ impl OctahedralEncoderExpr {
     pub fn linear_size(&self) -> Expr<u32> {
         self.resolution * self.resolution
     }
-    #[tracked]
-    pub fn foreach(&self, f: impl Fn(Expr<Vec3<f32>>, Expr<u32>)) {
-        for index in 0_u32.expr()..(self.resolution * self.resolution) {
-            f(self.linear_to_dir(index), index);
-        }
-    }
 }
 
-// TODO: SoA.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Value)]
+pub struct LoadedNode {
+    pub probe: Probe,
+    // little bit redundant, but whatever.
+    pub encoder: OctahedralEncoder,
+    pub data_offset: u32,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value)]
 pub struct Node {
     pub position: u64,
+    // Still no solution to do this without spinning.
+    // pub data_index: u32,
     // can be used to decide when to remove nodes.
     // pub total_count: f32,
 }
@@ -146,8 +150,8 @@ impl Default for Node {
 // }
 // assert_eq_size!(Node, [f32; 8]);
 
-#[derive(Debug, Clone, Copy, Value, PartialEq)]
 #[repr(C)]
+#[derive(Debug, Clone, Copy, Value, PartialEq)]
 pub struct Probe {
     pub position: Vec3<u32>,
     pub level: u32,
@@ -231,85 +235,106 @@ impl HashCache {
         (pow4s & ((1 << (2 * level)) - 1)) << (self.base_nodes.trailing_zeros() - level * 2 + 2)
     }
     #[tracked]
-    pub fn get_data_index_raw(
-        &self,
-        node_index: Expr<u32>,
-        level: Expr<u32>,
-        dir: Expr<u32>,
-    ) -> Expr<u32> {
-        let encoder = self.get_encoder_by_level(level);
-        (node_index - self.get_node_offset(level)) * encoder.linear_size()
-            + dir
-            + level * self.num_data()
+    pub fn read_grid(&self, node: Expr<LoadedNode>, dir: Expr<Vec2<u32>>) -> Expr<RadianceDeposit> {
+        self.data
+            .read(node.data_offset + node.encoder.grid_to_linear(dir))
     }
     #[tracked]
-    pub fn get_data_index(
-        &self,
-        node_index: Expr<u32>,
-        level: Expr<u32>,
-        dir: Expr<Vec3<f32>>,
-    ) -> Expr<u32> {
-        let encoder = self.get_encoder_by_level(level);
-        (node_index - self.get_node_offset(level)) * encoder.linear_size()
-            + encoder.dir_to_linear(dir)
-            + level * self.num_data()
-    }
-    #[tracked]
-    pub fn get_node_index(&self, probe: Expr<Probe>) -> Expr<u32> {
-        let node_offset = self.get_node_offset(probe.level);
-        pcg3d(probe.position).x % (self.base_nodes >> (2 * probe.level)) + node_offset
+    pub fn read_node(&self, level: Expr<u32>, node_index: Expr<u32>) -> Expr<Node> {
+        let node_offset = self.get_node_offset(level);
+        self.nodes.read(node_offset + node_index)
     }
     #[tracked]
     pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Vec3<u32>> {
         ((pos / self.base_grid_size).floor().cast_i32() - self.offset).cast_u32()
     }
     #[tracked]
-    pub fn query_node<T: Aggregate>(
+    pub fn load_index(&self, probe: Expr<Probe>, index: Expr<u32>) -> Expr<LoadedNode> {
+        let encoder = self.get_encoder_by_level(probe.level);
+        let data_offset = probe.level * self.num_data() + index * encoder.linear_size();
+        LoadedNode::from_comps_expr(LoadedNodeComps {
+            probe,
+            encoder,
+            data_offset,
+        })
+    }
+    #[tracked]
+    pub fn query<T: Aggregate>(
         &self,
         probe: Expr<Probe>,
-        success: impl Fn(Expr<u32>) -> T,
+        success: impl Fn(Expr<LoadedNode>) -> T,
         fail: impl Fn() -> T,
     ) -> T {
-        let node_index = self.get_node_index(probe);
-        let node = self.nodes.read(node_index);
-        if node.position == encode_position(probe.position) {
-            success(node_index)
+        let node_offset = self.get_node_offset(probe.level);
+        let table_size = self.base_nodes >> (2 * probe.level);
+        let node_index = (pcg3d(probe.position).x % table_size).var();
+        let position = encode_position(probe.position);
+        let loaded = false.var();
+        for _i in 0..10 {
+            let node = self.nodes.read(node_offset + node_index);
+            if node.position == position {
+                // Success.
+                *loaded = true;
+                break;
+            } else if node.position == POSITION_INVALID {
+                // Fail.
+                break;
+            }
+            *node_index = (node_index + 1) % table_size;
+        }
+        if loaded {
+            success(self.load_index(probe, **node_index))
         } else {
             fail()
         }
     }
     #[tracked]
-    pub fn query(&self, probe: Expr<Probe>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        self.query_node(
-            probe,
-            |node_index| {
-                let data_index = self.get_data_index(node_index, probe.level, dir);
-                self.data.read(data_index).radiance_count.xyz()
-            },
-            || Vec3::splat_expr(-1.0),
-        )
+    pub fn query_init<T: Aggregate>(
+        &self,
+        probe: Expr<Probe>,
+        success: impl Fn(Expr<LoadedNode>) -> T,
+        fail: impl Fn() -> T,
+    ) -> T {
+        let node_offset = self.get_node_offset(probe.level);
+        let table_size = self.base_nodes >> (2 * probe.level);
+        let node_index = (pcg3d(probe.position).x % table_size).var();
+        let position = encode_position(probe.position);
+        // TODO: This should probably always be true if the hashmap works but just in case.
+        let loaded = false.var();
+        for _i in 0..10 {
+            let node = self.nodes.atomic_ref(node_offset + node_index);
+            let prev = node.position.compare_exchange(POSITION_INVALID, position);
+            if prev == POSITION_INVALID || prev == position {
+                // Success.
+                *loaded = true;
+                break;
+            }
+            *node_index = (node_index + 1) % table_size;
+        }
+        if loaded {
+            success(self.load_index(probe, **node_index))
+        } else {
+            fail()
+        }
     }
     #[tracked]
-    pub fn query_diffuse(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        let probe = Probe::from_comps_expr(ProbeComps {
-            position: self.quantize(pos),
-            level: 0_u32.expr(),
-        });
-        self.query_node(
+    pub fn query_diffuse(&self, probe: Expr<Probe>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        self.query(
             probe,
-            |node_index| {
-                let data_offset = node_index * self.base_angular_resolution.pow(2);
-                let encoder = self.get_encoder_by_level(0.expr());
+            |node| {
                 let total_radiance = Vec4::splat(0.0_f32).var();
-                encoder.foreach(|dir, index| {
+                for i in 0_u32.expr()..node.encoder.linear_size() {
+                    let dir = node.encoder.linear_to_dir(i);
                     let weight = dir.dot(normal);
                     if weight > 0.0 {
-                        let data_index = data_offset + index;
+                        let data_index = node.data_offset + i;
                         let deposit = self.data.read(data_index);
                         *total_radiance += deposit.radiance_count.xyz().extend(1.0) * weight;
                     }
-                });
-                total_radiance.xyz() / total_radiance.w
+                }
+                // TODO: Why the hell is this necessary??? Is a rust-analyzer issue.
+                let out: Expr<Vec3<f32>> = total_radiance.xyz() / total_radiance.w;
+                out
             },
             || Vec3::splat_expr(-1.0),
         )
@@ -321,27 +346,26 @@ impl HashCache {
         probe: Expr<Probe>,
         f: impl Fn() -> (Expr<Fluence>, Expr<Vec3<f32>>),
     ) -> Expr<bool> {
-        let node_index = self.get_node_index(probe);
-        let node = self.nodes.atomic_ref(node_index);
-        let pos_enc = encode_position(probe.position);
-        let prev = node.position.compare_exchange(POSITION_INVALID, pos_enc);
-        if prev == POSITION_INVALID || prev == pos_enc {
-            let (fluence, dir) = f();
-            let data_index = self.get_data_index(node_index, probe.level, dir);
-            let data = self.data.atomic_ref(data_index);
-            data.deposit(fluence);
-            true.expr()
-        } else {
-            false.expr()
-        }
+        self.query_init(
+            probe,
+            |node| {
+                let (fluence, dir) = f();
+                let data = self
+                    .data
+                    .atomic_ref(node.data_offset + node.encoder.dir_to_linear(dir));
+                data.deposit(fluence);
+                true.expr()
+            },
+            || false.expr(),
+        )
     }
     #[tracked]
     pub fn init(&self, probe: Expr<Probe>) -> Expr<bool> {
-        let node_index = self.get_node_index(probe);
-        let node = self.nodes.atomic_ref(node_index);
-        let pos_enc = encode_position(probe.position);
-        let prev = node.position.compare_exchange(POSITION_INVALID, pos_enc);
-        prev == POSITION_INVALID || prev == pos_enc
+        self.query_init(probe, |_| true.expr(), || false.expr())
+    }
+    #[tracked]
+    pub fn contains(&self, probe: Expr<Probe>) -> Expr<bool> {
+        self.query(probe, |_| true.expr(), || false.expr())
     }
     #[tracked]
     pub fn deposit(

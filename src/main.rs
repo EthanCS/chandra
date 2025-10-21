@@ -10,7 +10,7 @@ use yesod::color::{inferno, reinhard};
 use yesod::rand::pcg3df;
 
 use crate::cache::{
-    HashCache, Node, NodeComps, POSITION_INVALID, Probe, ProbeComps, RadianceDeposit,
+    HashCache, LoadedNode, Node, NodeComps, POSITION_INVALID, Probe, ProbeComps, RadianceDeposit,
     decode_position,
 };
 use crate::world::{TriangleWorld, VoxelWorld};
@@ -94,34 +94,36 @@ fn main() {
     }));
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
-        let node_index = dispatch_id().x + cache.get_node_offset(level);
-        let node = cache.nodes.read(node_index);
+        let node_index = dispatch_id().x;
+        let node = cache.read_node(level, node_index);
         if node.position == POSITION_INVALID {
             return;
         }
         let position = decode_position(node.position);
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
+        let node = cache.load_index(probe, node_index);
         // TODO: needs bilinear interpolation
-        let next_node_index = cache.get_node_index(probe.next_nearest());
-        let next_node = cache.nodes.read(next_node_index);
-        if next_node.position == POSITION_INVALID {
-            return;
-        }
-        let encoder = cache.get_encoder_by_level(level);
-        let next_encoder = cache.get_encoder_by_level(level + 1);
-        for index in 0_u32.expr()..encoder.linear_size() {
-            let dir = encoder.linear_to_grid(index);
+        let next = cache.query(
+            probe.next_nearest(),
+            |n| n,
+            || {
+                return;
+                LoadedNode::expr_zeroed()
+            },
+        );
+        for index in 0_u32.expr()..node.encoder.linear_size() {
+            let dir = node.encoder.linear_to_grid(index);
             let total_radiance = Vec3::splat(0.0_f32).var();
             for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
                 let sample_dir = dir * 2 + offset;
-                let sample_index = next_encoder.grid_to_linear(sample_dir);
+                let sample_index = next.encoder.grid_to_linear(sample_dir);
                 *total_radiance += cache
                     .data
-                    .read(cache.get_data_index_raw(next_node_index, level + 1, sample_index))
+                    .read(next.data_offset + sample_index)
                     .radiance_count
                     .xyz();
             }
-            let data_index = cache.get_data_index_raw(node_index, level, index);
+            let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
             radiance_deposit.merge(total_radiance / 4.0);
             cache.data.write(data_index, radiance_deposit);
@@ -130,16 +132,18 @@ fn main() {
     }));
     let merge_final_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
         let level = (cache.num_levels - 1).expr();
-        let node_index = dispatch_id().x + cache.get_node_offset(level);
-        let node = cache.nodes.read(node_index);
+        let node_index = dispatch_id().x;
+        let node = cache.read_node(level, node_index);
         if node.position == POSITION_INVALID {
             return;
         }
-        let encoder = cache.get_encoder_by_level(level);
-        for index in 0_u32.expr()..encoder.linear_size() {
-            let dir = encoder.linear_to_dir(index);
+        let position = decode_position(node.position);
+        let probe = Probe::from_comps_expr(ProbeComps { position, level });
+        let node = cache.load_index(probe, node_index);
+        for index in 0_u32.expr()..node.encoder.linear_size() {
+            let dir = node.encoder.linear_to_dir(index);
             let sunlight_dir = Vec3::expr(0.3_f32, 1.5, 1.0).normalize();
-            let data_index = cache.get_data_index_raw(node_index, level, index);
+            let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
             radiance_deposit.merge(if dir.dot(sunlight_dir) > 0.9 {
                 Vec3::splat_expr(10.0_f32)
@@ -150,7 +154,7 @@ fn main() {
         }
     }));
 
-    let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32)>(
+    let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32)>(
         KernelBuildOptions {
             name: Some("draw_kernel".into()),
             enable_debug_info: true,
@@ -159,7 +163,7 @@ fn main() {
             enable_fast_math: false,
             ..Default::default()
         },
-        &track!(|view, tick, mode| {
+        &track!(|view, tick, mode, level| {
             set_block_size([8, 8, 1]);
             let pixel = dispatch_id().xy();
             let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
@@ -192,18 +196,6 @@ fn main() {
                 let bounce_ray = v.x * perp1 + v.y * perp2 + v.z * normal;
 
                 let probe = Probe::base(cache.quantize(world_pos));
-                let has_probe = true.var();
-                for level in (0_u32..cache.num_levels).rev() {
-                    if **has_probe
-                        && !cache.init(
-                            probe.shift_level(level.expr()),
-                            // Vec4::expr(0.0, 0.0, 0.0, 1.0),
-                            // bounce_ray,
-                        )
-                    {
-                        *has_probe = false;
-                    }
-                }
 
                 for level in (0_u32..cache.num_levels).rev() {
                     let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
@@ -244,18 +236,29 @@ fn main() {
 
                 // TODO: Add sphere rendering.
                 let color = if mode == 0 {
-                    cache.query_diffuse(world_pos, normal)
+                    cache.query_diffuse(probe.shift_level(level), normal)
                 } else if mode == 1 {
-                    cache.query(probe, ray_dir)
-                } else if mode == 2 {
+                    let has_probe = true.var();
+                    for level in (0_u32..cache.num_levels).rev() {
+                        if **has_probe && !cache.contains(probe.shift_level(level.expr())) {
+                            *has_probe = false;
+                        }
+                    }
                     if has_probe {
                         pcg3df(probe.position)
                     } else {
                         Vec3::splat_expr(0.0)
                     }
-                } else if mode == 3 {
+                } else if mode == 2 {
+                    let has_probe = cache.contains(probe.shift_level(level));
+                    if has_probe {
+                        pcg3df(probe.position)
+                    } else {
+                        Vec3::splat_expr(0.0)
+                    }
+                } else if mode == 2 {
                     inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
-                } else if mode == 4 {
+                } else if mode == 3 {
                     world_pos / 1000.0
                 } else {
                     Vec3::expr(1.0, 0.0, 0.0)
@@ -274,6 +277,7 @@ fn main() {
     };
 
     let mut mode = 0;
+    let mut level = 0;
 
     reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
     reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
@@ -307,13 +311,17 @@ fn main() {
         }
         if rt.key_pressed(KeyCode::KeyM) {
             mode = (mode + 1) % 5;
-            println!("Drawing level {mode}");
+            println!("Drawing mode {mode}");
+        }
+        if rt.key_pressed(KeyCode::KeyL) {
+            level = (level + 1) % cache.num_levels;
+            println!("Level set {level}");
         }
 
         rt.log_fps();
 
-        draw_kernel.dispatch(rt.dispatch_size(), &camera.view(), &rt.tick, &mode);
-        // lower_cache.dispatch([cache.data.len() as u32, 1, 1]);
+        draw_kernel.dispatch(rt.dispatch_size(), &camera.view(), &rt.tick, &mode, &level);
+        lower_cache.dispatch([cache.data.len() as u32, 1, 1]);
 
         merge_final_cache.dispatch([cache.num_nodes_at_level(cache.num_levels - 1), 1, 1]);
         for l in (0..cache.num_levels - 1).rev() {
