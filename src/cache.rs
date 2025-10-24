@@ -5,8 +5,8 @@ use yesod::rand::pcg3d;
 use yesod::utils::next_float_down_pos;
 
 // type Fluence = fluence::Fluence<fluence::RgbF16>;
-type Radiance = Vec3<f32>;
-type Fluence = Vec4<f32>;
+pub type Radiance = Vec3<f32>;
+pub type Fluence = Vec4<f32>;
 
 const NUM_BITS: u64 = 21;
 const MASK: u32 = (1 << NUM_BITS) - 1;
@@ -32,32 +32,52 @@ pub fn decode_position(pos: Expr<u64>) -> Expr<Vec3<u32>> {
 }
 
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Value, Default)]
+#[derive(Debug, Clone, Copy, Value)]
 pub struct RadianceDeposit {
     // actually pretty likely that the transmittance is 1 / the fluence is empty.
     pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by count)
     pub radiance_count: Vec4<f32>, // xyz: radiance, w: count
+    pub pt_radiance: Vec3<f32>,
+}
+impl Default for RadianceDeposit {
+    fn default() -> Self {
+        Self {
+            fluence: Vec4::splat(0.0),
+            radiance_count: Vec4::new(0.0, 0.0, 0.0, 0.001),
+            pt_radiance: Vec3::splat(0.0),
+        }
+    }
 }
 impl RadianceDepositAtomicRef {
     #[tracked]
-    pub fn deposit(&self, fluence: Expr<Vec4<f32>>) {
+    pub fn deposit(&self, fluence: Expr<Vec4<f32>>, pt_radiance: Expr<Vec3<f32>>) {
         self.fluence.x.fetch_add(fluence.x);
         self.fluence.y.fetch_add(fluence.y);
         self.fluence.z.fetch_add(fluence.z);
         self.fluence.w.fetch_add(fluence.w);
         self.radiance_count.w.fetch_add(1.0);
+        self.pt_radiance.x.fetch_add(pt_radiance.x);
+        self.pt_radiance.y.fetch_add(pt_radiance.y);
+        self.pt_radiance.z.fetch_add(pt_radiance.z);
     }
 }
 impl RadianceDepositVar {
     #[tracked]
-    pub fn deposit(&self, fluence: Expr<Vec4<f32>>) {
+    pub fn deposit(&self, fluence: Expr<Vec4<f32>>, pt_radiance: Expr<Vec3<f32>>) {
         *self.fluence += fluence;
         *self.radiance_count.w += 1.0;
+        *self.pt_radiance += pt_radiance;
     }
     #[tracked]
-    pub fn merge(&self, far: Expr<Radiance>) {
+    pub fn merge(&self, far: Expr<Radiance>, count_cutoff: Expr<f32>) {
         let fluence = self.fluence / self.radiance_count.w;
         let radiance = fluence.xyz() + fluence.w * far;
+        let radiance = self.pt_radiance / self.radiance_count.w;
+        keter::lerp(
+            radiance,
+            self.pt_radiance / self.radiance_count.w,
+            keter::min(self.radiance_count.w / count_cutoff, 1.0),
+        );
         *self.radiance_count.x = radiance.x;
         *self.radiance_count.y = radiance.y;
         *self.radiance_count.z = radiance.z;
@@ -67,6 +87,7 @@ impl RadianceDepositVar {
         if self.radiance_count.w > min_count {
             *self.fluence *= factor;
             *self.radiance_count.w *= factor;
+            *self.pt_radiance *= factor;
         }
     }
 }
@@ -344,16 +365,16 @@ impl HashCache {
     pub fn try_deposit(
         &self,
         probe: Expr<Probe>,
-        f: impl Fn() -> (Expr<Fluence>, Expr<Vec3<f32>>),
+        f: impl Fn() -> (Expr<Fluence>, Expr<Radiance>, Expr<Vec3<f32>>),
     ) -> Expr<bool> {
         self.query_init(
             probe,
             |node| {
-                let (fluence, dir) = f();
+                let (fluence, pt_radiance, dir) = f();
                 let data = self
                     .data
                     .atomic_ref(node.data_offset + node.encoder.dir_to_linear(dir));
-                data.deposit(fluence);
+                data.deposit(fluence, pt_radiance);
                 true.expr()
             },
             || false.expr(),
@@ -396,8 +417,9 @@ impl HashCache {
         &self,
         probe: Expr<Probe>,
         fluence: Expr<Fluence>,
+        pt_radiance: Expr<Radiance>,
         dir: Expr<Vec3<f32>>,
     ) -> Expr<bool> {
-        self.try_deposit(probe, || (fluence, dir))
+        self.try_deposit(probe, || (fluence, pt_radiance, dir))
     }
 }

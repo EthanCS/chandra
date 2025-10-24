@@ -10,16 +10,33 @@ use yesod::color::{inferno, plasma, reinhard};
 use yesod::rand::pcg3df;
 
 use crate::cache::{
-    HashCache, LoadedNode, Node, NodeComps, POSITION_INVALID, Probe, ProbeComps, RadianceDeposit,
-    decode_position,
+    Fluence, HashCache, LoadedNode, Node, POSITION_INVALID, Probe, ProbeComps, Radiance,
+    RadianceDeposit, decode_position,
 };
-use crate::world::{TriangleWorld, VoxelWorld};
+use crate::world::TriangleWorld;
 
 pub mod cache;
 pub mod color;
 pub mod fluence;
 pub mod utils;
 pub mod world;
+
+const BASE_COUNT_CUTOFF: f32 = 1024.0;
+
+#[tracked]
+fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
+    fluence.xyz() + radiance * fluence.w
+}
+
+#[tracked]
+fn sunlight_radiance(dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+    let sunlight_dir = Vec3::expr(0.3_f32, 1.5, 1.0).normalize();
+    if dir.dot(sunlight_dir) > 0.9 {
+        Vec3::splat_expr(10.0_f32)
+    } else {
+        Vec3::splat_expr(0.01_f32)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Camera {
@@ -68,7 +85,7 @@ fn main() {
 
     let world = TriangleWorld::new("assets/sponza.obj");
 
-    let cache = HashCache::new(16.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(16.0, 4, 1 << 18, 1);
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceDeposit>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
@@ -84,13 +101,9 @@ fn main() {
         cache.nodes.write(dispatch_id().x, Node::default());
     }));
     let reset_cache_data = DEVICE.create_kernel::<fn()>(&track!(|| {
-        cache.data.write(
-            dispatch_id().x,
-            RadianceDeposit {
-                fluence: Vec4::new(0.0, 0.0, 0.0, 0.0),
-                radiance_count: Vec4::new(0.0, 0.0, 0.0, 0.01),
-            },
-        );
+        cache
+            .data
+            .write(dispatch_id().x, RadianceDeposit::default());
     }));
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
@@ -125,7 +138,10 @@ fn main() {
             }
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
-            radiance_deposit.merge(total_radiance / 4.0);
+            radiance_deposit.merge(
+                total_radiance / 4.0,
+                BASE_COUNT_CUTOFF.expr() / (1_u32 << level).cast_f32(),
+            );
             cache.data.write(data_index, radiance_deposit);
         }
         // TODO: Switch to pre-merging? How does that actually work.
@@ -142,14 +158,12 @@ fn main() {
         let node = cache.load_index(probe, node_index);
         for index in 0_u32.expr()..node.encoder.linear_size() {
             let dir = node.encoder.linear_to_dir(index);
-            let sunlight_dir = Vec3::expr(0.3_f32, 1.5, 1.0).normalize();
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
-            radiance_deposit.merge(if dir.dot(sunlight_dir) > 0.9 {
-                Vec3::splat_expr(10.0_f32)
-            } else {
-                Vec3::splat_expr(0.01_f32)
-            });
+            radiance_deposit.merge(
+                sunlight_radiance(dir),
+                BASE_COUNT_CUTOFF.expr() / (1_u32 << level).cast_f32(),
+            );
             cache.data.write(data_index, radiance_deposit);
         }
     }));
@@ -174,6 +188,7 @@ fn main() {
             if hit.valid() {
                 let world_pos = view.pos + ray_dir * hit.committed_ray_t;
                 let normal = world.get_normal_flat(hit);
+                // let normal = -normal * normal.dot(ray_dir).signum();
 
                 // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
@@ -192,12 +207,14 @@ fn main() {
 
                 let probe = Probe::base(cache.quantize(world_pos));
 
+                let pt_radiance = sunlight_radiance(bounce_ray).var();
+
                 for level in (0_u32..cache.num_levels).rev() {
                     let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
                     let mut ray_start_t = ray_end_t / 2.0;
                     escape!({
                         if level == 0 {
-                            ray_start_t = 0.01;
+                            ray_start_t = 0.1;
                         }
                         if level == cache.num_levels - 1 {
                             ray_end_t = 10000.0;
@@ -209,22 +226,29 @@ fn main() {
                         Vec2::expr(ray_start_t, ray_end_t),
                     );
                     let fluence = if bounce_hit.valid() {
-                        let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-                        let color = Vec3::splat_expr(0.3); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        let value = cache.query_diffuse(
-                            Probe::base(cache.quantize(bounce_pos)),
-                            world.get_normal_flat(bounce_hit),
-                        );
-                        if value.x == -1.0 {
-                            Vec3::splat_expr(0.0_f32).extend(-1.0) // skip because undefined
-                        } else {
-                            (value * color).extend(0.0)
-                        }
+                        Vec4::splat_expr(0.0_f32)
+                        // let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
+                        // let color = Vec3::splat_expr(0.3); // world.get_color(bounce_start, bounce_ray, bounce_hit);
+                        // let value = cache.query_diffuse(
+                        //     Probe::base(cache.quantize(bounce_pos)),
+                        //     world.get_normal_flat(bounce_hit),
+                        // );
+                        // if value.x == -1.0 {
+                        //     Vec3::splat_expr(0.0_f32).extend(-1.0) // skip because undefined
+                        // } else {
+                        //     (value * color).extend(0.0)
+                        // }
                     } else {
                         Vec3::splat_expr(0.0_f32).extend(1.0) // miss
                     };
+                    *pt_radiance = over(fluence, **pt_radiance);
                     if fluence.w >= 0.0 {
-                        cache.deposit(probe.shift_level(level.expr()), fluence, bounce_ray);
+                        cache.deposit(
+                            probe.shift_level(level.expr()),
+                            fluence,
+                            **pt_radiance,
+                            bounce_ray,
+                        );
                     }
                 }
 
@@ -252,6 +276,8 @@ fn main() {
                     }
                 } else if mode == 3 {
                     inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
+                } else if mode == 4 {
+                    normal * 0.5 + Vec3::splat_expr(0.5)
                 } else {
                     Vec3::expr(1.0, 0.0, 0.0)
                 };
@@ -270,9 +296,6 @@ fn main() {
 
     let mut mode = 0;
     let mut level = 0;
-
-    reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
-    reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
 
     app.run(|rt| {
         let rot_speed = 1.5 * rt.frame_time();
@@ -302,7 +325,7 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 4;
+            mode = (mode + 1) % 5;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {
