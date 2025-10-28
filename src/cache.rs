@@ -48,6 +48,11 @@ impl Default for RadianceDeposit {
         }
     }
 }
+impl RadianceDepositExpr {
+    pub fn radiance(&self) -> Expr<Radiance> {
+        self.radiance_count.xyz()
+    }
+}
 impl RadianceDepositAtomicRef {
     #[tracked]
     pub fn deposit(&self, fluence: Expr<Vec4<f32>>, pt_radiance: Expr<Vec3<f32>>) {
@@ -186,6 +191,29 @@ impl Probe {
     }
 }
 impl ProbeExpr {
+    #[tracked]
+    pub fn next_bilinear(&self) -> [(Expr<Probe>, Expr<f32>); 8] {
+        let base_position = (self.position - 1) >> 1;
+        let offset = self.position % 2;
+        std::array::from_fn(|i| {
+            let mask = Vec3::new(
+                if (i & 4) != 0 { 1 } else { 0 },
+                if (i & 2) != 0 { 1 } else { 0 },
+                if (i & 1) != 0 { 1 } else { 0 },
+            );
+            let position = base_position + mask;
+            let weight = (mask != offset)
+                .select(Vec3::splat_expr(0.75_f32), Vec3::splat_expr(0.25))
+                .reduce_prod();
+            (
+                Probe::from_comps_expr(ProbeComps {
+                    position,
+                    level: self.level + 1_u32.expr(),
+                }),
+                weight,
+            )
+        })
+    }
     #[tracked]
     pub fn next_nearest(&self) -> Expr<Probe> {
         self.shift_level(1.expr())
@@ -338,24 +366,59 @@ impl HashCache {
         }
     }
     #[tracked]
+    pub fn get_diffuse(&self, node: Expr<LoadedNode>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        let total_radiance = Vec4::splat(0.0_f32).var();
+        for i in 0_u32.expr()..node.encoder.linear_size() {
+            let dir = node.encoder.linear_to_dir(i);
+            let weight = dir.dot(normal);
+            if weight > 0.0 {
+                let data_index = node.data_offset + i;
+                let deposit = self.data.read(data_index);
+                *total_radiance += deposit.radiance().extend(1.0) * weight;
+            }
+        }
+        // TODO: Why the hell is this necessary??? Is a rust-analyzer issue.
+        let out: Expr<Vec3<f32>> = total_radiance.xyz() / total_radiance.w;
+        out
+    }
+    #[tracked]
+    pub fn get_dir_bilinear(&self, node: Expr<LoadedNode>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        // self.data
+        //     .read(node.data_offset + node.encoder.dir_to_linear(dir))
+        //     .radiance()
+
+        let dir = OctahedralVector::encode(dir).value;
+        let dir = ((dir + 1.0) / 2.0 * (node.encoder.resolution).cast_f32()) - 0.5;
+        let base = dir.floor();
+        let frac = dir - base;
+        let base = base.cast_i32();
+        let total_radiance = Vec3::splat(0.0_f32).var();
+        for mask in [[0, 0], [0, 1], [1, 0], [1, 1]] {
+            let mask = Vec2::expr(mask[0] == 1, mask[1] == 1);
+            let weight = mask.select(frac, 1.0 - frac).reduce_prod();
+            let sample_index = node.encoder.grid_to_linear(
+                (base + mask.cast_i32())
+                    .rem_euclid(node.encoder.resolution.cast_i32())
+                    .cast_u32(),
+            );
+            let deposit = self.data.read(node.data_offset + sample_index);
+            *total_radiance += deposit.radiance() * weight;
+        }
+        **total_radiance
+    }
+    #[tracked]
     pub fn query_diffuse(&self, probe: Expr<Probe>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
         self.query(
             probe,
-            |node| {
-                let total_radiance = Vec4::splat(0.0_f32).var();
-                for i in 0_u32.expr()..node.encoder.linear_size() {
-                    let dir = node.encoder.linear_to_dir(i);
-                    let weight = dir.dot(normal);
-                    if weight > 0.0 {
-                        let data_index = node.data_offset + i;
-                        let deposit = self.data.read(data_index);
-                        *total_radiance += deposit.radiance_count.xyz().extend(1.0) * weight;
-                    }
-                }
-                // TODO: Why the hell is this necessary??? Is a rust-analyzer issue.
-                let out: Expr<Vec3<f32>> = total_radiance.xyz() / total_radiance.w;
-                out
-            },
+            |node| self.get_diffuse(node, normal),
+            || Vec3::splat_expr(-1.0),
+        )
+    }
+    #[tracked]
+    pub fn query_dir_bilinear(&self, probe: Expr<Probe>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        self.query(
+            probe,
+            |node| self.get_dir_bilinear(node, dir),
             || Vec3::splat_expr(-1.0),
         )
     }

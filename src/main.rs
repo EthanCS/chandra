@@ -27,6 +27,11 @@ const BASE_COUNT_CUTOFF: f32 = 1024.0;
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
 const RADIANCE_DISCARD_MISSING: u32 = 0b10;
 
+#[tracked]
+fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+    dir - normal * (2.0_f32.expr() * dir.dot(normal))
+}
+
 // https://ameye.dev/notes/sampling-the-hemisphere/
 #[tracked]
 fn sample_bounce(normal: Expr<Vec3<f32>>, rng: Expr<Vec2<f32>>) -> Expr<Vec3<f32>> {
@@ -139,7 +144,7 @@ fn main() {
         let position = decode_position(node.position);
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
-        // TODO: needs bilinear interpolation
+        // TODO: needs bilinear interpolation. Also best to process in batches of 8.
         let next = cache.query(
             probe.next_nearest(),
             |n| n,
@@ -155,11 +160,7 @@ fn main() {
             for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
                 let sample_dir = dir * 2 + offset;
                 let sample_index = next.encoder.grid_to_linear(sample_dir);
-                *total_radiance += cache
-                    .data
-                    .read(next.data_offset + sample_index)
-                    .radiance_count
-                    .xyz();
+                *total_radiance += cache.data.read(next.data_offset + sample_index).radiance();
             }
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
@@ -339,6 +340,9 @@ fn main() {
                 } else {
                     sunlight_radiance(bounce_ray)
                 }
+            } else if mode == 6 {
+                cache.query_diffuse(probe.shift_level(level), normal)
+                    + cache.query_dir_bilinear(probe.shift_level(level), reflect(ray_dir, normal))
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
@@ -389,7 +393,7 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 6;
+            mode = (mode + 1) % 7;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {
