@@ -208,7 +208,7 @@ impl ProbeExpr {
             (
                 Probe::from_comps_expr(ProbeComps {
                     position,
-                    level: self.level + 1_u32.expr(),
+                    level: self.level + 1,
                 }),
                 weight,
             )

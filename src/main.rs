@@ -11,8 +11,8 @@ use yesod::color::{inferno, plasma, reinhard};
 use yesod::rand::pcg3df;
 
 use crate::cache::{
-    Fluence, HashCache, LoadedNode, Node, POSITION_INVALID, Probe, ProbeComps, Radiance,
-    RadianceDeposit, decode_position,
+    Fluence, HashCache, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe, ProbeComps,
+    Radiance, RadianceDeposit, decode_position,
 };
 use crate::world::TriangleWorld;
 
@@ -145,22 +145,37 @@ fn main() {
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
         // TODO: needs bilinear interpolation. Also best to process in batches of 8.
-        let next = cache.query(
-            probe.next_nearest(),
-            |n| n,
-            || {
-                return;
-                LoadedNode::expr_zeroed()
-            },
-        );
+        let total_weight = 0.0_f32.var();
+        let next = probe.next_bilinear().map(|(probe, weight)| {
+            let (next, weight) = cache.query(
+                probe,
+                |n| (n, weight),
+                || {
+                    (
+                        LoadedNode::from_comps_expr(LoadedNodeComps {
+                            probe,
+                            encoder: cache.get_encoder_by_level(probe.level),
+                            data_offset: 0_u32.expr(),
+                        }),
+                        0_f32.expr(),
+                    )
+                },
+            );
+            *total_weight += weight;
+            (next, weight)
+        });
+        let next = next.map(|(next, weight)| (next, weight / total_weight));
         for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
             let dir = node.encoder.linear_to_grid(index);
             let total_radiance = Vec3::splat(0.0_f32).var();
             for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
                 let sample_dir = dir * 2 + offset;
-                let sample_index = next.encoder.grid_to_linear(sample_dir);
-                *total_radiance += cache.data.read(next.data_offset + sample_index).radiance();
+                for (next, weight) in &next {
+                    let sample_index = next.encoder.grid_to_linear(sample_dir);
+                    *total_radiance +=
+                        weight * cache.data.read(next.data_offset + sample_index).radiance();
+                }
             }
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
@@ -225,6 +240,7 @@ fn main() {
 
             let pt_radiance = Vec3::splat_expr(0.0_f32).var();
 
+            // TODO: Can do a single ray trace instead of 6.
             for level in (0_u32..cache.num_levels).rev() {
                 let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
                 let mut ray_start_t = ray_end_t / 2.0;
@@ -264,6 +280,7 @@ fn main() {
                 };
                 // TODO: This needs to exit if fluence.w < 0.0 to prevent invalid results.
                 *pt_radiance = over(fluence, **pt_radiance);
+                // Also, deposit bilinearly?
                 cache.deposit(
                     probe.shift_level(level.expr()),
                     fluence,
@@ -353,8 +370,8 @@ fn main() {
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
         yaw: 3.2746875,
-        pitch: 1.0774691,
-        pos: Vec3::new(56.0, 968.0, 1902.0),
+        pitch: 1.0245812,
+        pos: Vec3::new(16.342783, 671.79944, 1391.7502),
         fov: 1.15,
     };
     let mut running = true;
