@@ -72,8 +72,7 @@ impl RadianceDepositVar {
     pub fn merge(&self, far: Expr<Radiance>, count_cutoff: Expr<f32>) {
         let fluence = self.fluence / self.radiance_count.w;
         let radiance = fluence.xyz() + fluence.w * far;
-        let radiance = self.pt_radiance / self.radiance_count.w;
-        keter::lerp(
+        let radiance = keter::lerp(
             radiance,
             self.pt_radiance / self.radiance_count.w,
             keter::min(self.radiance_count.w / count_cutoff, 1.0),

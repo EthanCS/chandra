@@ -3,7 +3,8 @@
 use std::f32::consts::TAU;
 
 use glam::Mat3 as FMat3;
-use keter::lang::types::vector::{Mat3, Vec2, Vec3, Vec4};
+use keter::graph::profile::Profiler;
+use keter::lang::types::vector::{Mat3, Vec2, Vec3};
 use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
 use yesod::color::{inferno, plasma, reinhard};
@@ -22,6 +23,29 @@ pub mod utils;
 pub mod world;
 
 const BASE_COUNT_CUTOFF: f32 = 1024.0;
+
+const RADIANCE_DIRECT_ONLY: u32 = 0b1;
+const RADIANCE_DISCARD_MISSING: u32 = 0b10;
+
+// https://ameye.dev/notes/sampling-the-hemisphere/
+#[tracked]
+fn sample_bounce(normal: Expr<Vec3<f32>>, rng: Expr<Vec2<f32>>) -> Expr<Vec3<f32>> {
+    let theta = rng.x.acos();
+    let phi = rng.y * TAU;
+    let v = Vec3::expr(
+        theta.sin() * phi.cos(),
+        theta.sin() * phi.sin(),
+        theta.cos(),
+    );
+    // Find perpendicular basis; due to hairy ball theorem this cannot be continuous.
+    let perp1 = if normal.z.abs() < 0.9 {
+        normal.cross(Vec3::expr(0.0_f32, 0.0, 1.0)).normalize()
+    } else {
+        normal.cross(Vec3::expr(0.0_f32, 1.0, 0.0)).normalize()
+    };
+    let perp2 = normal.cross(perp1);
+    v.x * perp1 + v.y * perp2 + v.z * normal
+}
 
 #[tracked]
 fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
@@ -85,7 +109,7 @@ fn main() {
 
     let world = TriangleWorld::new("assets/sponza.obj");
 
-    let cache = HashCache::new(16.0, 4, 1 << 18, 1);
+    let cache = HashCache::new(16.0, 4, 1 << 18, 6);
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceDeposit>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
@@ -94,7 +118,7 @@ fn main() {
     let lower_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
         let index = dispatch_id().x;
         let value = cache.data.read(index).var();
-        value.reduce(0.9_f32.expr(), 10.0.expr());
+        value.reduce(0.9_f32.expr(), (1024.0_f32 / 0.9).expr());
         cache.data.write(index, value);
     }));
     let reset_cache_nodes = DEVICE.create_kernel::<fn()>(&track!(|| {
@@ -106,7 +130,7 @@ fn main() {
             .write(dispatch_id().x, RadianceDeposit::default());
     }));
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
-    let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
+    let merge_cache = DEVICE.create_kernel::<fn(u32, f32)>(&track!(|level, base_cutoff| {
         let node_index = dispatch_id().x;
         let node = cache.read_node(level, node_index);
         if node.position == POSITION_INVALID {
@@ -124,7 +148,8 @@ fn main() {
                 LoadedNode::expr_zeroed()
             },
         );
-        for index in 0_u32.expr()..node.encoder.linear_size() {
+        for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
+            let index = index * dispatch_size().y + dispatch_id().y;
             let dir = node.encoder.linear_to_grid(index);
             let total_radiance = Vec3::splat(0.0_f32).var();
             for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
@@ -140,13 +165,13 @@ fn main() {
             let radiance_deposit = cache.data.read(data_index).var();
             radiance_deposit.merge(
                 total_radiance / 4.0,
-                BASE_COUNT_CUTOFF.expr() / (1_u32 << level).cast_f32(),
+                base_cutoff / 4.0.expr().powi(level.cast_i32()),
             );
             cache.data.write(data_index, radiance_deposit);
         }
         // TODO: Switch to pre-merging? How does that actually work.
     }));
-    let merge_final_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
+    let merge_final_cache = DEVICE.create_kernel::<fn(f32)>(&track!(|base_cutoff| {
         let level = (cache.num_levels - 1).expr();
         let node_index = dispatch_id().x;
         let node = cache.read_node(level, node_index);
@@ -156,17 +181,97 @@ fn main() {
         let position = decode_position(node.position);
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
-        for index in 0_u32.expr()..node.encoder.linear_size() {
-            let dir = node.encoder.linear_to_dir(index);
+        for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
+            let index = index * dispatch_size().y + dispatch_id().y;
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
             radiance_deposit.merge(
-                sunlight_radiance(dir),
-                BASE_COUNT_CUTOFF.expr() / (1_u32 << level).cast_f32(),
+                // Should never happen.
+                Vec3::expr(1000.0, 0.0, 0.0),
+                base_cutoff / 4.0.expr().powi(level.cast_i32()),
             );
             cache.data.write(data_index, radiance_deposit);
         }
     }));
+    let compute_radiance_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32)>(
+        KernelBuildOptions {
+            name: Some("compute_radiance_kernel".into()),
+            enable_debug_info: true,
+            enable_optimization: true,
+            enable_cache: true,
+            enable_fast_math: false,
+            ..Default::default()
+        },
+        &track!(|view, tick, flags| {
+            set_block_size([8, 8, 1]);
+            let pixel = dispatch_id().xy();
+            let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
+            let ray_dir = ray_dir.normalize();
+
+            let hit = world.trace(view.pos, ray_dir);
+
+            if !hit.valid() {
+                return;
+            }
+
+            let world_pos = view.pos + ray_dir * hit.committed_ray_t;
+            let normal = world.get_normal_flat(hit);
+
+            let rng = pcg3df(pixel.extend(tick));
+            let bounce_ray = sample_bounce(normal, rng.xy());
+
+            let probe = Probe::base(cache.quantize(world_pos));
+
+            let pt_radiance = Vec3::splat_expr(0.0_f32).var();
+
+            for level in (0_u32..cache.num_levels).rev() {
+                let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
+                let mut ray_start_t = ray_end_t / 2.0;
+                escape!({
+                    if level == 0 {
+                        ray_start_t = 0.1;
+                    }
+                    if level == cache.num_levels - 1 {
+                        ray_end_t = 10000.0;
+                    }
+                });
+                let bounce_hit =
+                    world.trace_segment(world_pos, bounce_ray, Vec2::expr(ray_start_t, ray_end_t));
+                let fluence = if bounce_hit.valid() {
+                    if flags & RADIANCE_DIRECT_ONLY != 0 {
+                        Vec3::splat_expr(0.0_f32).extend(0.0)
+                    } else {
+                        let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
+                        let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
+                        let value = cache.query_diffuse(
+                            Probe::base(cache.quantize(bounce_pos)),
+                            world.get_normal_flat(bounce_hit),
+                        );
+                        if value.x == -1.0 {
+                            if flags & RADIANCE_DISCARD_MISSING != 0 {
+                                return;
+                            }
+                            Vec3::splat_expr(0.0_f32).extend(0.0) // skip because undefined
+                        } else {
+                            (value * color).extend(0.0)
+                        }
+                    }
+                } else if level == cache.num_levels - 1 {
+                    sunlight_radiance(bounce_ray).extend(0.0)
+                } else {
+                    Vec3::splat_expr(0.0_f32).extend(1.0) // miss
+                };
+                // TODO: This needs to exit if fluence.w < 0.0 to prevent invalid results.
+                *pt_radiance = over(fluence, **pt_radiance);
+                cache.deposit(
+                    probe.shift_level(level.expr()),
+                    fluence,
+                    **pt_radiance,
+                    bounce_ray,
+                );
+            }
+        }),
+    );
 
     let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32)>(
         KernelBuildOptions {
@@ -185,117 +290,76 @@ fn main() {
 
             let hit = world.trace(view.pos, ray_dir);
 
-            if hit.valid() {
-                let world_pos = view.pos + ray_dir * hit.committed_ray_t;
-                let normal = world.get_normal_flat(hit);
-                // let normal = -normal * normal.dot(ray_dir).signum();
+            if !hit.valid() {
+                app.set_pixel(pixel.cast_i32(), sunlight_radiance(ray_dir));
+                return;
+            }
+            let world_pos = view.pos + ray_dir * hit.committed_ray_t;
+            let normal = world.get_normal_flat(hit);
+            // let normal = -normal * normal.dot(ray_dir).signum();
 
-                // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
+            // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
-                // https://ameye.dev/notes/sampling-the-hemisphere/
-                let rng = pcg3df(pixel.extend(tick));
-                let theta = rng.x.acos();
-                let phi = rng.y * TAU;
-                let v = Vec3::expr(
-                    theta.sin() * phi.cos(),
-                    theta.sin() * phi.sin(),
-                    theta.cos(),
-                );
-                let perp1 = normal.yzx();
-                let perp2 = normal.zxy();
-                let bounce_ray = v.x * perp1 + v.y * perp2 + v.z * normal;
+            let probe = Probe::base(cache.quantize(world_pos));
 
-                let probe = Probe::base(cache.quantize(world_pos));
-
-                let pt_radiance = sunlight_radiance(bounce_ray).var();
-
+            // TODO: Add sphere rendering.
+            let color = if mode == 0 {
+                cache.query_diffuse(probe.shift_level(level), normal)
+            } else if mode == 1 {
+                let has_probe = true.var();
                 for level in (0_u32..cache.num_levels).rev() {
-                    let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
-                    let mut ray_start_t = ray_end_t / 2.0;
-                    escape!({
-                        if level == 0 {
-                            ray_start_t = 0.1;
-                        }
-                        if level == cache.num_levels - 1 {
-                            ray_end_t = 10000.0;
-                        }
-                    });
-                    let bounce_hit = world.trace_segment(
-                        world_pos,
-                        bounce_ray,
-                        Vec2::expr(ray_start_t, ray_end_t),
-                    );
-                    let fluence = if bounce_hit.valid() {
-                        Vec4::splat_expr(0.0_f32)
-                        // let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-                        // let color = Vec3::splat_expr(0.3); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        // let value = cache.query_diffuse(
-                        //     Probe::base(cache.quantize(bounce_pos)),
-                        //     world.get_normal_flat(bounce_hit),
-                        // );
-                        // if value.x == -1.0 {
-                        //     Vec3::splat_expr(0.0_f32).extend(-1.0) // skip because undefined
-                        // } else {
-                        //     (value * color).extend(0.0)
-                        // }
-                    } else {
-                        Vec3::splat_expr(0.0_f32).extend(1.0) // miss
-                    };
-                    *pt_radiance = over(fluence, **pt_radiance);
-                    if fluence.w >= 0.0 {
-                        cache.deposit(
-                            probe.shift_level(level.expr()),
-                            fluence,
-                            **pt_radiance,
-                            bounce_ray,
-                        );
+                    if **has_probe && !cache.contains(probe.shift_level(level.expr())) {
+                        *has_probe = false;
                     }
                 }
-
-                // TODO: Add sphere rendering.
-                let color = if mode == 0 {
-                    cache.query_diffuse(probe.shift_level(level), normal)
-                } else if mode == 1 {
-                    let has_probe = true.var();
-                    for level in (0_u32..cache.num_levels).rev() {
-                        if **has_probe && !cache.contains(probe.shift_level(level.expr())) {
-                            *has_probe = false;
-                        }
-                    }
-                    if has_probe {
-                        pcg3df(probe.position)
-                    } else {
-                        Vec3::splat_expr(0.0)
-                    }
-                } else if mode == 2 {
-                    let (has_probe, cost) = cache.contains_cost(probe.shift_level(level));
-                    if has_probe {
-                        plasma(cost.cast_f32() / 9.0)
-                    } else {
-                        Vec3::splat_expr(0.0)
-                    }
-                } else if mode == 3 {
-                    inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
-                } else if mode == 4 {
-                    normal * 0.5 + Vec3::splat_expr(0.5)
+                if has_probe {
+                    pcg3df(probe.position)
                 } else {
-                    Vec3::expr(1.0, 0.0, 0.0)
-                };
-                app.set_pixel(pixel.cast_i32(), color);
-            }
+                    Vec3::splat_expr(0.0)
+                }
+            } else if mode == 2 {
+                let (has_probe, cost) = cache.contains_cost(probe.shift_level(level));
+                if has_probe {
+                    plasma(cost.cast_f32() / 9.0)
+                } else {
+                    Vec3::splat_expr(0.0)
+                }
+            } else if mode == 3 {
+                inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
+            } else if mode == 4 {
+                normal * 0.5 + Vec3::splat_expr(0.5)
+            } else if mode == 5 {
+                let rng = pcg3df(pixel.extend(tick));
+                let bounce_ray = sample_bounce(normal, rng.xy());
+
+                let bounce_hit =
+                    world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
+                if bounce_hit.valid() {
+                    Vec3::splat_expr(0.0_f32)
+                } else {
+                    sunlight_radiance(bounce_ray)
+                }
+            } else {
+                Vec3::expr(1.0, 0.0, 0.0)
+            };
+            app.set_pixel(pixel.cast_i32(), color);
         }),
     );
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 2.1,
-        pitch: 0.15,
-        pos: Vec3::new(-360.0, 1250.0, 10.0),
+        yaw: 3.2746875,
+        pitch: 1.0774691,
+        pos: Vec3::new(56.0, 968.0, 1902.0),
         fov: 1.15,
     };
-
+    let mut running = true;
     let mut mode = 0;
     let mut level = 0;
+    let mut cutoff_mode = 0;
+    let mut radiance_flags = RADIANCE_DIRECT_ONLY;
+
+    let mut profiler = Profiler::new();
 
     app.run(|rt| {
         let rot_speed = 1.5 * rt.frame_time();
@@ -325,23 +389,79 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 5;
+            mode = (mode + 1) % 6;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {
             level = (level + 1) % cache.num_levels;
             println!("Level set {level}");
         }
+        if rt.key_pressed(KeyCode::KeyC) {
+            cutoff_mode = (cutoff_mode + 1) % 3;
+            println!("Cutoff mode set {cutoff_mode}");
+        }
+        if rt.key_pressed(KeyCode::KeyO) {
+            running = !running;
+            println!("Running: {running}");
+        }
+        if rt.key_pressed(KeyCode::KeyR) {
+            radiance_flags ^= RADIANCE_DIRECT_ONLY;
+        }
+        // if rt.key_pressed(KeyCode::KeyT) {
+        //     radiance_flags ^= RADIANCE_DISCARD_MISSING;
+        // }
+
+        let base_cutoff = if cutoff_mode == 0 {
+            BASE_COUNT_CUTOFF
+        } else if cutoff_mode == 1 {
+            f32::INFINITY
+        } else {
+            0.1
+        };
 
         rt.log_fps();
 
-        draw_kernel.dispatch(rt.dispatch_size(), &camera.view(), &rt.tick, &mode, &level);
+        let mut commands = vec![];
 
-        lower_cache.dispatch([cache.data.len() as u32, 1, 1]);
+        if running || rt.key_pressed(KeyCode::Period) {
+            commands.extend([
+                lower_cache
+                    .dispatch_async([cache.data.len() as u32, 1, 1])
+                    .debug("Lower Cache"),
+                compute_radiance_kernel
+                    .dispatch_async(
+                        rt.dispatch_size(),
+                        &camera.view(),
+                        &rt.tick,
+                        &radiance_flags,
+                    )
+                    .debug("Compute Radiance"),
+            ]);
+        }
 
-        merge_final_cache.dispatch([cache.num_nodes_at_level(cache.num_levels - 1), 1, 1]);
-        for l in (0..cache.num_levels - 1).rev() {
-            merge_cache.dispatch([cache.num_nodes_at_level(l), 1, 1], &l);
+        for l in (0..cache.num_levels).rev() {
+            let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+            commands.push(
+                (if l == cache.num_levels - 1 {
+                    merge_final_cache.dispatch_async(dispatch_size, &base_cutoff)
+                } else {
+                    merge_cache.dispatch_async(dispatch_size, &l, &base_cutoff)
+                })
+                .debug(format!("Merge Cache Level {l}")),
+            );
+        }
+
+        commands.push(
+            draw_kernel
+                .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick, &mode, &level)
+                .debug("Draw"),
+        );
+
+        profiler.record(commands.chain().execute_timed());
+
+        if profiler.time() > 1000.0 {
+            profiler.print(&["Merge", "Draw", "Lower Cache", "Compute Radiance"], true);
+            profiler.reset();
         }
 
         if rt.key_pressed(KeyCode::Backslash) {

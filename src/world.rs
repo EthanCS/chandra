@@ -77,7 +77,6 @@ impl TriangleWorld {
         }
         accel.build(AccelBuildRequest::ForceBuild);
         println!("Loaded");
-        println!("Materials: {:?}", _materials.unwrap());
         Self {
             accel,
             positions: position_buffer,
