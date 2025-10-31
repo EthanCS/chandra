@@ -4,6 +4,7 @@ use std::path::Path;
 
 use dot_vox::{DotVoxData, SceneNode};
 use glam::{IVec3, Mat3 as FMat3, UVec3, Vec3 as FVec3};
+use itertools::Itertools;
 use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::{
@@ -22,47 +23,31 @@ pub struct TriangleWorld {
     pub offsets: Buffer<[u32; 2]>,
 }
 impl TriangleWorld {
-    pub fn new(path: impl AsRef<Path> + Debug) -> Self {
-        let (models, _materials) = tobj::load_obj(
-            path,
-            &LoadOptions {
-                single_index: true,
-                triangulate: true,
-                ..Default::default()
-            },
-        )
-        .unwrap();
+    pub fn new(
+        positions: &[[f32; 3]],
+        normals: &[[f32; 3]],
+        indices: &[[u32; 3]],
+        offsets: &[[u32; 2]],
+    ) -> Self {
+        let position_buffer = DEVICE.create_buffer_from_slice(positions);
+        let normal_buffer = DEVICE.create_buffer_from_slice(normals);
+        let index_buffer = DEVICE.create_buffer_from_slice(indices);
+        let offset_buffer = DEVICE.create_buffer_from_slice(offsets);
+
         let accel = DEVICE.create_accel(AccelOption {
             hint: AccelUsageHint::FastTrace,
             allow_compaction: true,
             allow_update: false,
         });
-        let mut positions: Vec<[f32; 3]> = vec![];
-        let mut normals: Vec<[f32; 3]> = vec![];
-        let mut indices: Vec<[u32; 3]> = vec![];
-        let mut offsets: Vec<[u32; 2]> = vec![];
-        for model in models {
-            println!("Loading model: {:?}", model.name);
-            let mesh = model.mesh;
 
-            assert_eq!(mesh.normals.len() / 3, mesh.positions.len() / 3);
-
-            offsets.push([indices.len() as u32, positions.len() as u32]);
-
-            positions.extend(
-                bytemuck::cast_slice::<_, [f32; 3]>(&mesh.positions)
-                    .iter()
-                    .map(|&p| [p[2], p[0], p[1]]),
-            ); // Z-up to Y-up
-            normals.extend(bytemuck::cast_slice(&mesh.normals));
-            indices.extend(bytemuck::cast_slice(&mesh.indices));
-        }
-        let position_buffer = DEVICE.create_buffer_from_slice(&positions);
-        let normal_buffer = DEVICE.create_buffer_from_slice(&normals);
-        let index_buffer = DEVICE.create_buffer_from_slice(&indices);
-        let offset_buffer = DEVICE.create_buffer_from_slice(&offsets);
-        offsets.push([indices.len() as u32, positions.len() as u32]);
-        for [start, end] in offsets.array_windows() {
+        for (start, end) in offsets
+            .iter()
+            .chain(std::iter::once(&[
+                indices.len() as u32,
+                positions.len() as u32,
+            ]))
+            .tuple_windows()
+        {
             let mesh = DEVICE.create_mesh(
                 position_buffer.view(start[1] as usize..end[1] as usize),
                 index_buffer.view(start[0] as usize..end[0] as usize),
@@ -76,7 +61,6 @@ impl TriangleWorld {
             accel.push_mesh(&mesh, Mat4::identity(), 0xFF, true);
         }
         accel.build(AccelBuildRequest::ForceBuild);
-        println!("Loaded");
         Self {
             accel,
             positions: position_buffer,
@@ -84,6 +68,36 @@ impl TriangleWorld {
             indices: index_buffer,
             offsets: offset_buffer,
         }
+    }
+    pub fn load(path: impl AsRef<Path> + Debug) -> Self {
+        let (models, _materials) = tobj::load_obj(
+            path,
+            &LoadOptions {
+                single_index: true,
+                triangulate: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let mut positions: Vec<[f32; 3]> = vec![];
+        let mut normals: Vec<[f32; 3]> = vec![];
+        let mut indices: Vec<[u32; 3]> = vec![];
+        let mut offsets: Vec<[u32; 2]> = vec![];
+        for model in models {
+            println!("Loading model: {:?}", model.name);
+            let mesh = model.mesh;
+
+            assert_eq!(mesh.normals.len() / 3, mesh.positions.len() / 3);
+
+            offsets.push([indices.len() as u32, positions.len() as u32]);
+
+            positions.extend(
+                bytemuck::cast_slice::<_, [f32; 3]>(&mesh.positions).iter(), // .map(|&p| [p[2], p[0], p[1]]),
+            ); // Z-up to Y-up
+            normals.extend(bytemuck::cast_slice(&mesh.normals));
+            indices.extend(bytemuck::cast_slice(&mesh.indices));
+        }
+        Self::new(&positions, &normals, &indices, &offsets)
     }
 
     #[tracked]

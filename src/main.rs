@@ -1,5 +1,14 @@
 #![feature(array_windows)]
 
+/*
+TODO:
+- Screenspace version of everything?
+- Blue noise.
+- Make octahedral actually equal area (fix current bug)
+- Comparison to SHARC / PT
+- Bilinear interpolation at the end as well
+*/
+
 use std::f32::consts::TAU;
 
 use glam::Mat3 as FMat3;
@@ -318,25 +327,19 @@ fn main() {
 
             // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
-            let probe = Probe::base(cache.quantize(world_pos));
+            let probe = Probe::base(cache.quantize(world_pos)).shift_level(level);
 
             // TODO: Add sphere rendering.
             let color = if mode == 0 {
-                cache.query_diffuse(probe.shift_level(level), normal)
+                cache.query_diffuse(probe, normal)
             } else if mode == 1 {
-                let has_probe = true.var();
-                for level in (0_u32..cache.num_levels).rev() {
-                    if **has_probe && !cache.contains(probe.shift_level(level.expr())) {
-                        *has_probe = false;
-                    }
-                }
-                if has_probe {
+                if cache.contains(probe) {
                     pcg3df(probe.position)
                 } else {
                     Vec3::splat_expr(0.0)
                 }
             } else if mode == 2 {
-                let (has_probe, cost) = cache.contains_cost(probe.shift_level(level));
+                let (has_probe, cost) = cache.contains_cost(probe);
                 if has_probe {
                     plasma(cost.cast_f32() / 9.0)
                 } else {
@@ -358,8 +361,8 @@ fn main() {
                     sunlight_radiance(bounce_ray)
                 }
             } else if mode == 6 {
-                cache.query_diffuse(probe.shift_level(level), normal)
-                    + cache.query_dir_bilinear(probe.shift_level(level), reflect(ray_dir, normal))
+                cache.query_diffuse(probe, normal)
+                    + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
