@@ -121,7 +121,10 @@ struct View {
 fn main() {
     let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
 
-    let world = TriangleWorld::new("assets/sponza.obj");
+    let world = TriangleWorld::load(
+        "assets/sponza.obj",
+        FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
+    );
 
     let cache = HashCache::new(16.0, 4, 1 << 18, 6);
 

@@ -69,7 +69,7 @@ impl TriangleWorld {
             offsets: offset_buffer,
         }
     }
-    pub fn load(path: impl AsRef<Path> + Debug) -> Self {
+    pub fn load(path: impl AsRef<Path> + Debug, rotation: glam::Mat3) -> Self {
         let (models, _materials) = tobj::load_obj(
             path,
             &LoadOptions {
@@ -92,7 +92,9 @@ impl TriangleWorld {
             offsets.push([indices.len() as u32, positions.len() as u32]);
 
             positions.extend(
-                bytemuck::cast_slice::<_, [f32; 3]>(&mesh.positions).iter(), // .map(|&p| [p[2], p[0], p[1]]),
+                bytemuck::cast_slice::<_, [f32; 3]>(&mesh.positions)
+                    .iter()
+                    .map(|&p| <[f32; 3]>::from(rotation * glam::Vec3::from(p))),
             ); // Z-up to Y-up
             normals.extend(bytemuck::cast_slice(&mesh.normals));
             indices.extend(bytemuck::cast_slice(&mesh.indices));
