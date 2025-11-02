@@ -338,7 +338,7 @@ impl VoxelWorld {
                         Vec3::splat_expr(BRICK_SIZE as f32 - 0.0001),
                     ),
                     |pos, last_t, next_t| {
-                        if mask.read(pos) {
+                        if mask.read(pos.cast_u32()) {
                             // TODO: Commit the actual position instead of this stupid hack
                             candidate.commit((last_t + next_t) / 2.0);
                             true.expr()

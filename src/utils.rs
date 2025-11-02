@@ -3,7 +3,7 @@ use keter::lang::types::vector::{Vec2, Vec3};
 use keter::prelude::*;
 
 #[tracked]
-pub fn aabb_intersect(
+pub fn intersect_aabb(
     start: Expr<Vec3<f32>>,
     inv_dir: Expr<Vec3<f32>>,
     aabb_min: Expr<Vec3<f32>>,
@@ -16,6 +16,24 @@ pub fn aabb_intersect(
     Vec2::expr(tmin, tmax)
 }
 
+#[tracked]
+pub fn intersect_sphere(
+    start: Expr<Vec3<f32>>,
+    dir: Expr<Vec3<f32>>,
+    radius: Expr<f32>,
+) -> (Expr<Vec2<f32>>, Expr<bool>) {
+    let dist_to_parallel = -start.dot(dir);
+    let min_point = start + dist_to_parallel * dir;
+    let dist_to_center = min_point.length();
+    if dist_to_center > radius {
+        (Vec2::splat_expr(0.0), false.expr())
+    } else {
+        let dist_to_intersection = (radius.sqr() - dist_to_center.sqr()).sqrt();
+        let min_t = dist_to_parallel - dist_to_intersection;
+        let max_t = dist_to_parallel + dist_to_intersection;
+        (Vec2::expr(min_t, max_t), true.expr())
+    }
+}
 pub const TOTAL_MISS_STATE: u32 = 0b100;
 pub const LEAVE_STATE: u32 = 0b10;
 pub const HIT_STATE: u32 = 0b1;
@@ -26,10 +44,10 @@ pub fn dda(
     ray_dir: Expr<Vec3<f32>>,
     length: Expr<f32>,
     bounds: (Expr<Vec3<f32>>, Expr<Vec3<f32>>),
-    f: impl Fn(Expr<Vec3<u32>>, Expr<f32>, Expr<f32>) -> Expr<bool>,
+    f: impl Fn(Expr<Vec3<i32>>, Expr<f32>, Expr<f32>) -> Expr<bool>,
 ) -> Expr<u32> {
     let inv_dir = (ray_dir + f32::EPSILON).recip();
-    let interval = aabb_intersect(start, inv_dir, bounds.0, bounds.1);
+    let interval = intersect_aabb(start, inv_dir, bounds.0, bounds.1);
     let start_t = keter::max(interval.x, 0.0);
     let ray_start = start + start_t * ray_dir;
     let end_t = keter::min(interval.y, length);
@@ -54,7 +72,7 @@ pub fn dda(
         loop {
             let next_t = side_dist.reduce_min() + start_t;
 
-            if f(**pos, **last_t, keter::min(next_t, end_t)) {
+            if f(pos.cast_i32(), **last_t, keter::min(next_t, end_t)) {
                 *state |= HIT_STATE;
                 break;
             }

@@ -293,8 +293,12 @@ impl HashCache {
         self.nodes.read(node_offset + node_index)
     }
     #[tracked]
-    pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Vec3<u32>> {
-        ((pos / self.base_grid_size).floor().cast_i32() - self.offset).cast_u32()
+    pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Probe> {
+        Probe::base(((pos / self.base_grid_size).floor().cast_i32() - self.offset).cast_u32())
+    }
+    #[tracked]
+    pub fn get_probe(&self, pos: Expr<Vec3<i32>>, level: Expr<u32>) -> Expr<Probe> {
+        Probe::base((pos * (1_u32 << level).cast_i32() - self.offset).cast_u32()).shift_level(level)
     }
     #[tracked]
     pub fn load_index(&self, probe: Expr<Probe>, index: Expr<u32>) -> Expr<LoadedNode> {
@@ -382,11 +386,13 @@ impl HashCache {
         out
     }
     #[tracked]
+    pub fn get_dir(&self, node: Expr<LoadedNode>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        self.data
+            .read(node.data_offset + node.encoder.dir_to_linear(dir))
+            .radiance()
+    }
+    #[tracked]
     pub fn get_dir_bilinear(&self, node: Expr<LoadedNode>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        // self.data
-        //     .read(node.data_offset + node.encoder.dir_to_linear(dir))
-        //     .radiance()
-
         let dir = OctahedralVector::encode(dir).value;
         let dir = ((dir + 1.0) / 2.0 * (node.encoder.resolution).cast_f32()) - 0.5;
         let base = dir.floor();
@@ -411,6 +417,14 @@ impl HashCache {
         self.query(
             probe,
             |node| self.get_diffuse(node, normal),
+            || Vec3::splat_expr(-1.0),
+        )
+    }
+    #[tracked]
+    pub fn query_dir(&self, probe: Expr<Probe>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        self.query(
+            probe,
+            |node| self.get_dir(node, dir),
             || Vec3::splat_expr(-1.0),
         )
     }

@@ -248,7 +248,7 @@ fn main() {
             let rng = pcg3df(pixel.extend(tick));
             let bounce_ray = sample_bounce(normal, rng.xy());
 
-            let probe = Probe::base(cache.quantize(world_pos));
+            let probe = cache.quantize(world_pos);
 
             let pt_radiance = Vec3::splat_expr(0.0_f32).var();
 
@@ -273,7 +273,7 @@ fn main() {
                         let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
                         let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
                         let value = cache.query_diffuse(
-                            Probe::base(cache.quantize(bounce_pos)),
+                            cache.quantize(bounce_pos),
                             world.get_normal_flat(bounce_hit),
                         );
                         if value.x == -1.0 {
@@ -330,7 +330,7 @@ fn main() {
 
             // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
-            let probe = Probe::base(cache.quantize(world_pos)).shift_level(level);
+            let probe = cache.quantize(world_pos).shift_level(level);
 
             // TODO: Add sphere rendering.
             let color = if mode == 0 {
@@ -364,8 +364,34 @@ fn main() {
                     sunlight_radiance(bounce_ray)
                 }
             } else if mode == 6 {
-                cache.query_diffuse(probe, normal)
-                    + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
+                let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
+                let start = view.pos / grid_size;
+                let color = Vec3::splat(0.0_f32).var();
+                utils::dda(
+                    start,
+                    ray_dir,
+                    10000.0_f32.expr(),
+                    (Vec3::splat_expr(-1000.0_f32), Vec3::splat_expr(1000.0_f32)),
+                    |pos, last_t, _next_t| {
+                        let probe = cache.get_probe(pos, level);
+                        let start_pos =
+                            view.pos + ray_dir * last_t - (pos.cast_f32() + 0.5) * grid_size;
+                        if cache.contains(probe) {
+                            let (time, intersected) =
+                                utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
+                            if intersected {
+                                let intersect_dir = (start_pos + ray_dir * time.x).normalize();
+                                *color = cache.query_dir(probe, intersect_dir);
+                            }
+                            intersected
+                        } else {
+                            false.expr()
+                        }
+                    },
+                );
+                **color
+                // cache.query_diffuse(probe, normal)
+                //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
