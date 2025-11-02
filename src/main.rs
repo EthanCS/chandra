@@ -166,7 +166,7 @@ fn main() {
                     (
                         LoadedNode::from_comps_expr(LoadedNodeComps {
                             probe,
-                            encoder: cache.get_encoder_by_level(probe.level),
+                            encoder: cache.get_encoder(probe.level),
                             data_offset: 0_u32.expr(),
                         }),
                         0_f32.expr(),
@@ -326,7 +326,6 @@ fn main() {
             }
             let world_pos = view.pos + ray_dir * hit.committed_ray_t;
             let normal = world.get_normal_flat(hit);
-            // let normal = -normal * normal.dot(ray_dir).signum();
 
             // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
@@ -336,24 +335,26 @@ fn main() {
             let color = if mode == 0 {
                 cache.query_diffuse(probe, normal)
             } else if mode == 1 {
+                cache.query_uniform(probe)
+            } else if mode == 2 {
                 if cache.contains(probe) {
                     pcg3df(probe.position)
                 } else {
                     Vec3::splat_expr(0.0)
                 }
-            } else if mode == 2 {
+            } else if mode == 3 {
                 let (has_probe, cost) = cache.contains_cost(probe);
                 if has_probe {
                     plasma(cost.cast_f32() / 9.0)
                 } else {
                     Vec3::splat_expr(0.0)
                 }
-            } else if mode == 3 {
-                inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
             } else if mode == 4 {
-                normal * 0.5 + Vec3::splat_expr(0.5)
+                inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
             } else if mode == 5 {
-                let rng = pcg3df(pixel.extend(tick));
+                normal * 0.5 + Vec3::splat_expr(0.5)
+            } else if mode == 6 {
+                let rng = pcg3df(pixel.extend(tick)).xy() * 2.0 - 1.0;
                 let bounce_ray = sample_bounce(normal, rng.xy());
 
                 let bounce_hit =
@@ -363,7 +364,7 @@ fn main() {
                 } else {
                     sunlight_radiance(bounce_ray)
                 }
-            } else if mode == 6 {
+            } else if mode == 7 {
                 let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
                 let start = view.pos / grid_size;
                 let color = Vec3::splat(0.0_f32).var();
@@ -381,7 +382,8 @@ fn main() {
                                 utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
                             if intersected {
                                 let intersect_dir = (start_pos + ray_dir * time.x).normalize();
-                                *color = cache.query_dir(probe, intersect_dir);
+                                *color = cache.query_dir(probe, intersect_dir)
+                                    + Vec3::expr(0.0_f32, 0.0, 0.2);
                             }
                             intersected
                         } else {
@@ -409,7 +411,7 @@ fn main() {
     let mut running = true;
     let mut mode = 0;
     let mut level = 0;
-    let mut cutoff_mode = 0;
+    let mut cutoff_mode = 1;
     let mut radiance_flags = RADIANCE_DIRECT_ONLY;
 
     let mut profiler = Profiler::new();
@@ -442,7 +444,7 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 7;
+            mode = (mode + 1) % 8;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {

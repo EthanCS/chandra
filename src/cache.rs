@@ -270,7 +270,7 @@ impl HashCache {
         self.base_nodes * self.base_angular_resolution.pow(2)
     }
     #[tracked]
-    pub fn get_encoder_by_level(&self, level: Expr<u32>) -> Expr<OctahedralEncoder> {
+    pub fn get_encoder(&self, level: Expr<u32>) -> Expr<OctahedralEncoder> {
         OctahedralEncoder::from_comps_expr(OctahedralEncoderComps {
             resolution: self.base_angular_resolution << level,
         })
@@ -302,7 +302,7 @@ impl HashCache {
     }
     #[tracked]
     pub fn load_index(&self, probe: Expr<Probe>, index: Expr<u32>) -> Expr<LoadedNode> {
-        let encoder = self.get_encoder_by_level(probe.level);
+        let encoder = self.get_encoder(probe.level);
         let data_offset = probe.level * self.num_data() + index * encoder.linear_size();
         LoadedNode::from_comps_expr(LoadedNodeComps {
             probe,
@@ -386,6 +386,18 @@ impl HashCache {
         out
     }
     #[tracked]
+    pub fn get_uniform(&self, node: Expr<LoadedNode>) -> Expr<Radiance> {
+        let total_radiance = Vec3::splat(0.0_f32).var();
+        for i in 0_u32.expr()..node.encoder.linear_size() {
+            let data_index = node.data_offset + i;
+            let deposit = self.data.read(data_index);
+            *total_radiance += deposit.radiance();
+        }
+        // TODO: Why the hell is this necessary??? Is a rust-analyzer issue.
+        let out: Expr<Vec3<f32>> = total_radiance / node.encoder.linear_size().cast_f32();
+        out
+    }
+    #[tracked]
     pub fn get_dir(&self, node: Expr<LoadedNode>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
         self.data
             .read(node.data_offset + node.encoder.dir_to_linear(dir))
@@ -417,6 +429,14 @@ impl HashCache {
         self.query(
             probe,
             |node| self.get_diffuse(node, normal),
+            || Vec3::splat_expr(-1.0),
+        )
+    }
+    #[tracked]
+    pub fn query_uniform(&self, probe: Expr<Probe>) -> Expr<Radiance> {
+        self.query(
+            probe,
+            |node| self.get_uniform(node),
             || Vec3::splat_expr(-1.0),
         )
     }
