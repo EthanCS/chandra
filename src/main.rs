@@ -10,12 +10,15 @@ TODO:
 */
 
 use std::f32::consts::TAU;
+use std::path::PathBuf;
 
 use glam::Mat3 as FMat3;
+use image::{GenericImageView, ImageReader};
 use keter::graph::profile::Profiler;
-use keter::lang::types::vector::{Mat3, Vec2, Vec3};
+use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
+use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
 use yesod::rand::pcg3df;
 
@@ -41,6 +44,18 @@ fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
     dir - normal * (2.0_f32.expr() * dir.dot(normal))
 }
 
+#[tracked]
+fn rotate_hemi(normal: Expr<Vec3<f32>>, v: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+    // Find perpendicular basis; due to hairy ball theorem this cannot be continuous.
+    let perp1 = if normal.z.abs() < 0.9 {
+        normal.cross(Vec3::expr(0.0_f32, 0.0, 1.0)).normalize()
+    } else {
+        normal.cross(Vec3::expr(0.0_f32, 1.0, 0.0)).normalize()
+    };
+    let perp2 = normal.cross(perp1);
+    v.x * perp1 + v.y * perp2 + v.z * normal
+}
+
 // https://ameye.dev/notes/sampling-the-hemisphere/
 #[tracked]
 fn sample_bounce(normal: Expr<Vec3<f32>>, rng: Expr<Vec2<f32>>) -> Expr<Vec3<f32>> {
@@ -51,14 +66,7 @@ fn sample_bounce(normal: Expr<Vec3<f32>>, rng: Expr<Vec2<f32>>) -> Expr<Vec3<f32
         theta.sin() * phi.sin(),
         theta.cos(),
     );
-    // Find perpendicular basis; due to hairy ball theorem this cannot be continuous.
-    let perp1 = if normal.z.abs() < 0.9 {
-        normal.cross(Vec3::expr(0.0_f32, 0.0, 1.0)).normalize()
-    } else {
-        normal.cross(Vec3::expr(0.0_f32, 1.0, 0.0)).normalize()
-    };
-    let perp2 = normal.cross(perp1);
-    v.x * perp1 + v.y * perp2 + v.z * normal
+    rotate_hemi(normal, v)
 }
 
 #[tracked]
@@ -76,50 +84,53 @@ fn sunlight_radiance(dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Camera {
-    screen_size: Vec2<f32>,
-    yaw: f32,
-    pitch: f32,
-    pos: Vec3<f32>,
-    fov: f32,
-}
-impl Camera {
-    fn rotation(&self) -> FMat3 {
-        let view = FMat3::from_euler(glam::EulerRot::YXZ, self.yaw, self.pitch, 0.0).transpose();
-        FMat3::from_cols(view.x_axis, view.z_axis, view.y_axis).transpose()
-    }
-    fn view(&self) -> View {
-        let view = self.rotation();
-        let ratio = (self.fov / 2.0).tan() / (self.screen_size.y / 2.0);
-        let view = FMat3::from_cols(view.x_axis * ratio, -view.y_axis * ratio, view.z_axis);
-
-        View {
-            screen_size: self.screen_size,
-            pos: self.pos,
-            transform: view.into(),
+type NoiseTexture = Tex3d<Vec4<f32>>;
+fn load_noise_textures(names: impl Fn(u32) -> PathBuf) -> NoiseTexture {
+    let storage = PixelStorage::Byte4;
+    let mut num_images = 0;
+    let mut data = vec![];
+    let mut shape = (0, 0);
+    while let Ok(image) = ImageReader::open(names(num_images)) {
+        let image = image.decode().unwrap();
+        if shape == (0, 0) {
+            shape = image.dimensions();
+        } else {
+            assert_eq!(shape, image.dimensions());
         }
-    }
-    fn forward(&self) -> Vec3<f32> {
-        self.rotation().z_axis.into()
-    }
-    fn right(&self) -> Vec3<f32> {
-        self.rotation().x_axis.into()
-    }
-}
+        num_images += 1;
+        assert_eq!(image.color(), image::ColorType::Rgba8);
 
-#[derive(Debug, Clone, Copy, Value)]
-#[repr(C)]
-struct View {
-    screen_size: Vec2<f32>,
-    pos: Vec3<f32>,
-    transform: Mat3,
+        data.extend(image.into_rgba8().pixels().map(|p| Vec4::from(p.0)));
+    }
+    let texture = DEVICE.create_tex3d(storage, shape.0, shape.1, num_images, 1);
+    texture.view(0).copy_from(&data);
+    texture
+}
+#[tracked]
+fn as_normal(v: Expr<Vec4<f32>>) -> Expr<Vec3<f32>> {
+    v.xyz() * 2.0 - 1.0
 }
 
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
     let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
+
+    // let sphere_noise =
+
+    let hemi_noise = load_noise_textures(|i| {
+        PathBuf::from(format!(
+            "assets/noise/sphere/exp/sphere_coshemi_binomial3x3_exp0101_product_{i}.png",
+        ))
+    });
+
+    // let noise_path = PathBuf::from("assets/noise/sphere/sphere_coshemi_box3x3.png");
+    // let noise = ImageReader::open(&noise_path).unwrap().decode().unwrap();
+    // println!("Type: {:?}, {:?}", noise.color(), noise.color_space());
+    // let noise = noise.to_rgb8();
+    // let raw = noise.as_raw();
+    // std::fs::write("noise.raw", raw).unwrap();
+    // return;
 
     let world = TriangleWorld::load(
         "assets/sponza.obj",
@@ -245,8 +256,13 @@ fn main() {
             let world_pos = view.pos + ray_dir * hit.committed_ray_t;
             let normal = world.get_normal_flat(hit);
 
-            let rng = pcg3df(pixel.extend(tick));
-            let bounce_ray = sample_bounce(normal, rng.xy());
+            let bounce_ray = as_normal(hemi_noise.read(
+                pixel.extend(tick)
+                    % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
+            ));
+            let bounce_ray = rotate_hemi(normal, bounce_ray);
+            let weight = bounce_ray.dot(normal);
+            // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
 
             let probe = cache.quantize(world_pos);
 
@@ -354,8 +370,12 @@ fn main() {
             } else if mode == 5 {
                 normal * 0.5 + Vec3::splat_expr(0.5)
             } else if mode == 6 {
-                let rng = pcg3df(pixel.extend(tick)).xy() * 2.0 - 1.0;
-                let bounce_ray = sample_bounce(normal, rng.xy());
+                let bounce_ray = as_normal(hemi_noise.read(
+                    pixel.extend(tick)
+                        % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
+                ));
+                let bounce_ray = rotate_hemi(normal, bounce_ray);
+                // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
 
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
@@ -405,7 +425,7 @@ fn main() {
         screen_size: app.size().map(|x| x as f32).into(),
         yaw: 3.2746875,
         pitch: 1.0245812,
-        pos: Vec3::new(16.342783, 671.79944, 1391.7502),
+        pos: glam::Vec3::new(16.342783, 671.79944, 1391.7502),
         fov: 1.15,
     };
     let mut running = true;
@@ -423,23 +443,7 @@ fn main() {
         } else {
             800.0
         } * rt.frame_time();
-        for key in &rt.keys_down {
-            match key {
-                KeyCode::ArrowLeft => camera.yaw -= rot_speed,
-                KeyCode::ArrowRight => camera.yaw += rot_speed,
-                KeyCode::ArrowUp => camera.pitch -= rot_speed,
-                KeyCode::ArrowDown => camera.pitch += rot_speed,
-                KeyCode::KeyW => camera.pos = camera.pos + camera.forward() * move_speed,
-                KeyCode::KeyS => camera.pos = camera.pos - camera.forward() * move_speed,
-                KeyCode::KeyA => camera.pos = camera.pos - camera.right() * move_speed,
-                KeyCode::KeyD => camera.pos = camera.pos + camera.right() * move_speed,
-                KeyCode::Space => camera.pos = camera.pos + Vec3::new(0.0, 0.0, 1.0) * move_speed,
-                KeyCode::ShiftLeft => {
-                    camera.pos = camera.pos - Vec3::new(0.0, 0.0, 1.0) * move_speed
-                }
-                _ => (),
-            }
-        }
+        camera.apply_movement(&rt.keys_down, rot_speed, move_speed);
         if rt.key_pressed(KeyCode::KeyP) {
             println!("Camera: {camera:?}");
         }

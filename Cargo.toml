@@ -15,6 +15,7 @@ static_assertions = "1.1.0"
 tobj = "4.0.3"
 bytemuck = "1.23.2"
 itertools = "0.14.0"
+image = "0.25.8"
 
 [profile.dev.package."*"]
 opt-level = 3
