@@ -35,63 +35,85 @@ pub fn decode_position(pos: Expr<u64>) -> Expr<Vec3<u32>> {
 #[derive(Debug, Clone, Copy, Value)]
 pub struct RadianceDeposit {
     // actually pretty likely that the transmittance is 1 / the fluence is empty.
-    pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by count)
-    pub radiance_count: Vec4<f32>, // xyz: radiance, w: count
-    pub pt_radiance: Vec3<f32>,
+    pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by weight)
+    pub radiance_weight: Vec4<f32>, // xyz: pt radiance (multiplied by weight), w: weight
 }
-impl Default for RadianceDeposit {
-    fn default() -> Self {
-        Self {
-            fluence: Vec4::splat(0.0),
-            radiance_count: Vec4::new(0.0, 0.0, 0.0, 0.001),
-            pt_radiance: Vec3::splat(0.0),
-        }
+impl RadianceDeposit {
+    #[tracked]
+    pub fn expr(fluence: Expr<Vec4<f32>>, radiance: Expr<Vec3<f32>>) -> Expr<Self> {
+        Self::from_comps_expr(RadianceDepositComps {
+            fluence,
+            radiance_weight: radiance.extend(1.0),
+        })
     }
 }
 impl RadianceDepositExpr {
+    #[tracked]
+    pub fn weighted(&self, weight: Expr<f32>) -> Expr<RadianceDeposit> {
+        RadianceDeposit::from_comps_expr(RadianceDepositComps {
+            fluence: self.fluence * weight,
+            radiance_weight: self.radiance_weight * weight,
+        })
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Value)]
+pub struct RadianceElement {
+    // actually pretty likely that the transmittance is 1 / the fluence is empty.
+    pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by weight)
+    pub radiance_weight: Vec4<f32>, // xyz: pt radiance (multiplied by weight), w: weight
+    pub final_radiance: Vec3<f32>, // final radiance
+}
+impl Default for RadianceElement {
+    fn default() -> Self {
+        Self {
+            fluence: Vec4::splat(0.0),
+            radiance_weight: Vec4::new(0.0, 0.0, 0.0, 0.001),
+            final_radiance: Vec3::splat(0.0),
+        }
+    }
+}
+impl RadianceElementExpr {
     pub fn radiance(&self) -> Expr<Radiance> {
-        self.radiance_count.xyz()
+        self.final_radiance
     }
 }
-impl RadianceDepositAtomicRef {
+impl RadianceElementAtomicRef {
     #[tracked]
-    pub fn deposit(&self, fluence: Expr<Vec4<f32>>, pt_radiance: Expr<Vec3<f32>>) {
-        self.fluence.x.fetch_add(fluence.x);
-        self.fluence.y.fetch_add(fluence.y);
-        self.fluence.z.fetch_add(fluence.z);
-        self.fluence.w.fetch_add(fluence.w);
-        self.radiance_count.w.fetch_add(1.0);
-        self.pt_radiance.x.fetch_add(pt_radiance.x);
-        self.pt_radiance.y.fetch_add(pt_radiance.y);
-        self.pt_radiance.z.fetch_add(pt_radiance.z);
+    pub fn deposit(&self, deposit: Expr<RadianceDeposit>) {
+        self.fluence.x.fetch_add(deposit.fluence.x);
+        self.fluence.y.fetch_add(deposit.fluence.y);
+        self.fluence.z.fetch_add(deposit.fluence.z);
+        self.fluence.w.fetch_add(deposit.fluence.w);
+        self.radiance_weight.x.fetch_add(deposit.radiance_weight.x);
+        self.radiance_weight.y.fetch_add(deposit.radiance_weight.y);
+        self.radiance_weight.z.fetch_add(deposit.radiance_weight.z);
+        self.radiance_weight.w.fetch_add(deposit.radiance_weight.w);
     }
 }
-impl RadianceDepositVar {
+impl RadianceElementVar {
     #[tracked]
-    pub fn deposit(&self, fluence: Expr<Vec4<f32>>, pt_radiance: Expr<Vec3<f32>>) {
-        *self.fluence += fluence;
-        *self.radiance_count.w += 1.0;
-        *self.pt_radiance += pt_radiance;
+    pub fn deposit(&self, deposit: Expr<RadianceDeposit>) {
+        *self.fluence += deposit.fluence;
+        *self.radiance_weight += deposit.radiance_weight;
     }
     #[tracked]
     pub fn merge(&self, far: Expr<Radiance>, count_cutoff: Expr<f32>) {
-        let fluence = self.fluence / self.radiance_count.w;
+        let fluence = self.fluence / self.radiance_weight.w;
         let radiance = fluence.xyz() + fluence.w * far;
         let radiance = keter::lerp(
             radiance,
-            self.pt_radiance / self.radiance_count.w,
-            keter::min(self.radiance_count.w / count_cutoff, 1.0),
+            self.radiance_weight.xyz() / self.radiance_weight.w,
+            keter::min(self.radiance_weight.w / count_cutoff, 1.0),
         );
-        *self.radiance_count.x = radiance.x;
-        *self.radiance_count.y = radiance.y;
-        *self.radiance_count.z = radiance.z;
+        *self.final_radiance = radiance;
     }
     #[tracked]
     pub fn reduce(&self, factor: Expr<f32>, min_count: Expr<f32>) {
-        if self.radiance_count.w > min_count {
+        if self.radiance_weight.w > min_count {
             *self.fluence *= factor;
-            *self.radiance_count.w *= factor;
-            *self.pt_radiance *= factor;
+            *self.radiance_weight *= factor;
         }
     }
 }
@@ -235,7 +257,7 @@ pub struct HashCache {
     pub base_nodes: u32,
     pub num_levels: u32,
     pub nodes: Buffer<Node>,
-    pub data: Buffer<RadianceDeposit>,
+    pub data: Buffer<RadianceElement>,
 }
 impl HashCache {
     pub fn new(
@@ -259,7 +281,7 @@ impl HashCache {
             ),
             data: DEVICE.create_buffer_from_fn(
                 (base_angular_resolution.pow(2) * base_nodes * num_levels) as usize,
-                |_| RadianceDeposit::default(),
+                |_| RadianceElement::default(),
             ),
         }
     }
@@ -283,7 +305,7 @@ impl HashCache {
         (pow4s & ((1 << (2 * level)) - 1)) << (self.base_nodes.trailing_zeros() - level * 2 + 2)
     }
     #[tracked]
-    pub fn read_grid(&self, node: Expr<LoadedNode>, dir: Expr<Vec2<u32>>) -> Expr<RadianceDeposit> {
+    pub fn read_grid(&self, node: Expr<LoadedNode>, dir: Expr<Vec2<u32>>) -> Expr<RadianceElement> {
         self.data
             .read(node.data_offset + node.encoder.grid_to_linear(dir))
     }
@@ -433,6 +455,40 @@ impl HashCache {
         )
     }
     #[tracked]
+    pub fn query_diffuse_bilinear(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        level: Expr<u32>,
+        normal: Expr<Vec3<f32>>,
+    ) -> Expr<Radiance> {
+        let spacing = self.base_grid_size * (1_u32 << level).cast_f32();
+        let base_probe = self.quantize(pos - spacing / 2.0).shift_level(level);
+        let frac = (pos / spacing - 0.5).rem_euclid(1.0); // or something like it
+        let total_radiance = Vec4::splat(0.0_f32).var();
+        for i in (0..8) {
+            let mask = Vec3::new(
+                if (i & 4) != 0 { 1 } else { 0 },
+                if (i & 2) != 0 { 1 } else { 0 },
+                if (i & 1) != 0 { 1 } else { 0 },
+            );
+            let weight = mask
+                .map(|x| x == 1)
+                .expr()
+                .select(frac, 1.0 - frac)
+                .reduce_prod();
+            let probe = Probe::from_comps_expr(ProbeComps {
+                position: base_probe.position + mask,
+                level: base_probe.level,
+            });
+            *total_radiance += self.query(
+                probe,
+                |node| self.get_diffuse(node, normal).extend(1.0) * weight,
+                || Vec4::splat_expr(0.0),
+            );
+        }
+        total_radiance.xyz() / total_radiance.w
+    }
+    #[tracked]
     pub fn query_uniform(&self, probe: Expr<Probe>) -> Expr<Radiance> {
         self.query(
             probe,
@@ -461,16 +517,16 @@ impl HashCache {
     pub fn try_deposit(
         &self,
         probe: Expr<Probe>,
-        f: impl Fn() -> (Expr<Fluence>, Expr<Radiance>, Expr<Vec3<f32>>),
+        f: impl Fn() -> (Expr<Vec3<f32>>, Expr<RadianceDeposit>),
     ) -> Expr<bool> {
         self.query_init(
             probe,
             |node| {
-                let (fluence, pt_radiance, dir) = f();
+                let (dir, deposit) = f();
                 let data = self
                     .data
                     .atomic_ref(node.data_offset + node.encoder.dir_to_linear(dir));
-                data.deposit(fluence, pt_radiance);
+                data.deposit(deposit);
                 true.expr()
             },
             || false.expr(),
@@ -512,10 +568,38 @@ impl HashCache {
     pub fn deposit(
         &self,
         probe: Expr<Probe>,
-        fluence: Expr<Fluence>,
-        pt_radiance: Expr<Radiance>,
         dir: Expr<Vec3<f32>>,
+        deposit: Expr<RadianceDeposit>,
     ) -> Expr<bool> {
-        self.try_deposit(probe, || (fluence, pt_radiance, dir))
+        self.try_deposit(probe, || (dir, deposit))
+    }
+    #[tracked]
+    pub fn deposit_bilinear(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        level: Expr<u32>,
+        dir: Expr<Vec3<f32>>,
+        deposit: Expr<RadianceDeposit>,
+    ) {
+        let spacing = self.base_grid_size * (1_u32 << level).cast_f32();
+        let base_probe = self.quantize(pos - spacing / 2.0).shift_level(level);
+        let frac = (pos / spacing - 0.5).rem_euclid(1.0); // or something like it
+        for i in (0..8) {
+            let mask = Vec3::new(
+                if (i & 4) != 0 { 1 } else { 0 },
+                if (i & 2) != 0 { 1 } else { 0 },
+                if (i & 1) != 0 { 1 } else { 0 },
+            );
+            let weight = mask
+                .map(|x| x == 1)
+                .expr()
+                .select(frac, 1.0 - frac)
+                .reduce_prod();
+            let probe = Probe::from_comps_expr(ProbeComps {
+                position: base_probe.position + mask,
+                level: base_probe.level,
+            });
+            self.deposit(probe, dir, deposit.weighted(weight));
+        }
     }
 }

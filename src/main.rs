@@ -3,7 +3,8 @@
 /*
 TODO:
 - Screenspace version of everything?
-- Blue noise.
+- or screenspace grid.
+- [X] Blue noise.
 - Make octahedral actually equal area (fix current bug)
 - Comparison to SHARC / PT
 - Bilinear interpolation at the end as well
@@ -24,7 +25,7 @@ use yesod::rand::pcg3df;
 
 use crate::cache::{
     Fluence, HashCache, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe, ProbeComps,
-    Radiance, RadianceDeposit, decode_position,
+    Radiance, RadianceDeposit, RadianceElement, decode_position,
 };
 use crate::world::TriangleWorld;
 
@@ -139,7 +140,7 @@ fn main() {
 
     let cache = HashCache::new(16.0, 4, 1 << 18, 6);
 
-    let cache_memory = cache.data.len() * std::mem::size_of::<RadianceDeposit>()
+    let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
@@ -155,7 +156,7 @@ fn main() {
     let reset_cache_data = DEVICE.create_kernel::<fn()>(&track!(|| {
         cache
             .data
-            .write(dispatch_id().x, RadianceDeposit::default());
+            .write(dispatch_id().x, RadianceElement::default());
     }));
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
     let merge_cache = DEVICE.create_kernel::<fn(u32, f32)>(&track!(|level, base_cutoff| {
@@ -167,7 +168,21 @@ fn main() {
         let position = decode_position(node.position);
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
-        // TODO: needs bilinear interpolation. Also best to process in batches of 8.
+        // TODO: best to process in batches of 8.
+        /*
+        let total_weight = 1.0_f32.var();
+        let next = [(
+            cache.query(
+                probe.next_nearest(),
+                |x| x,
+                || {
+                    return;
+                    LoadedNode::expr_zeroed()
+                },
+            ),
+            1.0_f32.expr(),
+        )];
+        */
         let total_weight = 0.0_f32.var();
         let next = probe.next_bilinear().map(|(probe, weight)| {
             let (next, weight) = cache.query(
@@ -311,10 +326,15 @@ fn main() {
                 // Also, deposit bilinearly?
                 cache.deposit(
                     probe.shift_level(level.expr()),
-                    fluence,
-                    **pt_radiance,
                     bounce_ray,
+                    RadianceDeposit::expr(fluence, **pt_radiance),
                 );
+                // cache.deposit_bilinear(
+                //     world_pos,
+                //     level.expr(),
+                //     bounce_ray,
+                //     RadianceDeposit::expr(fluence, **pt_radiance),
+                // );
             }
         }),
     );
@@ -351,7 +371,7 @@ fn main() {
             let color = if mode == 0 {
                 cache.query_diffuse(probe, normal)
             } else if mode == 1 {
-                cache.query_uniform(probe)
+                cache.query_diffuse_bilinear(world_pos, level, normal)
             } else if mode == 2 {
                 if cache.contains(probe) {
                     pcg3df(probe.position)
@@ -402,7 +422,9 @@ fn main() {
                                 utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
                             if intersected {
                                 let intersect_dir = (start_pos + ray_dir * time.x).normalize();
-                                *color = cache.query_dir(probe, intersect_dir)
+                                *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
+
+                                cache.query_dir(probe, intersect_dir)
                                     + Vec3::expr(0.0_f32, 0.0, 0.2);
                             }
                             intersected
