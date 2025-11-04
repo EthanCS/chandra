@@ -276,7 +276,8 @@ fn main() {
                     % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
             ));
             let bounce_ray = rotate_hemi(normal, bounce_ray);
-            let weight = bounce_ray.dot(normal);
+            // TODO: It should probably be uniform rather than cos sampling but it doesn't actually change much.
+            // let weight = bounce_ray.dot(normal);
             // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
 
             let probe = cache.quantize(world_pos);

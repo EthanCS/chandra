@@ -1,8 +1,10 @@
+#![allow(unused_parens)]
+
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::rand::pcg3d;
-use yesod::utils::next_float_down_pos;
+use yesod::utils::next_float_down_pos_2;
 
 // type Fluence = fluence::Fluence<fluence::RgbF16>;
 pub type Radiance = Vec3<f32>;
@@ -119,6 +121,7 @@ impl RadianceElementVar {
 }
 
 pub type Encoder = SphericalEncoder;
+pub const INDEX_SCALING: Vec2<u32> = Vec2::new(2, 1);
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value)]
@@ -128,13 +131,13 @@ pub struct DirectionIndexer {
 impl DirectionIndexerExpr {
     #[tracked]
     pub fn grid_to_dir(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
-        let v = (index.cast_f32() + 0.5) / self.resolution.cast_f32();
+        let v = (index.cast_f32() + 0.5) / (self.resolution * INDEX_SCALING).cast_f32();
         Encoder::decode(v)
     }
     #[tracked]
     pub fn dir_to_grid(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
         let v = Encoder::encode(dir);
-        (v * next_float_down_pos((self.resolution).cast_f32()))
+        (v * next_float_down_pos_2((self.resolution * INDEX_SCALING).cast_f32()))
             .floor()
             .cast_u32()
     }
@@ -156,7 +159,7 @@ impl DirectionIndexerExpr {
     }
     #[tracked]
     pub fn linear_size(&self) -> Expr<u32> {
-        self.resolution * self.resolution
+        (self.resolution * INDEX_SCALING).reduce_prod()
     }
 }
 
@@ -282,7 +285,11 @@ impl HashCache {
                 |_| Node::default(),
             ),
             data: DEVICE.create_buffer_from_fn(
-                (base_angular_resolution.pow(2) * base_nodes * num_levels) as usize,
+                (base_angular_resolution.pow(2)
+                    * INDEX_SCALING.x
+                    * INDEX_SCALING.y
+                    * base_nodes
+                    * num_levels) as usize,
                 |_| RadianceElement::default(),
             ),
         }
@@ -291,7 +298,7 @@ impl HashCache {
         self.base_nodes >> (level * 2)
     }
     pub fn num_data(&self) -> u32 {
-        self.base_nodes * self.base_angular_resolution.pow(2)
+        self.base_nodes * self.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y
     }
     #[tracked]
     pub fn get_encoder(&self, level: Expr<u32>) -> Expr<DirectionIndexer> {
