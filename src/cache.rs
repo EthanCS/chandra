@@ -1,6 +1,6 @@
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
-use yesod::normal::OctahedralVector;
+use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::rand::pcg3d;
 use yesod::utils::next_float_down_pos;
 
@@ -118,21 +118,23 @@ impl RadianceElementVar {
     }
 }
 
+pub type Encoder = SphericalEncoder;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value)]
-pub struct OctahedralEncoder {
+pub struct DirectionIndexer {
     pub resolution: u32,
 }
-impl OctahedralEncoderExpr {
+impl DirectionIndexerExpr {
     #[tracked]
     pub fn grid_to_dir(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
-        let v = (index.cast_f32() + 0.5) / self.resolution.cast_f32() * 2.0 - 1.0;
-        OctahedralVector::expr(v).decode()
+        let v = (index.cast_f32() + 0.5) / self.resolution.cast_f32();
+        Encoder::decode(v)
     }
     #[tracked]
     pub fn dir_to_grid(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
-        let v = OctahedralVector::encode(dir);
-        ((v.value + 1.0) / 2.0 * next_float_down_pos((self.resolution).cast_f32()))
+        let v = Encoder::encode(dir);
+        (v * next_float_down_pos((self.resolution).cast_f32()))
             .floor()
             .cast_u32()
     }
@@ -163,7 +165,7 @@ impl OctahedralEncoderExpr {
 pub struct LoadedNode {
     pub probe: Probe,
     // little bit redundant, but whatever.
-    pub encoder: OctahedralEncoder,
+    pub encoder: DirectionIndexer,
     pub data_offset: u32,
 }
 
@@ -292,8 +294,8 @@ impl HashCache {
         self.base_nodes * self.base_angular_resolution.pow(2)
     }
     #[tracked]
-    pub fn get_encoder(&self, level: Expr<u32>) -> Expr<OctahedralEncoder> {
-        OctahedralEncoder::from_comps_expr(OctahedralEncoderComps {
+    pub fn get_encoder(&self, level: Expr<u32>) -> Expr<DirectionIndexer> {
+        DirectionIndexer::from_comps_expr(DirectionIndexerComps {
             resolution: self.base_angular_resolution << level,
         })
     }
@@ -427,7 +429,7 @@ impl HashCache {
     }
     #[tracked]
     pub fn get_dir_bilinear(&self, node: Expr<LoadedNode>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        let dir = OctahedralVector::encode(dir).value;
+        let dir = Encoder::encode(dir);
         let dir = ((dir + 1.0) / 2.0 * (node.encoder.resolution).cast_f32()) - 0.5;
         let base = dir.floor();
         let frac = dir - base;
@@ -463,7 +465,7 @@ impl HashCache {
     ) -> Expr<Radiance> {
         let spacing = self.base_grid_size * (1_u32 << level).cast_f32();
         let base_probe = self.quantize(pos - spacing / 2.0).shift_level(level);
-        let frac = (pos / spacing - 0.5).rem_euclid(1.0); // or something like it
+        let frac = (pos / spacing - 0.5).fract(); // or something like it
         let total_radiance = Vec4::splat(0.0_f32).var();
         for i in (0..8) {
             let mask = Vec3::new(

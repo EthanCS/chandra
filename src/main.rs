@@ -404,7 +404,7 @@ fn main() {
                 } else {
                     sunlight_radiance(bounce_ray)
                 }
-            } else if mode == 7 {
+            } else if mode == 7 || mode == 8 {
                 let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
                 let start = view.pos / grid_size;
                 let color = Vec3::splat(0.0_f32).var();
@@ -424,8 +424,14 @@ fn main() {
                                 let intersect_dir = (start_pos + ray_dir * time.x).normalize();
                                 *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
 
-                                cache.query_dir(probe, intersect_dir)
-                                    + Vec3::expr(0.0_f32, 0.0, 0.2);
+                                if mode == 7 { cache.query_dir(probe, intersect_dir)
+                                    + Vec3::expr(0.0_f32, 0.0, 0.)
+                                } else {
+                                    let encoder = cache.get_encoder(level);
+                                    encoder.grid_to_dir(
+                                        encoder.dir_to_grid(intersect_dir)
+                                    ) * 0.5 + 0.5
+                                };
                             }
                             intersected
                         } else {
@@ -470,7 +476,7 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 8;
+            mode = (mode + 1) % 9;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {
