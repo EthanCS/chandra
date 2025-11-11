@@ -1,7 +1,9 @@
 #![allow(unused_parens)]
 
+use keter::graph::NodeConfigs;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
+use yesod::camera::View;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::rand::pcg3d;
 use yesod::utils::next_float_down_pos_2;
@@ -254,6 +256,22 @@ impl ProbeExpr {
     }
 }
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Value)]
+pub struct Projection {
+    view: View,
+    base_grid_size: f32,
+}
+impl ProjectionExpr {
+    #[tracked]
+    pub fn inv_project(&self, pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+        let rotated = self.view.transform.transpose() * (pos - self.view.pos);
+        let pos = rotated / self.base_grid_size * Vec3::expr(2048.0, 2048.0, 1.0);
+        let xy = pos.xy() / pos.z * 32.0;
+        xy.extend(pos.z.log2() * 16.0)
+    }
+}
+
 #[derive(Debug)]
 pub struct HashCache {
     pub base_grid_size: f32,
@@ -263,6 +281,7 @@ pub struct HashCache {
     pub num_levels: u32,
     pub nodes: Buffer<Node>,
     pub data: Buffer<RadianceElement>,
+    pub projection: Buffer<Projection>,
 }
 impl HashCache {
     pub fn new(
@@ -292,7 +311,14 @@ impl HashCache {
                     * num_levels) as usize,
                 |_| RadianceElement::default(),
             ),
+            projection: DEVICE.create_buffer(1),
         }
+    }
+    pub fn set_view(&self, view: View) -> NodeConfigs<'static> {
+        self.projection.copy_from_vec(vec![Projection {
+            view,
+            base_grid_size: self.base_grid_size,
+        }])
     }
     pub fn num_nodes_at_level(&self, level: u32) -> u32 {
         self.base_nodes >> (level * 2)
@@ -325,7 +351,9 @@ impl HashCache {
     }
     #[tracked]
     pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Probe> {
-        Probe::base(((pos / self.base_grid_size).floor().cast_i32() - self.offset).cast_u32())
+        Probe::base(
+            (self.projection.read(0).inv_project(pos).floor().cast_i32() - self.offset).cast_u32(),
+        )
     }
     #[tracked]
     pub fn get_probe(&self, pos: Expr<Vec3<i32>>, level: Expr<u32>) -> Expr<Probe> {
@@ -470,8 +498,12 @@ impl HashCache {
         level: Expr<u32>,
         normal: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
-        let spacing = self.base_grid_size * (1_u32 << level).cast_f32();
-        let base_probe = self.quantize(pos - spacing / 2.0).shift_level(level);
+        let pos = self.projection.read(0).inv_project(pos);
+        let spacing = (1_u32 << level).cast_f32();
+        let base_probe =
+            Probe::base(((pos - spacing / 2.0).floor().cast_i32() - self.offset).cast_u32())
+                .shift_level(level);
+
         let frac = (pos / spacing - 0.5).fract(); // or something like it
         let total_radiance = Vec4::splat(0.0_f32).var();
         for i in (0..8) {
@@ -582,6 +614,7 @@ impl HashCache {
     ) -> Expr<bool> {
         self.try_deposit(probe, || (dir, deposit))
     }
+    /*
     #[tracked]
     pub fn deposit_bilinear(
         &self,
@@ -611,4 +644,5 @@ impl HashCache {
             self.deposit(probe, dir, deposit.weighted(weight));
         }
     }
+    */
 }

@@ -3,11 +3,11 @@
 /*
 TODO:
 - Screenspace version of everything?
-- or screenspace grid.
+- [X] or screenspace grid.
 - [X] Blue noise.
-- Make octahedral actually equal area (fix current bug)
+- [X] Make octahedral actually equal area (fix current bug)
 - Comparison to SHARC / PT
-- Bilinear interpolation at the end as well
+- [X] Bilinear interpolation at the end as well
 */
 
 use std::f32::consts::TAU;
@@ -147,7 +147,7 @@ fn main() {
     let lower_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
         let index = dispatch_id().x;
         let value = cache.data.read(index).var();
-        value.reduce(0.9_f32.expr(), (1024.0_f32 / 0.9).expr());
+        value.reduce(0.9_f32.expr(), 0.0.expr());
         cache.data.write(index, value);
     }));
     let reset_cache_nodes = DEVICE.create_kernel::<fn()>(&track!(|| {
@@ -259,8 +259,7 @@ fn main() {
         &track!(|view, tick, flags| {
             set_block_size([8, 8, 1]);
             let pixel = dispatch_id().xy();
-            let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
-            let ray_dir = ray_dir.normalize();
+            let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
 
             let hit = world.trace(view.pos, ray_dir);
 
@@ -352,8 +351,7 @@ fn main() {
         &track!(|view, tick, mode, level| {
             set_block_size([8, 8, 1]);
             let pixel = dispatch_id().xy();
-            let ray_dir = view.transform * (pixel.cast_f32() - view.screen_size / 2.0).extend(1.0);
-            let ray_dir = ray_dir.normalize();
+            let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
 
             let hit = world.trace(view.pos, ray_dir);
 
@@ -513,6 +511,7 @@ fn main() {
 
         if running || rt.key_pressed(KeyCode::Period) {
             commands.extend([
+                cache.set_view(camera.view()),
                 lower_cache
                     .dispatch_async([cache.data.len() as u32, 1, 1])
                     .debug("Lower Cache"),
@@ -552,8 +551,8 @@ fn main() {
             profiler.reset();
         }
 
-        if rt.key_pressed(KeyCode::Backslash) {
-            println!("Resetting cache");
+        if rt.key_down(KeyCode::Backslash) {
+            // println!("Resetting cache");
             reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
             reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
         }

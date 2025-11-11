@@ -84,7 +84,6 @@ impl TriangleWorld {
         let mut indices: Vec<[u32; 3]> = vec![];
         let mut offsets: Vec<[u32; 2]> = vec![];
         for model in models {
-            println!("Loading model: {:?}", model.name);
             let mesh = model.mesh;
 
             assert_eq!(mesh.normals.len() / 3, mesh.positions.len() / 3);
