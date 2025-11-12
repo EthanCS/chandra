@@ -145,11 +145,12 @@ impl DirectionIndexerExpr {
     }
     #[tracked]
     pub fn grid_to_linear(&self, index: Expr<Vec2<u32>>) -> Expr<u32> {
-        index.x * self.resolution + index.y
+        let index = index % self.grid_size();
+        index.x * self.grid_size().y + index.y
     }
     #[tracked]
     pub fn linear_to_grid(&self, index: Expr<u32>) -> Expr<Vec2<u32>> {
-        Vec2::expr(index / self.resolution, index % self.resolution)
+        Vec2::expr(index / self.grid_size().y, index % self.grid_size().y)
     }
     #[tracked]
     pub fn linear_to_dir(&self, index: Expr<u32>) -> Expr<Vec3<f32>> {
@@ -161,7 +162,11 @@ impl DirectionIndexerExpr {
     }
     #[tracked]
     pub fn linear_size(&self) -> Expr<u32> {
-        (self.resolution * INDEX_SCALING).reduce_prod()
+        self.grid_size().reduce_prod()
+    }
+    #[tracked]
+    pub fn grid_size(&self) -> Expr<Vec2<u32>> {
+        self.resolution * INDEX_SCALING
     }
 }
 
@@ -267,8 +272,8 @@ impl ProjectionExpr {
     pub fn inv_project(&self, pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
         let rotated = self.view.transform.transpose() * (pos - self.view.pos);
         let pos = rotated / self.base_grid_size * Vec3::expr(2048.0, 2048.0, 1.0);
-        let xy = pos.xy() / pos.z * 32.0;
-        xy.extend(pos.z.log2() * 16.0)
+        let xy = pos.xy() / pos.z * 64.0;
+        xy.extend(pos.z.log2() * 24.0)
     }
 }
 
