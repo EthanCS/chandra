@@ -12,7 +12,7 @@ use yesod::utils::next_float_down_pos_2;
 pub type Radiance = Vec3<f32>;
 pub type Fluence = Vec4<f32>;
 
-const NUM_BITS: u64 = 21;
+const NUM_BITS: u64 = 18;
 const MASK: u32 = (1 << NUM_BITS) - 1;
 pub const POSITION_INVALID: u64 = u64::MAX;
 
@@ -23,15 +23,19 @@ fn hash64(key: Expr<u64>) -> Expr<u32> {
 }
 
 #[tracked]
-pub fn encode_position(cell: Expr<Vec3<u32>>) -> Expr<u64> {
-    (cell.x.cast_u64() << (NUM_BITS * 2)) | (cell.y.cast_u64() << NUM_BITS) | cell.z.cast_u64()
+pub fn encode_position(cell: Expr<Vec4<u32>>) -> Expr<u64> {
+    cell.w.cast_u64() << (NUM_BITS * 3)
+        | (cell.x.cast_u64() << (NUM_BITS * 2))
+        | (cell.y.cast_u64() << NUM_BITS)
+        | cell.z.cast_u64()
 }
 #[tracked]
-pub fn decode_position(pos: Expr<u64>) -> Expr<Vec3<u32>> {
-    Vec3::expr(
-        (pos >> (NUM_BITS * 2)).cast_u32(),
+pub fn decode_position(pos: Expr<u64>) -> Expr<Vec4<u32>> {
+    Vec4::expr(
+        (pos >> (NUM_BITS * 2)).cast_u32() & MASK,
         (pos >> NUM_BITS).cast_u32() & MASK,
         pos.cast_u32() & MASK,
+        (pos >> (NUM_BITS * 3)).cast_u32(),
     )
 }
 
@@ -212,12 +216,12 @@ impl Default for Node {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value, PartialEq)]
 pub struct Probe {
-    pub position: Vec3<u32>,
+    pub position: Vec4<u32>,
     pub level: u32,
 }
 impl Probe {
     #[tracked]
-    pub fn base(pos: Expr<Vec3<u32>>) -> Expr<Self> {
+    pub fn base(pos: Expr<Vec4<u32>>) -> Expr<Self> {
         Self::from_comps_expr(ProbeComps {
             position: pos,
             level: 0_u32.expr(),
@@ -227,8 +231,8 @@ impl Probe {
 impl ProbeExpr {
     #[tracked]
     pub fn next_bilinear(&self) -> [(Expr<Probe>, Expr<f32>); 8] {
-        let base_position = (self.position - 1) >> 1;
-        let offset = self.position % 2;
+        let base_position = (self.position.xyz() - 1) >> 1;
+        let offset = self.position.xyz() % 2;
         std::array::from_fn(|i| {
             let mask = Vec3::new(
                 if (i & 4) != 0 { 1 } else { 0 },
@@ -241,7 +245,7 @@ impl ProbeExpr {
                 .reduce_prod();
             (
                 Probe::from_comps_expr(ProbeComps {
-                    position,
+                    position: position.extend(self.position.w),
                     level: self.level + 1,
                 }),
                 weight,
@@ -255,7 +259,7 @@ impl ProbeExpr {
     #[tracked]
     pub fn shift_level(&self, delta: Expr<u32>) -> Expr<Probe> {
         Probe::from_comps_expr(ProbeComps {
-            position: self.position >> delta,
+            position: (self.position.xyz() >> delta).extend(self.position.w),
             level: self.level + delta,
         })
     }
@@ -266,20 +270,29 @@ impl ProbeExpr {
 pub struct Projection {
     view: View,
     base_grid_size: f32,
+    base_radius: f32,
 }
 impl ProjectionExpr {
     #[tracked]
-    pub fn inv_project(&self, pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
-        let rotated = self.view.transform.transpose() * (pos - self.view.pos);
-        let pos = rotated / self.base_grid_size * Vec3::expr(2048.0, 2048.0, 1.0);
-        let xy = pos.xy() / pos.z * 64.0;
-        xy.extend(pos.z.log2() * 24.0)
+    pub fn inv_project(&self, pos: Expr<Vec3<f32>>) -> (Expr<Vec3<f32>>, Expr<u32>) {
+        let radius = (pos - self.view.pos).length();
+        let cascade = keter::max((radius / self.base_radius).log2(), 0.0)
+            .ceil()
+            .cast_u32();
+        let spacing = self.base_grid_size * (1_u32 << cascade).cast_f32();
+        (pos / spacing, cascade)
+
+        // let rotated = self.view.transform.transpose() * (pos - self.view.pos);
+        // let pos = rotated / self.base_grid_size * Vec3::expr(2048.0, 2048.0, 1.0);
+        // let xy = pos.xy() / pos.z * 32.0;
+        // xy.extend(pos.z.log2() * 16.0)
     }
 }
 
 #[derive(Debug)]
 pub struct HashCache {
     pub base_grid_size: f32,
+    pub base_radius: f32,
     pub base_angular_resolution: u32,
     pub offset: Vec3<i32>,
     pub base_nodes: u32,
@@ -291,6 +304,7 @@ pub struct HashCache {
 impl HashCache {
     pub fn new(
         base_grid_size: f32,
+        base_radius: f32,
         base_angular_resolution: u32,
         base_nodes: u32,
         num_levels: u32,
@@ -298,6 +312,7 @@ impl HashCache {
         assert!(base_nodes.is_power_of_two());
         Self {
             base_grid_size,
+            base_radius,
             base_angular_resolution,
             offset: Vec3::splat(-(1 << (NUM_BITS - 1))),
             base_nodes,
@@ -323,6 +338,7 @@ impl HashCache {
         self.projection.copy_from_vec(vec![Projection {
             view,
             base_grid_size: self.base_grid_size,
+            base_radius: self.base_radius,
         }])
     }
     pub fn num_nodes_at_level(&self, level: u32) -> u32 {
@@ -356,13 +372,26 @@ impl HashCache {
     }
     #[tracked]
     pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Probe> {
+        let (pos, cascade) = self.projection.read(0).inv_project(pos);
         Probe::base(
-            (self.projection.read(0).inv_project(pos).floor().cast_i32() - self.offset).cast_u32(),
+            (pos.floor().cast_i32() - self.offset)
+                .cast_u32()
+                .extend(cascade),
         )
     }
     #[tracked]
-    pub fn get_probe(&self, pos: Expr<Vec3<i32>>, level: Expr<u32>) -> Expr<Probe> {
-        Probe::base((pos * (1_u32 << level).cast_i32() - self.offset).cast_u32()).shift_level(level)
+    pub fn get_probe(
+        &self,
+        pos: Expr<Vec3<i32>>,
+        cascade: Expr<u32>,
+        level: Expr<u32>,
+    ) -> Expr<Probe> {
+        Probe::base(
+            (pos * (1_u32 << level).cast_i32() - self.offset)
+                .cast_u32()
+                .extend(cascade),
+        )
+        .shift_level(level)
     }
     #[tracked]
     pub fn load_index(&self, probe: Expr<Probe>, index: Expr<u32>) -> Expr<LoadedNode> {
@@ -383,8 +412,8 @@ impl HashCache {
     ) -> T {
         let node_offset = self.get_node_offset(probe.level);
         let table_size = self.base_nodes >> (2 * probe.level);
-        let node_index = (pcg3d(probe.position).x % table_size).var();
         let position = encode_position(probe.position);
+        let node_index = (hash64(position) % table_size).var();
         let loaded = false.var();
         for _i in 0..10 {
             let node = self.nodes.read(node_offset + node_index);
@@ -413,8 +442,8 @@ impl HashCache {
     ) -> T {
         let node_offset = self.get_node_offset(probe.level);
         let table_size = self.base_nodes >> (2 * probe.level);
-        let node_index = (pcg3d(probe.position).x % table_size).var();
         let position = encode_position(probe.position);
+        let node_index = (hash64(position) % table_size).var();
         // TODO: This should probably always be true if the hashmap works but just in case.
         let loaded = false.var();
         for _i in 0..10 {
@@ -503,11 +532,14 @@ impl HashCache {
         level: Expr<u32>,
         normal: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
-        let pos = self.projection.read(0).inv_project(pos);
+        let (pos, cascade) = self.projection.read(0).inv_project(pos);
         let spacing = (1_u32 << level).cast_f32();
-        let base_probe =
-            Probe::base(((pos - spacing / 2.0).floor().cast_i32() - self.offset).cast_u32())
-                .shift_level(level);
+        let base_probe = Probe::base(
+            ((pos - spacing / 2.0).floor().cast_i32() - self.offset)
+                .cast_u32()
+                .extend(cascade),
+        )
+        .shift_level(level);
 
         let frac = (pos / spacing - 0.5).fract(); // or something like it
         let total_radiance = Vec4::splat(0.0_f32).var();
@@ -523,7 +555,7 @@ impl HashCache {
                 .select(frac, 1.0 - frac)
                 .reduce_prod();
             let probe = Probe::from_comps_expr(ProbeComps {
-                position: base_probe.position + mask,
+                position: (base_probe.position.xyz() + mask).extend(base_probe.position.w),
                 level: base_probe.level,
             });
             *total_radiance += self.query(
@@ -591,8 +623,8 @@ impl HashCache {
     pub fn contains_cost(&self, probe: Expr<Probe>) -> (Expr<bool>, Expr<u32>) {
         let node_offset = self.get_node_offset(probe.level);
         let table_size = self.base_nodes >> (2 * probe.level);
-        let node_index = (pcg3d(probe.position).x % table_size).var();
         let position = encode_position(probe.position);
+        let node_index = (hash64(position) % table_size).var();
         let loaded = false.var();
         let i = 0_u32.var();
         for j in 0..10_u32 {

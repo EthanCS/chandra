@@ -138,7 +138,7 @@ fn main() {
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
 
-    let cache = HashCache::new(16.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
@@ -285,7 +285,7 @@ fn main() {
 
             // TODO: Can do a single ray trace instead of 6.
             for level in (0_u32..cache.num_levels).rev() {
-                let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
+                let mut ray_end_t = 12.0 * 16.0f32 * (1_u32 << level) as f32;
                 let mut ray_start_t = ray_end_t / 2.0;
                 escape!({
                     if level == 0 {
@@ -295,8 +295,11 @@ fn main() {
                         ray_end_t = 10000.0;
                     }
                 });
-                let bounce_hit =
-                    world.trace_segment(world_pos, bounce_ray, Vec2::expr(ray_start_t, ray_end_t));
+                let bounce_hit = world.trace_segment(
+                    world_pos,
+                    bounce_ray,
+                    Vec2::expr(ray_start_t, ray_end_t), //  * (1_u32 << probe.position.w).cast_f32(),
+                );
                 let fluence = if bounce_hit.valid() {
                     if flags & RADIANCE_DIRECT_ONLY != 0 {
                         Vec3::splat_expr(0.0_f32).extend(0.0)
@@ -366,14 +369,13 @@ fn main() {
 
             let probe = cache.quantize(world_pos).shift_level(level);
 
-            // TODO: Add sphere rendering.
             let color = if mode == 0 {
                 cache.query_diffuse(probe, normal)
             } else if mode == 1 {
                 cache.query_diffuse_bilinear(world_pos, level, normal)
             } else if mode == 2 {
                 if cache.contains(probe) {
-                    pcg3df(probe.position)
+                    pcg3df(probe.position.xyz())
                 } else {
                     Vec3::splat_expr(0.0)
                 }
@@ -403,7 +405,7 @@ fn main() {
                 } else {
                     sunlight_radiance(bounce_ray)
                 }
-            } else if mode == 7 || mode == 8 {
+            /*} else if mode == 7 || mode == 8 {
                 let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
                 let start = view.pos / grid_size;
                 let color = Vec3::splat(0.0_f32).var();
@@ -441,6 +443,7 @@ fn main() {
                 **color
                 // cache.query_diffuse(probe, normal)
                 //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
+            */
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
