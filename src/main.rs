@@ -274,64 +274,39 @@ fn main() {
 
             let probe = cache.quantize(world_pos);
 
-            let pt_radiance = Vec3::splat_expr(0.0_f32).var();
-
             // TODO: Can do a single ray trace instead of 6.
-            for level in (0_u32..cache.num_levels).rev() {
-                let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
-                let mut ray_start_t = ray_end_t / 2.0;
-                escape!({
-                    if level == 0 {
-                        ray_start_t = 0.1;
-                    }
-                    if level == cache.num_levels - 1 {
-                        ray_end_t = 10000.0;
-                    }
-                });
-                let bounce_hit = world.trace_segment(
-                    world_pos,
-                    bounce_ray,
-                    Vec2::expr(ray_start_t, ray_end_t) * (1_u32 << probe.position.w).cast_f32(),
-                );
-                let fluence = if bounce_hit.valid() {
-                    if flags & RADIANCE_DIRECT_ONLY != 0 {
-                        Vec3::splat_expr(0.0_f32).extend(0.0)
-                    } else {
-                        let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-                        let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        let value = cache.query_diffuse(
-                            cache.quantize(bounce_pos),
-                            world.get_normal_flat(bounce_hit),
-                        );
-                        if value.x == -1.0 {
-                            if flags & RADIANCE_DISCARD_MISSING != 0 {
-                                return;
-                            }
-                            Vec3::splat_expr(0.0_f32).extend(0.0) // skip because undefined
-                        } else {
-                            (value * color).extend(0.0)
-                        }
-                    }
-                } else if level == cache.num_levels - 1 {
-                    sunlight_radiance(bounce_ray).extend(0.0)
-                } else {
-                    Vec3::splat_expr(0.0_f32).extend(1.0) // miss
-                };
-                // TODO: This needs to exit if fluence.w < 0.0 to prevent invalid results.
-                *pt_radiance = over(fluence, **pt_radiance);
-                // Also, deposit bilinearly?
+            let bounce_hit = world.trace_segment(
+                world_pos,
+                bounce_ray,
+                Vec2::expr(0.01, 100000.0) * (1_u32 << probe.position.w).cast_f32(),
+            );
+            let (hit_level, fluence) = if bounce_hit.valid() {
+                let level = keter::max(
+                    (bounce_hit.committed_ray_t / (12.0 * cache.base_grid_size)).log2(),
+                    0.0,
+                )
+                .ceil()
+                .cast_u32();
+                let level = keter::min(level, cache.num_levels.expr() - 1);
+                (level, Vec3::splat_expr(0.0_f32).extend(0.0))
+            } else {
+                (
+                    cache.num_levels.expr() - 1,
+                    sunlight_radiance(bounce_ray).extend(0.0),
+                )
+            };
+            for level in 0.expr()..hit_level {
                 cache.deposit(
-                    probe.shift_level(level.expr()),
+                    probe.shift_level(level),
                     bounce_ray,
-                    RadianceDeposit::expr(fluence, **pt_radiance),
+                    RadianceDeposit::expr(Vec3::splat_expr(0.0_f32).extend(1.0), fluence.xyz()),
                 );
-                // cache.deposit_bilinear(
-                //     world_pos,
-                //     level.expr(),
-                //     bounce_ray,
-                //     RadianceDeposit::expr(fluence, **pt_radiance),
-                // );
             }
+            cache.deposit(
+                probe.shift_level(hit_level),
+                bounce_ray,
+                RadianceDeposit::expr(fluence, fluence.xyz()),
+            );
         }),
     );
 
@@ -446,10 +421,14 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 3.2746875,
-        pitch: 1.0245812,
-        pos: glam::Vec3::new(16.342783, 671.79944, 1391.7502),
+        yaw: 4.868212,
+        pitch: 0.4147132,
+        pos: glam::Vec3::new(132.45715, -404.1544, 651.1271),
         fov: 1.15,
+        // yaw: 3.2746875,
+        // pitch: 1.0245812,
+        // pos: glam::Vec3::new(16.342783, 671.79944, 1391.7502),
+        // fov: 1.15,
     };
     let mut running = true;
     let mut mode = 0;
