@@ -287,6 +287,11 @@ impl ProjectionExpr {
         // let xy = pos.xy() / pos.z * 32.0;
         // xy.extend(pos.z.log2() * 16.0)
     }
+    #[tracked]
+    pub fn project(&self, pos: Expr<Vec3<f32>>, cascade: Expr<u32>) -> Expr<Vec3<f32>> {
+        let spacing = self.base_grid_size * (1_u32 << cascade).cast_f32();
+        pos * spacing
+    }
 }
 
 #[derive(Debug)]

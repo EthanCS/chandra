@@ -125,20 +125,13 @@ fn main() {
         ))
     });
 
-    // let noise_path = PathBuf::from("assets/noise/sphere/sphere_coshemi_box3x3.png");
-    // let noise = ImageReader::open(&noise_path).unwrap().decode().unwrap();
-    // println!("Type: {:?}, {:?}", noise.color(), noise.color_space());
-    // let noise = noise.to_rgb8();
-    // let raw = noise.as_raw();
-    // std::fs::write("noise.raw", raw).unwrap();
-    // return;
-
     let world = TriangleWorld::load(
         "assets/sponza.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
 
-    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
+    // let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
@@ -285,7 +278,7 @@ fn main() {
 
             // TODO: Can do a single ray trace instead of 6.
             for level in (0_u32..cache.num_levels).rev() {
-                let mut ray_end_t = 12.0 * 16.0f32 * (1_u32 << level) as f32;
+                let mut ray_end_t = 12.0 * cache.base_grid_size * (1_u32 << level) as f32;
                 let mut ray_start_t = ray_end_t / 2.0;
                 escape!({
                     if level == 0 {
@@ -298,7 +291,7 @@ fn main() {
                 let bounce_hit = world.trace_segment(
                     world_pos,
                     bounce_ray,
-                    Vec2::expr(ray_start_t, ray_end_t), //  * (1_u32 << probe.position.w).cast_f32(),
+                    Vec2::expr(ray_start_t, ray_end_t) * (1_u32 << probe.position.w).cast_f32(),
                 );
                 let fluence = if bounce_hit.valid() {
                     if flags & RADIANCE_DIRECT_ONLY != 0 {
