@@ -21,6 +21,7 @@ use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
+use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::rand::pcg3df;
 
 use crate::cache::{
@@ -130,6 +131,10 @@ fn main() {
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
 
+    let depth_buf =
+        DEVICE.create_tex2d::<f32>(PixelStorage::Float1, app.size()[0], app.size()[1], 1);
+    let normal_buf =
+        DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, app.size()[0], app.size()[1], 1);
     let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     // let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
 
@@ -240,6 +245,20 @@ fn main() {
             cache.data.write(data_index, radiance_deposit);
         }
     }));
+    let compute_gbuffer_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
+        set_block_size([8, 8, 1]);
+        let pixel = dispatch_id().xy();
+        let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
+
+        let hit = world.trace(view.pos, ray_dir);
+        if !hit.valid() {
+            depth_buf.write(pixel, 0.0);
+            return;
+        }
+        depth_buf.write(pixel, hit.committed_ray_t);
+        let normal = world.get_normal_flat(hit);
+        normal_buf.write(pixel, SphericalEncoder::encode(normal));
+    }));
     let compute_radiance_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32)>(
         KernelBuildOptions {
             name: Some("compute_radiance_kernel".into()),
@@ -254,14 +273,12 @@ fn main() {
             let pixel = dispatch_id().xy();
             let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
 
-            let hit = world.trace(view.pos, ray_dir);
-
-            if !hit.valid() {
+            let depth = depth_buf.read(pixel);
+            if depth == 0.0 {
                 return;
             }
-
-            let world_pos = view.pos + ray_dir * hit.committed_ray_t;
-            let normal = world.get_normal_flat(hit);
+            let normal = SphericalEncoder::decode(normal_buf.read(pixel));
+            let world_pos = view.pos + ray_dir * depth;
 
             let bounce_ray = as_normal(hemi_noise.read(
                 pixel.extend(tick)
@@ -321,17 +338,17 @@ fn main() {
         },
         &track!(|view, tick, mode, level| {
             set_block_size([8, 8, 1]);
+
             let pixel = dispatch_id().xy();
             let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
 
-            let hit = world.trace(view.pos, ray_dir);
-
-            if !hit.valid() {
+            let depth = depth_buf.read(pixel);
+            if depth == 0.0 {
                 app.set_pixel(pixel.cast_i32(), sunlight_radiance(ray_dir));
                 return;
             }
-            let world_pos = view.pos + ray_dir * hit.committed_ray_t;
-            let normal = world.get_normal_flat(hit);
+            let normal = SphericalEncoder::decode(normal_buf.read(pixel));
+            let world_pos = view.pos + ray_dir * depth;
 
             // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
 
@@ -355,7 +372,7 @@ fn main() {
                     Vec3::splat_expr(0.0)
                 }
             } else if mode == 4 {
-                inferno(1.0 - reinhard(hit.committed_ray_t / 1000.0))
+                inferno(1.0 - reinhard(depth / 1000.0))
             } else if mode == 5 {
                 normal * 0.5 + Vec3::splat_expr(0.5)
             } else if mode == 6 {
@@ -483,6 +500,11 @@ fn main() {
         rt.log_fps();
 
         let mut commands = vec![];
+        commands.push(
+            compute_gbuffer_kernel
+                .dispatch_async(rt.dispatch_size(), &camera.view())
+                .debug("Compute GBuffer"),
+        );
 
         if running || rt.key_pressed(KeyCode::Period) {
             commands.extend([
@@ -522,7 +544,16 @@ fn main() {
         profiler.record(commands.chain().execute_timed());
 
         if profiler.time() > 1000.0 {
-            profiler.print(&["Merge", "Draw", "Lower Cache", "Compute Radiance"], true);
+            profiler.print(
+                &[
+                    "Compute GBuffer",
+                    "Merge",
+                    "Draw",
+                    "Lower Cache",
+                    "Compute Radiance",
+                ],
+                true,
+            );
             profiler.reset();
         }
 
