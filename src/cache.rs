@@ -43,25 +43,12 @@ pub fn decode_position(pos: Expr<u64>) -> Expr<Vec4<u32>> {
 #[derive(Debug, Clone, Copy, Value)]
 pub struct RadianceDeposit {
     // actually pretty likely that the transmittance is 1 / the fluence is empty.
-    pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by weight)
-    pub radiance_weight: Vec4<f32>, // xyz: pt radiance (multiplied by weight), w: weight
+    pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by weight = 1.0)
 }
 impl RadianceDeposit {
     #[tracked]
-    pub fn expr(fluence: Expr<Vec4<f32>>, radiance: Expr<Vec3<f32>>) -> Expr<Self> {
-        Self::from_comps_expr(RadianceDepositComps {
-            fluence,
-            radiance_weight: radiance.extend(1.0),
-        })
-    }
-}
-impl RadianceDepositExpr {
-    #[tracked]
-    pub fn weighted(&self, weight: Expr<f32>) -> Expr<RadianceDeposit> {
-        RadianceDeposit::from_comps_expr(RadianceDepositComps {
-            fluence: self.fluence * weight,
-            radiance_weight: self.radiance_weight * weight,
-        })
+    pub fn expr(fluence: Expr<Vec4<f32>>) -> Expr<Self> {
+        Self::from_comps_expr(RadianceDepositComps { fluence })
     }
 }
 
@@ -70,21 +57,19 @@ impl RadianceDepositExpr {
 pub struct RadianceElement {
     // actually pretty likely that the transmittance is 1 / the fluence is empty.
     pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by weight)
-    pub radiance_weight: Vec4<f32>, // xyz: pt radiance (multiplied by weight), w: weight
-    pub final_radiance: Vec3<f32>, // final radiance
+    pub radiance_weight: Vec4<f32>, // xyz: radiance (multiplied by weight), w: weight
 }
 impl Default for RadianceElement {
     fn default() -> Self {
         Self {
             fluence: Vec4::splat(0.0),
             radiance_weight: Vec4::new(0.0, 0.0, 0.0, 0.001),
-            final_radiance: Vec3::splat(0.0),
         }
     }
 }
 impl RadianceElementExpr {
     pub fn radiance(&self) -> Expr<Radiance> {
-        self.final_radiance
+        self.radiance_weight.xyz()
     }
 }
 impl RadianceElementAtomicRef {
@@ -94,34 +79,28 @@ impl RadianceElementAtomicRef {
         self.fluence.y.fetch_add(deposit.fluence.y);
         self.fluence.z.fetch_add(deposit.fluence.z);
         self.fluence.w.fetch_add(deposit.fluence.w);
-        self.radiance_weight.x.fetch_add(deposit.radiance_weight.x);
-        self.radiance_weight.y.fetch_add(deposit.radiance_weight.y);
-        self.radiance_weight.z.fetch_add(deposit.radiance_weight.z);
-        self.radiance_weight.w.fetch_add(deposit.radiance_weight.w);
+        self.radiance_weight.w.fetch_add(1.0);
     }
 }
 impl RadianceElementVar {
     #[tracked]
     pub fn deposit(&self, deposit: Expr<RadianceDeposit>) {
         *self.fluence += deposit.fluence;
-        *self.radiance_weight += deposit.radiance_weight;
+        *self.radiance_weight.w += 1.0;
     }
     #[tracked]
-    pub fn merge(&self, far: Expr<Radiance>, count_cutoff: Expr<f32>) {
+    pub fn merge(&self, far: Expr<Radiance>) {
         let fluence = self.fluence / self.radiance_weight.w;
         let radiance = fluence.xyz() + fluence.w * far;
-        let radiance = keter::lerp(
-            radiance,
-            self.radiance_weight.xyz() / self.radiance_weight.w,
-            keter::min(self.radiance_weight.w / count_cutoff, 1.0),
-        );
-        *self.final_radiance = radiance;
+        *self.radiance_weight.x = radiance.x;
+        *self.radiance_weight.y = radiance.y;
+        *self.radiance_weight.z = radiance.z;
     }
     #[tracked]
     pub fn reduce(&self, factor: Expr<f32>, min_count: Expr<f32>) {
         if self.radiance_weight.w > min_count {
             *self.fluence *= factor;
-            *self.radiance_weight *= factor;
+            *self.radiance_weight.w *= factor;
         }
     }
 }

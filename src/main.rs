@@ -22,7 +22,7 @@ use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
-use yesod::rand::pcg3df;
+use yesod::rand::{pcg3d, pcg3df};
 
 use crate::cache::{
     Fluence, HashCache, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe, ProbeComps,
@@ -35,8 +35,6 @@ pub mod color;
 pub mod fluence;
 pub mod utils;
 pub mod world;
-
-const BASE_COUNT_CUTOFF: f32 = 1024.0;
 
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
 const RADIANCE_DISCARD_MISSING: u32 = 0b10;
@@ -135,6 +133,8 @@ fn main() {
         DEVICE.create_tex2d::<f32>(PixelStorage::Float1, app.size()[0], app.size()[1], 1);
     let normal_buf =
         DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, app.size()[0], app.size()[1], 1);
+    let accum_buf =
+        DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     // let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
 
@@ -148,6 +148,10 @@ fn main() {
         value.reduce(0.9_f32.expr(), 0.0.expr());
         cache.data.write(index, value);
     }));
+    let reset_tex2d = DEVICE.create_kernel::<fn(Tex2d<Vec4<f32>>)>(&track!(|tex| {
+        let pixel = dispatch_id().xy();
+        tex.write(pixel, Vec4::splat_expr(0.0_f32));
+    }));
     let reset_cache_nodes = DEVICE.create_kernel::<fn()>(&track!(|| {
         cache.nodes.write(dispatch_id().x, Node::default());
     }));
@@ -157,7 +161,7 @@ fn main() {
             .write(dispatch_id().x, RadianceElement::default());
     }));
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
-    let merge_cache = DEVICE.create_kernel::<fn(u32, f32)>(&track!(|level, base_cutoff| {
+    let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
         let node_index = dispatch_id().x;
         let node = cache.read_node(level, node_index);
         if node.position == POSITION_INVALID {
@@ -215,15 +219,12 @@ fn main() {
             }
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
-            radiance_deposit.merge(
-                total_radiance / 4.0,
-                base_cutoff / 4.0.expr().powi(level.cast_i32()),
-            );
+            radiance_deposit.merge(total_radiance / 4.0);
             cache.data.write(data_index, radiance_deposit);
         }
         // TODO: Switch to pre-merging? How does that actually work.
     }));
-    let merge_final_cache = DEVICE.create_kernel::<fn(f32)>(&track!(|base_cutoff| {
+    let merge_final_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
         let level = (cache.num_levels - 1).expr();
         let node_index = dispatch_id().x;
         let node = cache.read_node(level, node_index);
@@ -240,7 +241,6 @@ fn main() {
             radiance_deposit.merge(
                 // Should never happen.
                 Vec3::expr(1000.0, 0.0, 0.0),
-                base_cutoff / 4.0.expr().powi(level.cast_i32()),
             );
             cache.data.write(data_index, radiance_deposit);
         }
@@ -316,13 +316,13 @@ fn main() {
                 cache.deposit(
                     probe.shift_level(level),
                     bounce_ray,
-                    RadianceDeposit::expr(Vec3::splat_expr(0.0_f32).extend(1.0), fluence.xyz()),
+                    RadianceDeposit::expr(Vec3::splat_expr(0.0_f32).extend(1.0)),
                 );
             }
             cache.deposit(
                 probe.shift_level(hit_level),
                 bounce_ray,
-                RadianceDeposit::expr(fluence, fluence.xyz()),
+                RadianceDeposit::expr(fluence),
             );
         }),
     );
@@ -375,9 +375,11 @@ fn main() {
                 inferno(1.0 - reinhard(depth / 1000.0))
             } else if mode == 5 {
                 normal * 0.5 + Vec3::splat_expr(0.5)
-            } else if mode == 6 {
+            } else if mode == 6 || mode == 7 {
+                let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
+                    % Vec2::new(hemi_noise.width(), hemi_noise.height());
                 let bounce_ray = as_normal(hemi_noise.read(
-                    pixel.extend(tick)
+                    (pixel + offset).extend(tick)
                         % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
                 ));
                 let bounce_ray = rotate_hemi(normal, bounce_ray);
@@ -385,10 +387,17 @@ fn main() {
 
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
-                if bounce_hit.valid() {
+                let radiance = if bounce_hit.valid() {
                     Vec3::splat_expr(0.0_f32)
                 } else {
                     sunlight_radiance(bounce_ray)
+                };
+                if mode == 7 {
+                    let value = accum_buf.read(pixel) + radiance.extend(1.0);
+                    accum_buf.write(pixel, value);
+                    value.xyz() / value.w
+                } else {
+                    radiance
                 }
             /*} else if mode == 7 || mode == 8 {
                 let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
@@ -462,7 +471,7 @@ fn main() {
         } else {
             800.0
         } * rt.frame_time();
-        camera.apply_movement(&rt.keys_down, rot_speed, move_speed);
+        let camera_updated = camera.apply_movement(&rt.keys_down, rot_speed, move_speed);
         if rt.key_pressed(KeyCode::KeyP) {
             println!("Camera: {camera:?}");
         }
@@ -489,16 +498,6 @@ fn main() {
         //     radiance_flags ^= RADIANCE_DISCARD_MISSING;
         // }
 
-        let base_cutoff = if cutoff_mode == 0 {
-            BASE_COUNT_CUTOFF
-        } else if cutoff_mode == 1 {
-            f32::INFINITY
-        } else {
-            0.1
-        };
-
-        rt.log_fps();
-
         let mut commands = vec![];
         commands.push(
             compute_gbuffer_kernel
@@ -521,17 +520,24 @@ fn main() {
                     )
                     .debug("Compute Radiance"),
             ]);
+            for l in (0..cache.num_levels).rev() {
+                let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+                commands.push(
+                    (if l == cache.num_levels - 1 {
+                        merge_final_cache.dispatch_async(dispatch_size)
+                    } else {
+                        merge_cache.dispatch_async(dispatch_size, &l)
+                    })
+                    .debug(format!("Merge Cache Level {l}")),
+                );
+            }
         }
 
-        for l in (0..cache.num_levels).rev() {
-            let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+        if camera_updated {
             commands.push(
-                (if l == cache.num_levels - 1 {
-                    merge_final_cache.dispatch_async(dispatch_size, &base_cutoff)
-                } else {
-                    merge_cache.dispatch_async(dispatch_size, &l, &base_cutoff)
-                })
-                .debug(format!("Merge Cache Level {l}")),
+                reset_tex2d
+                    .dispatch_async([accum_buf.width(), accum_buf.height(), 1], &accum_buf)
+                    .debug("Reset Accumulation"),
             );
         }
 
