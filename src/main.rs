@@ -37,7 +37,6 @@ pub mod utils;
 pub mod world;
 
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
-const RADIANCE_DISCARD_MISSING: u32 = 0b10;
 
 #[tracked]
 fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
@@ -135,8 +134,8 @@ fn main() {
         DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, app.size()[0], app.size()[1], 1);
     let accum_buf =
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
-    let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    // let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
+    // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
@@ -299,13 +298,28 @@ fn main() {
             );
             let (hit_level, fluence) = if bounce_hit.valid() {
                 let level = keter::max(
-                    (bounce_hit.committed_ray_t / (12.0 * cache.base_grid_size)).log2(),
+                    (bounce_hit.committed_ray_t / (12.0 * 16.0_f32)).log2(), // TODO: change to depend on grid size.
                     0.0,
                 )
                 .ceil()
                 .cast_u32();
                 let level = keter::min(level, cache.num_levels.expr() - 1);
-                (level, Vec3::splat_expr(0.0_f32).extend(0.0))
+                let radiance = if (flags & RADIANCE_DIRECT_ONLY) != 0 {
+                    Vec3::splat_expr(0.0_f32)
+                } else {
+                    let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
+                    let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
+                    let value = cache.query_diffuse(
+                        cache.quantize(bounce_pos),
+                        world.get_normal_flat(bounce_hit),
+                    );
+                    if value.x == -1.0 {
+                        Vec3::splat_expr(0.0_f32) // skip because undefined
+                    } else {
+                        value * color
+                    }
+                };
+                (level, radiance.extend(0.0))
             } else {
                 (
                     cache.num_levels.expr() - 1,
@@ -494,10 +508,6 @@ fn main() {
         if rt.key_pressed(KeyCode::KeyR) {
             radiance_flags ^= RADIANCE_DIRECT_ONLY;
         }
-        // if rt.key_pressed(KeyCode::KeyT) {
-        //     radiance_flags ^= RADIANCE_DISCARD_MISSING;
-        // }
-
         let mut commands = vec![];
         commands.push(
             compute_gbuffer_kernel
