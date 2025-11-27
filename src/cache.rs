@@ -15,6 +15,7 @@ pub type Fluence = Vec4<f32>;
 const NUM_BITS: u64 = 18;
 const MASK: u32 = (1 << NUM_BITS) - 1;
 pub const POSITION_INVALID: u64 = u64::MAX;
+const NODE_LIFETIME: u32 = 10;
 
 // TODO: This really isn't that good.
 #[tracked]
@@ -97,7 +98,7 @@ impl RadianceElementVar {
         *self.radiance_weight.z = radiance.z;
     }
     #[tracked]
-    pub fn reduce(&self, factor: Expr<f32>, min_count: Expr<f32>) {
+    pub fn decay(&self, factor: Expr<f32>, min_count: Expr<f32>) {
         if self.radiance_weight.w > min_count {
             *self.fluence *= factor;
             *self.radiance_weight.w *= factor;
@@ -166,6 +167,7 @@ pub struct LoadedNode {
 #[derive(Debug, Clone, Copy, Value)]
 pub struct Node {
     pub position: u64,
+    pub lifetime: u32,
     // Still no solution to do this without spinning.
     // pub data_index: u32,
     // can be used to decide when to remove nodes.
@@ -175,6 +177,7 @@ impl Default for Node {
     fn default() -> Self {
         Self {
             position: POSITION_INVALID,
+            lifetime: 0,
             // total_count: 0.0,
         }
     }
@@ -253,8 +256,19 @@ pub struct Projection {
 }
 impl ProjectionExpr {
     #[tracked]
+    pub fn inv_project_fixed(&self, pos: Expr<Vec3<f32>>, cascde: Expr<u32>) -> Expr<Vec3<f32>> {
+        let spacing = self.base_grid_size * (1_u32 << cascde).cast_f32();
+        pos / spacing
+    }
+    #[tracked]
     pub fn inv_project(&self, pos: Expr<Vec3<f32>>) -> (Expr<Vec3<f32>>, Expr<u32>) {
-        let radius = (pos - self.view.pos).length();
+        let approx_radius = (pos - self.view.pos).length();
+        let approx_cascade = (keter::max((approx_radius / self.base_radius).log2(), 0.0) + 0.5)
+            .ceil()
+            .cast_u32();
+        let approx_spacing = self.base_grid_size * (1_u32 << (approx_cascade + 2)).cast_f32();
+        let discretized_pos = ((pos / approx_spacing).floor() + 0.5) * approx_spacing;
+        let radius = (discretized_pos - self.view.pos).length();
         let cascade = keter::max((radius / self.base_radius).log2(), 0.0)
             .ceil()
             .cast_u32();
@@ -354,6 +368,21 @@ impl HashCache {
         let node_offset = self.get_node_offset(level);
         self.nodes.read(node_offset + node_index)
     }
+
+    #[tracked]
+    pub fn write_node(&self, level: Expr<u32>, node_index: Expr<u32>, node: Expr<Node>) {
+        let node_offset = self.get_node_offset(level);
+        self.nodes.write(node_offset + node_index, node)
+    }
+    #[tracked]
+    pub fn quantize_fixed(&self, pos: Expr<Vec3<f32>>, cascade: Expr<u32>) -> Expr<Probe> {
+        let pos = self.projection.read(0).inv_project_fixed(pos, cascade);
+        Probe::base(
+            (pos.floor().cast_i32() - self.offset)
+                .cast_u32()
+                .extend(cascade),
+        )
+    }
     #[tracked]
     pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Probe> {
         let (pos, cascade) = self.projection.read(0).inv_project(pos);
@@ -436,6 +465,7 @@ impl HashCache {
             if prev == POSITION_INVALID || prev == position {
                 // Success.
                 *loaded = true;
+                node.lifetime.exchange(NODE_LIFETIME);
                 break;
             }
             *node_index = (node_index + 1) % table_size;

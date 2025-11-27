@@ -1,15 +1,5 @@
 #![feature(array_windows)]
 
-/*
-TODO:
-- Screenspace version of everything?
-- [X] or screenspace grid.
-- [X] Blue noise.
-- [X] Make octahedral actually equal area (fix current bug)
-- Comparison to SHARC / PT
-- [X] Bilinear interpolation at the end as well
-*/
-
 use std::f32::consts::TAU;
 use std::path::PathBuf;
 
@@ -123,6 +113,31 @@ fn main() {
         ))
     });
 
+    /*
+    let world = {
+        let a = 6000.0;
+        let b = 50.0;
+        let h1 = 7.0;
+        let h2 = 307.0;
+
+        TriangleWorld::new(
+            &[
+                [-a, -a, h1],
+                [-a, a, h1],
+                [a, -a, h1],
+                [a, a, h1],
+                // [-b, -b, h2],
+                // [-b, b, h2],
+                // [-b, -b, h1],
+                // [-b, b, h1],
+            ],
+            &[[0.0; 3]; 4],
+            &[[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6]],
+            &[[0, 0]],
+        )
+    };
+     */
+
     let world = TriangleWorld::load(
         "assets/sponza.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
@@ -135,17 +150,36 @@ fn main() {
     let accum_buf =
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 4);
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
-    let lower_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
-        let index = dispatch_id().x;
-        let value = cache.data.read(index).var();
-        value.reduce(0.9_f32.expr(), 0.0.expr());
-        cache.data.write(index, value);
+    let decay_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
+        let node_index = dispatch_id().x;
+        let node = cache.read_node(level, node_index).var();
+        if node.position == POSITION_INVALID {
+            return;
+        }
+        *node.lifetime -= 1;
+        let is_invalid = node.lifetime == 0;
+        if is_invalid {
+            *node.position = POSITION_INVALID;
+        }
+        cache.write_node(level, node_index, **node);
+
+        if is_invalid {
+            let position = decode_position(**node.position);
+            let probe = Probe::from_comps_expr(ProbeComps { position, level });
+            let node = cache.load_index(probe, node_index);
+
+            for index in 0_u32.expr()..node.encoder.linear_size() {
+                cache
+                    .data
+                    .write(node.data_offset + index, RadianceElement::default());
+            }
+        }
     }));
     let reset_tex2d = DEVICE.create_kernel::<fn(Tex2d<Vec4<f32>>)>(&track!(|tex| {
         let pixel = dispatch_id().xy();
@@ -159,6 +193,9 @@ fn main() {
             .data
             .write(dispatch_id().x, RadianceElement::default());
     }));
+    // TODO: Test if switching to finer angular resolution fixes things.
+    // TODO: Fix to 2LOD and make it a bit simpler.
+
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
         let node_index = dispatch_id().x;
@@ -170,20 +207,19 @@ fn main() {
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
         // TODO: best to process in batches of 8.
-        /*
-        let total_weight = 1.0_f32.var();
-        let next = [(
-            cache.query(
-                probe.next_nearest(),
-                |x| x,
-                || {
-                    return;
-                    LoadedNode::expr_zeroed()
-                },
-            ),
-            1.0_f32.expr(),
-        )];
-        */
+
+        // let total_weight = 1.0_f32.var();
+        // let next = [(
+        //     cache.query(
+        //         probe.next_nearest(),
+        //         |x| x,
+        //         || {
+        //             return;
+        //             LoadedNode::expr_zeroed()
+        //         },
+        //     ),
+        //     1.0_f32.expr(),
+        // )];
         let total_weight = 0.0_f32.var();
         let next = probe.next_bilinear().map(|(probe, weight)| {
             let (next, weight) = cache.query(
@@ -203,6 +239,7 @@ fn main() {
             *total_weight += weight;
             (next, weight)
         });
+        let total_weight = total_weight.max_(0.001);
         let next = next.map(|(next, weight)| (next, weight / total_weight));
         for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
@@ -294,11 +331,13 @@ fn main() {
             let bounce_hit = world.trace_segment(
                 world_pos,
                 bounce_ray,
-                Vec2::expr(0.01, 100000.0) * (1_u32 << probe.position.w).cast_f32(),
+                Vec2::expr(0.01, 100000.0), // * (1_u32 << probe.position.w).cast_f32(),
             );
             let (hit_level, fluence) = if bounce_hit.valid() {
                 let level = keter::max(
-                    (bounce_hit.committed_ray_t / (12.0 * 16.0_f32)).log2(), // TODO: change to depend on grid size.
+                    (bounce_hit.committed_ray_t
+                        / (12.0 * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32()))
+                    .log2(), // TODO: change to depend on grid size.
                     0.0,
                 )
                 .ceil()
@@ -369,12 +408,20 @@ fn main() {
             let probe = cache.quantize(world_pos).shift_level(level);
 
             let color = if mode == 0 {
-                cache.query_diffuse(probe, normal)
+                let result = cache.query_diffuse(probe, normal);
+                if result.x.is_nan() {
+                    Vec3::expr(0.0, 0.0, 1.0)
+                } else if result.x.is_infinite() {
+                    Vec3::expr(1.0, 0.0, 1.0)
+                } else {
+                    result
+                }
             } else if mode == 1 {
                 cache.query_diffuse_bilinear(world_pos, level, normal)
             } else if mode == 2 {
                 if cache.contains(probe) {
-                    pcg3df(probe.position.xyz())
+                    inferno((probe.position.w.cast_f32() + 0.5) / 9.0)
+                        * pcg3df(probe.position.xyz()).x
                 } else {
                     Vec3::splat_expr(0.0)
                 }
@@ -516,11 +563,17 @@ fn main() {
         );
 
         if running || rt.key_pressed(KeyCode::Period) {
-            commands.extend([
-                cache.set_view(camera.view()),
-                lower_cache
-                    .dispatch_async([cache.data.len() as u32, 1, 1])
-                    .debug("Lower Cache"),
+            commands.push(cache.set_view(camera.view()));
+            for l in (0..cache.num_levels).rev() {
+                let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+
+                commands.push(
+                    decay_cache
+                        .dispatch_async(dispatch_size, &l)
+                        .debug("Lower Cache"),
+                );
+            }
+            commands.push(
                 compute_radiance_kernel
                     .dispatch_async(
                         rt.dispatch_size(),
@@ -529,7 +582,7 @@ fn main() {
                         &radiance_flags,
                     )
                     .debug("Compute Radiance"),
-            ]);
+            );
             for l in (0..cache.num_levels).rev() {
                 let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
                 commands.push(
