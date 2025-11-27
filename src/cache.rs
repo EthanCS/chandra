@@ -58,7 +58,7 @@ impl RadianceDeposit {
 pub struct RadianceElement {
     // actually pretty likely that the transmittance is 1 / the fluence is empty.
     pub fluence: Vec4<f32>, // xyz: partial fluence, w: transmittance (multiplied by weight)
-    pub radiance_weight: Vec4<f32>, // xyz: radiance (multiplied by weight), w: weight
+    pub radiance_weight: Vec4<f32>, // xyz: radiance, w: weight
 }
 impl Default for RadianceElement {
     fn default() -> Self {
@@ -390,6 +390,14 @@ impl HashCache {
             (pos.floor().cast_i32() - self.offset)
                 .cast_u32()
                 .extend(cascade),
+        )
+    }
+    #[tracked]
+    pub fn dequantize(&self, probe: Expr<Probe>) -> Expr<Vec3<f32>> {
+        self.projection.read(0).project(
+            ((probe.position.xyz() << probe.level).cast_i32() + self.offset).cast_f32()
+                + 0.5 * (1 << probe.level).cast_f32(),
+            probe.position.w,
         )
     }
     #[tracked]

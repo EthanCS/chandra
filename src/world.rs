@@ -124,7 +124,7 @@ impl TriangleWorld {
 
     #[tracked]
     pub fn trace(&self, ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>) -> Expr<SurfaceHit> {
-        self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, 10000.0))
+        self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, 100000.0))
     }
 
     #[tracked]

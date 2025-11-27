@@ -193,8 +193,6 @@ fn main() {
             .data
             .write(dispatch_id().x, RadianceElement::default());
     }));
-    // TODO: Test if switching to finer angular resolution fixes things.
-    // TODO: Fix to 2LOD and make it a bit simpler.
 
     // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
@@ -460,9 +458,16 @@ fn main() {
                 } else {
                     radiance
                 }
-            /*} else if mode == 7 || mode == 8 {
-                let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
-                let start = view.pos / grid_size;
+            } else if mode == 8 {
+                inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
+                // let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
+                // world
+                //     .trace_segment(world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
+                //     .valid()
+                //     .select(Vec3::splat_expr(0.1_f32), Vec3::splat_expr(1.0_f32))
+                /*} else if mode == 7 || mode == 8 {
+                    let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
+                    let start = view.pos / grid_size;
                 let color = Vec3::splat(0.0_f32).var();
                 utils::dda(
                     start,
