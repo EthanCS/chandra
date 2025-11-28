@@ -15,8 +15,8 @@ use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::rand::{pcg3d, pcg3df};
 
 use crate::cache::{
-    Fluence, HashCache, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe, ProbeComps,
-    Radiance, RadianceDeposit, RadianceElement, decode_position,
+    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe,
+    ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
 };
 use crate::world::TriangleWorld;
 
@@ -151,6 +151,11 @@ fn main() {
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 4);
+    let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
+        ((1 << 18) * cache.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y)
+            as usize,
+        |_| Vec4::new(0.0, 0.0, 0.0, 0.00001),
+    );
 
     let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
         + cache.nodes.len() * std::mem::size_of::<Node>();
@@ -179,6 +184,12 @@ fn main() {
                     .data
                     .write(node.data_offset + index, RadianceElement::default());
             }
+            if level == 0 {
+                for index in 0_u32.expr()..node.encoder.linear_size() {
+                    primary_cache
+                        .write(node.data_offset + index, Vec4::new(0.0, 0.0, 0.0, 0.00001));
+                }
+            }
         }
     }));
     let reset_tex2d = DEVICE.create_kernel::<fn(Tex2d<Vec4<f32>>)>(&track!(|tex| {
@@ -194,8 +205,18 @@ fn main() {
             .write(dispatch_id().x, RadianceElement::default());
     }));
 
-    // TODO: Test conjoined merging method instead where the merging is combined with the raytracing instead and fluence isn't stored.
-    let merge_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
+    #[derive(Clone, Copy)]
+    enum MergeLevel {
+        First,
+        Last,
+        Middle(Expr<u32>),
+    }
+    let merge_cache_base = track!(|merge_level: MergeLevel| {
+        let level = match merge_level {
+            MergeLevel::First => 0.expr(),
+            MergeLevel::Last => (cache.num_levels - 1).expr(),
+            MergeLevel::Middle(l) => l,
+        };
         let node_index = dispatch_id().x;
         let node = cache.read_node(level, node_index);
         if node.position == POSITION_INVALID {
@@ -219,66 +240,66 @@ fn main() {
         //     1.0_f32.expr(),
         // )];
         let total_weight = 0.0_f32.var();
-        let next = probe.next_bilinear().map(|(probe, weight)| {
-            let (next, weight) = cache.query(
-                probe,
-                |n| (n, weight),
-                || {
-                    (
-                        LoadedNode::from_comps_expr(LoadedNodeComps {
-                            probe,
-                            encoder: cache.get_encoder(probe.level),
-                            data_offset: 0_u32.expr(),
-                        }),
-                        0_f32.expr(),
-                    )
-                },
-            );
-            *total_weight += weight;
-            (next, weight)
+        let next_probes = (!matches!(merge_level, MergeLevel::Last)).then(|| {
+            let next_probes = probe.next_bilinear().map(|(probe, weight)| {
+                let (next, weight) = cache.query(
+                    probe,
+                    |n| (n, weight),
+                    || {
+                        (
+                            LoadedNode::from_comps_expr(LoadedNodeComps {
+                                probe,
+                                encoder: cache.get_encoder(probe.level),
+                                data_offset: 0_u32.expr(),
+                            }),
+                            0_f32.expr(),
+                        )
+                    },
+                );
+                *total_weight += weight;
+                (next, weight)
+            });
+            *total_weight = keter::max(total_weight, 0.001);
+            next_probes.map(|(next, weight)| (next, weight / total_weight))
         });
-        let total_weight = total_weight.max_(0.001);
-        let next = next.map(|(next, weight)| (next, weight / total_weight));
         for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
             let dir = node.encoder.linear_to_grid(index);
             let total_radiance = Vec3::splat(0.0_f32).var();
-            for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
-                let sample_dir = dir * 2 + offset;
-                for (next, weight) in &next {
-                    let sample_index = next.encoder.grid_to_linear(sample_dir);
-                    *total_radiance +=
-                        weight * cache.data.read(next.data_offset + sample_index).radiance();
+            if let MergeLevel::Last = merge_level {
+                // Shouldn't be used.
+                *total_radiance = Vec3::expr(10000.0, 0.0, 0.0);
+            } else {
+                for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
+                    let sample_dir = dir * 2 + offset;
+                    for (next, weight) in next_probes.unwrap() {
+                        let sample_index = next.encoder.grid_to_linear(sample_dir);
+                        *total_radiance +=
+                            weight * cache.data.read(next.data_offset + sample_index).radiance();
+                    }
                 }
             }
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
             radiance_deposit.merge(total_radiance / 4.0);
+            if let MergeLevel::First = merge_level {
+                let base_radiance = primary_cache.read(data_index);
+                *radiance_deposit.radiance_weight +=
+                    (base_radiance.xyz() / base_radiance.w).extend(0.0);
+            }
             cache.data.write(data_index, radiance_deposit);
         }
-        // TODO: Switch to pre-merging? How does that actually work.
-    }));
-    let merge_final_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
-        let level = (cache.num_levels - 1).expr();
-        let node_index = dispatch_id().x;
-        let node = cache.read_node(level, node_index);
-        if node.position == POSITION_INVALID {
-            return;
-        }
-        let position = decode_position(node.position);
-        let probe = Probe::from_comps_expr(ProbeComps { position, level });
-        let node = cache.load_index(probe, node_index);
-        for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
-            let index = index * dispatch_size().y + dispatch_id().y;
-            let data_index = node.data_offset + index;
-            let radiance_deposit = cache.data.read(data_index).var();
-            radiance_deposit.merge(
-                // Should never happen.
-                Vec3::expr(1000.0, 0.0, 0.0),
-            );
-            cache.data.write(data_index, radiance_deposit);
-        }
-    }));
+    });
+
+    let merge_first_cache = DEVICE.create_kernel::<fn()>(&|| {
+        merge_cache_base(MergeLevel::First);
+    });
+    let merge_cache = DEVICE.create_kernel::<fn(u32)>(&|level| {
+        merge_cache_base(MergeLevel::Middle(level));
+    });
+    let merge_last_cache = DEVICE.create_kernel::<fn()>(&|| {
+        merge_cache_base(MergeLevel::Last);
+    });
     let compute_gbuffer_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
@@ -325,7 +346,6 @@ fn main() {
 
             let probe = cache.quantize(world_pos);
 
-            // TODO: Can do a single ray trace instead of 6.
             let bounce_hit = world.trace_segment(
                 world_pos,
                 bounce_ray,
@@ -360,7 +380,7 @@ fn main() {
             } else {
                 (
                     cache.num_levels.expr() - 1,
-                    sunlight_radiance(bounce_ray).extend(0.0),
+                    Vec4::splat_expr(0.0), // sunlight_radiance(bounce_ray).extend(0.0),
                 )
             };
             for level in 0.expr()..hit_level {
@@ -374,6 +394,23 @@ fn main() {
                 probe.shift_level(hit_level),
                 bounce_ray,
                 RadianceDeposit::expr(fluence),
+            );
+            let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
+            let sunlight = world
+                .trace_segment(world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
+                .valid()
+                .select(Vec3::splat_expr(0.01_f32), Vec3::splat_expr(10.0_f32));
+            cache.query(
+                probe,
+                |node| {
+                    let value = primary_cache
+                        .atomic_ref(node.data_offset + node.encoder.dir_to_linear(sunlight_dir));
+                    value.x.fetch_add(sunlight.x);
+                    value.y.fetch_add(sunlight.y);
+                    value.z.fetch_add(sunlight.z);
+                    value.w.fetch_add(1.0);
+                },
+                || {},
             );
         }),
     );
@@ -466,44 +503,44 @@ fn main() {
                 //     .valid()
                 //     .select(Vec3::splat_expr(0.1_f32), Vec3::splat_expr(1.0_f32))
                 /*} else if mode == 7 || mode == 8 {
-                    let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
-                    let start = view.pos / grid_size;
-                let color = Vec3::splat(0.0_f32).var();
-                utils::dda(
-                    start,
-                    ray_dir,
-                    10000.0_f32.expr(),
-                    (Vec3::splat_expr(-1000.0_f32), Vec3::splat_expr(1000.0_f32)),
-                    |pos, last_t, _next_t| {
-                        let probe = cache.get_probe(pos, level);
-                        let start_pos =
-                            view.pos + ray_dir * last_t - (pos.cast_f32() + 0.5) * grid_size;
-                        if cache.contains(probe) {
-                            let (time, intersected) =
-                                utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
-                            if intersected {
-                                let intersect_dir = (start_pos + ray_dir * time.x).normalize();
-                                *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
+                        let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
+                        let start = view.pos / grid_size;
+                    let color = Vec3::splat(0.0_f32).var();
+                    utils::dda(
+                        start,
+                        ray_dir,
+                        10000.0_f32.expr(),
+                        (Vec3::splat_expr(-1000.0_f32), Vec3::splat_expr(1000.0_f32)),
+                        |pos, last_t, _next_t| {
+                            let probe = cache.get_probe(pos, level);
+                            let start_pos =
+                                view.pos + ray_dir * last_t - (pos.cast_f32() + 0.5) * grid_size;
+                            if cache.contains(probe) {
+                                let (time, intersected) =
+                                    utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
+                                if intersected {
+                                    let intersect_dir = (start_pos + ray_dir * time.x).normalize();
+                                    *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
 
-                                if mode == 7 { cache.query_dir(probe, intersect_dir)
-                                    + Vec3::expr(0.0_f32, 0.0, 0.)
-                                } else {
-                                    let encoder = cache.get_encoder(level);
-                                    encoder.grid_to_dir(
-                                        encoder.dir_to_grid(intersect_dir)
-                                    ) * 0.5 + 0.5
-                                };
+                                    if mode == 7 { cache.query_dir(probe, intersect_dir)
+                                        + Vec3::expr(0.0_f32, 0.0, 0.)
+                                    } else {
+                                        let encoder = cache.get_encoder(level);
+                                        encoder.grid_to_dir(
+                                            encoder.dir_to_grid(intersect_dir)
+                                        ) * 0.5 + 0.5
+                                    };
+                                }
+                                intersected
+                            } else {
+                                false.expr()
                             }
-                            intersected
-                        } else {
-                            false.expr()
-                        }
-                    },
-                );
-                **color
-                // cache.query_diffuse(probe, normal)
-                //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
-            */
+                        },
+                    );
+                    **color
+                    // cache.query_diffuse(probe, normal)
+                    //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
+                */
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
@@ -525,7 +562,6 @@ fn main() {
     let mut running = true;
     let mut mode = 0;
     let mut level = 0;
-    let mut cutoff_mode = 1;
     let mut radiance_flags = RADIANCE_DIRECT_ONLY;
 
     let mut profiler = Profiler::new();
@@ -548,10 +584,6 @@ fn main() {
         if rt.key_pressed(KeyCode::KeyL) {
             level = (level + 1) % cache.num_levels;
             println!("Level set {level}");
-        }
-        if rt.key_pressed(KeyCode::KeyC) {
-            cutoff_mode = (cutoff_mode + 1) % 3;
-            println!("Cutoff mode set {cutoff_mode}");
         }
         if rt.key_pressed(KeyCode::KeyO) {
             running = !running;
@@ -591,8 +623,10 @@ fn main() {
             for l in (0..cache.num_levels).rev() {
                 let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
                 commands.push(
-                    (if l == cache.num_levels - 1 {
-                        merge_final_cache.dispatch_async(dispatch_size)
+                    (if l == 0 {
+                        merge_first_cache.dispatch_async(dispatch_size)
+                    } else if l == cache.num_levels - 1 {
+                        merge_last_cache.dispatch_async(dispatch_size)
                     } else {
                         merge_cache.dispatch_async(dispatch_size, &l)
                     })
