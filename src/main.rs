@@ -1,5 +1,24 @@
 #![feature(array_windows)]
 
+/*
+TODOS:
+[ ] Add more lights, fancier primary ray stuff?
+[ ] Interpolation between levels
+[ ] C-1 merging for better contacts
+[ ] Optimize, switch to f16s everywhere
+[ ] Better hashmap impl without dropping things? Bias towards primary rays first.
+
+Hashmap:
+It's fine if missing takes many iterations to hit (especially in 2nd / 3rd bounce, can cap the lookup as well).
+Missing on primary should not happen at all. For efficiency, also make primary override secondary? Can that be done atomically??
+
+So: Each node has a "rating" bit. When inserting:
+* Scan for the first node with a higher rating; atomically set (fetch_min) it.
+  * Then set its position to invalid.
+* Scan for the first node with position invalid, and claim it.
+This probably works fine, but only for the min-level insert.
+*/
+
 use std::f32::consts::TAU;
 use std::path::PathBuf;
 
@@ -204,6 +223,9 @@ fn main() {
             .data
             .write(dispatch_id().x, RadianceElement::default());
     }));
+    let reset_primary_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
+        primary_cache.write(dispatch_id().x, Vec4::new(0.0, 0.0, 0.0, 0.00001));
+    }));
 
     #[derive(Clone, Copy)]
     enum MergeLevel {
@@ -355,25 +377,6 @@ fn main() {
 
                 let probe = cache.quantize(**world_pos);
 
-                let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
-                let sunlight = world
-                    .trace_segment(**world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
-                    .valid()
-                    .select(Vec3::splat_expr(0.01_f32), Vec3::splat_expr(10.0_f32));
-                cache.query(
-                    probe,
-                    |node| {
-                        let value = primary_cache.atomic_ref(
-                            node.data_offset + node.encoder.dir_to_linear(sunlight_dir),
-                        );
-                        value.x.fetch_add(sunlight.x);
-                        value.y.fetch_add(sunlight.y);
-                        value.z.fetch_add(sunlight.z);
-                        value.w.fetch_add(1.0);
-                    },
-                    || {},
-                );
-
                 let bounce_hit = world.trace_segment(
                     **world_pos,
                     **bounce_ray,
@@ -428,6 +431,26 @@ fn main() {
                     **bounce_ray,
                     RadianceDeposit::expr(fluence),
                 );
+
+                let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
+                let sunlight = world
+                    .trace_segment(**world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
+                    .valid()
+                    .select(Vec3::splat_expr(0.01_f32), Vec3::splat_expr(10.0_f32));
+                cache.query(
+                    probe,
+                    |node| {
+                        let value = primary_cache.atomic_ref(
+                            node.data_offset + node.encoder.dir_to_linear(sunlight_dir),
+                        );
+                        value.x.fetch_add(sunlight.x);
+                        value.y.fetch_add(sunlight.y);
+                        value.z.fetch_add(sunlight.z);
+                        value.w.fetch_add(1.0);
+                    },
+                    || {},
+                );
+
                 if !bounce_hit.valid() || (flags & RADIANCE_DIRECT_ONLY) != 0 {
                     break;
                 }
@@ -517,53 +540,57 @@ fn main() {
                 }
             } else if mode == 8 {
                 inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
-                // let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
-                // world
-                //     .trace_segment(world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
-                //     .valid()
-                //     .select(Vec3::splat_expr(0.1_f32), Vec3::splat_expr(1.0_f32))
-                /*} else if mode == 7 || mode == 8 {
-                        let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
-                        let start = view.pos / grid_size;
-                    let color = Vec3::splat(0.0_f32).var();
-                    utils::dda(
-                        start,
-                        ray_dir,
-                        10000.0_f32.expr(),
-                        (Vec3::splat_expr(-1000.0_f32), Vec3::splat_expr(1000.0_f32)),
-                        |pos, last_t, _next_t| {
-                            let probe = cache.get_probe(pos, level);
-                            let start_pos =
-                                view.pos + ray_dir * last_t - (pos.cast_f32() + 0.5) * grid_size;
-                            if cache.contains(probe) {
-                                let (time, intersected) =
-                                    utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
-                                if intersected {
-                                    let intersect_dir = (start_pos + ray_dir * time.x).normalize();
-                                    *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
-
-                                    if mode == 7 { cache.query_dir(probe, intersect_dir)
-                                        + Vec3::expr(0.0_f32, 0.0, 0.)
-                                    } else {
-                                        let encoder = cache.get_encoder(level);
-                                        encoder.grid_to_dir(
-                                            encoder.dir_to_grid(intersect_dir)
-                                        ) * 0.5 + 0.5
-                                    };
-                                }
-                                intersected
-                            } else {
-                                false.expr()
-                            }
-                        },
-                    );
-                    **color
-                    // cache.query_diffuse(probe, normal)
-                    //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
-                */
+            } else if mode == 9 {
+                let hit = world.trace(view.pos, ray_dir);
+                pcg3df(Vec3::expr(hit.inst, 37, 926))
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
+
+            // let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
+            // world
+            //     .trace_segment(world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
+            //     .valid()
+            //     .select(Vec3::splat_expr(0.1_f32), Vec3::splat_expr(1.0_f32))
+            /*} else if mode == 7 || mode == 8 {
+                    let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
+                    let start = view.pos / grid_size;
+                let color = Vec3::splat(0.0_f32).var();
+                utils::dda(
+                    start,
+                    ray_dir,
+                    10000.0_f32.expr(),
+                    (Vec3::splat_expr(-1000.0_f32), Vec3::splat_expr(1000.0_f32)),
+                    |pos, last_t, _next_t| {
+                        let probe = cache.get_probe(pos, level);
+                        let start_pos =
+                            view.pos + ray_dir * last_t - (pos.cast_f32() + 0.5) * grid_size;
+                        if cache.contains(probe) {
+                            let (time, intersected) =
+                                utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
+                            if intersected {
+                                let intersect_dir = (start_pos + ray_dir * time.x).normalize();
+                                *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
+
+                                if mode == 7 { cache.query_dir(probe, intersect_dir)
+                                    + Vec3::expr(0.0_f32, 0.0, 0.)
+                                } else {
+                                    let encoder = cache.get_encoder(level);
+                                    encoder.grid_to_dir(
+                                        encoder.dir_to_grid(intersect_dir)
+                                    ) * 0.5 + 0.5
+                                };
+                            }
+                            intersected
+                        } else {
+                            false.expr()
+                        }
+                    },
+                );
+                **color
+                // cache.query_diffuse(probe, normal)
+                //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
+            */
             app.set_pixel(pixel.cast_i32(), color);
         }),
     );
@@ -598,7 +625,7 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 9;
+            mode = (mode + 1) % 10;
             println!("Drawing mode {mode}");
         }
         if rt.key_pressed(KeyCode::KeyL) {
@@ -689,6 +716,7 @@ fn main() {
             // println!("Resetting cache");
             reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
             reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
+            reset_primary_cache.dispatch([primary_cache.len() as u32, 1, 1]);
         }
     });
 }
