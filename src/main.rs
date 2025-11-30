@@ -17,6 +17,10 @@ So: Each node has a "rating" bit. When inserting:
   * Then set its position to invalid.
 * Scan for the first node with position invalid, and claim it.
 This probably works fine, but only for the min-level insert.
+
+BUGS:
+[ ] Currently the lit spots are brighter when there's no diffuse / multibounce.
+[ ] Convergence is just pretty damn slow currently. Make it so that lower cascades use higher cascade values if they don't have enough info?
 */
 
 use std::f32::consts::TAU;
@@ -169,7 +173,7 @@ fn main() {
     let accum_buf =
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 4);
+    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
         ((1 << 18) * cache.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y)
             as usize,
@@ -481,8 +485,6 @@ fn main() {
             let normal = SphericalEncoder::decode(normal_buf.read(pixel));
             let world_pos = view.pos + ray_dir * depth;
 
-            // TODO: Decide whether to have the circle cutoffs be around the sample point or be around the cell center.
-
             let probe = cache.quantize(world_pos).shift_level(level);
 
             let color = if mode == 0 {
@@ -546,51 +548,6 @@ fn main() {
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
-
-            // let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
-            // world
-            //     .trace_segment(world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
-            //     .valid()
-            //     .select(Vec3::splat_expr(0.1_f32), Vec3::splat_expr(1.0_f32))
-            /*} else if mode == 7 || mode == 8 {
-                    let grid_size = cache.base_grid_size * (1_u32 << level).cast_f32();
-                    let start = view.pos / grid_size;
-                let color = Vec3::splat(0.0_f32).var();
-                utils::dda(
-                    start,
-                    ray_dir,
-                    10000.0_f32.expr(),
-                    (Vec3::splat_expr(-1000.0_f32), Vec3::splat_expr(1000.0_f32)),
-                    |pos, last_t, _next_t| {
-                        let probe = cache.get_probe(pos, level);
-                        let start_pos =
-                            view.pos + ray_dir * last_t - (pos.cast_f32() + 0.5) * grid_size;
-                        if cache.contains(probe) {
-                            let (time, intersected) =
-                                utils::intersect_sphere(start_pos, ray_dir, 0.3 * grid_size);
-                            if intersected {
-                                let intersect_dir = (start_pos + ray_dir * time.x).normalize();
-                                *color = // inferno(1.0 - reinhard((time.x + last_t) / 1000.0));
-
-                                if mode == 7 { cache.query_dir(probe, intersect_dir)
-                                    + Vec3::expr(0.0_f32, 0.0, 0.)
-                                } else {
-                                    let encoder = cache.get_encoder(level);
-                                    encoder.grid_to_dir(
-                                        encoder.dir_to_grid(intersect_dir)
-                                    ) * 0.5 + 0.5
-                                };
-                            }
-                            intersected
-                        } else {
-                            false.expr()
-                        }
-                    },
-                );
-                **color
-                // cache.query_diffuse(probe, normal)
-                //     + cache.query_dir_bilinear(probe, reflect(ray_dir, normal))
-            */
             app.set_pixel(pixel.cast_i32(), color);
         }),
     );
