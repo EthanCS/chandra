@@ -386,6 +386,13 @@ fn main() {
                     **bounce_ray,
                     Vec2::expr(0.01, 100000.0), // * (1_u32 << probe.position.w).cast_f32(),
                 );
+                let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
+                let bounce_normal = if bounce_hit.valid() {
+                    world.get_normal_flat(bounce_hit)
+                } else {
+                    **normal
+                };
+
                 let (hit_level, fluence) = if bounce_hit.valid() {
                     let level = keter::max(
                         (bounce_hit.committed_ray_t
@@ -401,12 +408,6 @@ fn main() {
                     let radiance = if (flags & RADIANCE_DIRECT_ONLY) != 0 {
                         Vec3::splat_expr(0.0_f32)
                     } else {
-                        let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-                        let bounce_normal = world.get_normal_flat(bounce_hit);
-
-                        *world_pos = bounce_pos;
-                        *normal = bounce_normal;
-
                         let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
                         let value = cache.query_diffuse(cache.quantize(bounce_pos), bounce_normal);
 
@@ -458,6 +459,9 @@ fn main() {
                 if !bounce_hit.valid() || (flags & RADIANCE_DIRECT_ONLY) != 0 {
                     break;
                 }
+
+                *world_pos = bounce_pos;
+                *normal = bounce_normal;
             }
         }),
     );
