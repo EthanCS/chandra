@@ -382,6 +382,8 @@ fn main() {
             let normal = SphericalEncoder::decode(normal_buf.read(pixel)).var();
             let world_pos = (view.pos + ray_dir * depth).var();
 
+            let interpolate_side = pixel.x % 2 == pixel.y % 2;
+
             // TODO: It should probably be uniform rather than cos sampling but it doesn't actually change much.
             // let weight = bounce_ray.dot(normal);
             // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
@@ -400,7 +402,7 @@ fn main() {
                 )
                 .var();
 
-                let probe = cache.quantize(**world_pos);
+                let probe = cache.quantize(**world_pos, (i == 0) && interpolate_side);
 
                 let bounce_hit = world.trace_segment(
                     **world_pos,
@@ -430,7 +432,8 @@ fn main() {
                         Vec3::splat_expr(0.0_f32)
                     } else {
                         let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        let value = cache.query_diffuse(cache.quantize(bounce_pos), bounce_normal);
+                        let value = cache
+                            .query_diffuse(cache.quantize(bounce_pos, false.expr()), bounce_normal);
 
                         if value.x == -1.0 {
                             Vec3::splat_expr(0.0_f32) // skip because undefined
@@ -516,10 +519,18 @@ fn main() {
             let world_pos = view.pos + ray_dir * depth;
             let sunlight = sunlight_buf.read(pixel.extend(0));
 
-            let probe = cache.quantize(world_pos).shift_level(level);
+            let probe = cache.quantize(world_pos, false.expr()).shift_level(level);
 
             let color = if mode == 0 {
+                let other_probe = cache.quantize(world_pos, true.expr()).shift_level(level);
+                let factor = cache.projection().interpolation_factor(world_pos);
                 let result = cache.query_diffuse(probe, normal);
+                let result = if factor == 1.0 {
+                    result
+                } else {
+                    let other_result = cache.query_diffuse(other_probe, normal);
+                    result * factor + other_result * (1.0 - factor)
+                };
                 if result.x.is_nan() {
                     Vec3::expr(0.0, 0.0, 1.0)
                 } else if result.x.is_infinite() {
@@ -547,7 +558,8 @@ fn main() {
             } else if mode == 4 {
                 inferno(1.0 - reinhard(depth / 1000.0))
             } else if mode == 5 {
-                normal * 0.5 + Vec3::splat_expr(0.5)
+                Vec3::splat_expr(cache.projection().interpolation_factor(world_pos))
+                // normal * 0.5 + Vec3::splat_expr(0.5)
             } else if mode == 6 || mode == 7 {
                 let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
                     % Vec2::new(hemi_noise.width(), hemi_noise.height());

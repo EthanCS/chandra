@@ -247,6 +247,8 @@ impl ProbeExpr {
     }
 }
 
+const INTERP_RADIUS: f32 = 0.1;
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value)]
 pub struct Projection {
@@ -260,16 +262,34 @@ impl ProjectionExpr {
         let spacing = self.base_grid_size * (1_u32 << cascde).cast_f32();
         pos / spacing
     }
+
     #[tracked]
-    pub fn inv_project(&self, pos: Expr<Vec3<f32>>) -> (Expr<Vec3<f32>>, Expr<u32>) {
-        let approx_radius = (pos - self.view.pos).length();
-        let approx_cascade = (keter::max((approx_radius / self.base_radius).log2(), 0.0) + 0.5)
+    pub fn interpolation_factor(&self, pos: Expr<Vec3<f32>>) -> Expr<f32> {
+        let radius = (pos - self.view.pos).length();
+        let cascade = keter::max((radius / self.base_radius).log2(), 0.5)
             .ceil()
             .cast_u32();
-        let approx_spacing = self.base_grid_size * (1_u32 << (approx_cascade + 2)).cast_f32();
-        let discretized_pos = ((pos / approx_spacing).floor() + 0.5) * approx_spacing;
-        let radius = (discretized_pos - self.view.pos).length();
-        let cascade = keter::max((radius / self.base_radius).log2(), 0.0)
+        let lower_radius = self.base_radius * (1_u32 << (cascade - 1)).cast_f32();
+        if radius <= self.base_radius {
+            1.0.expr()
+        } else {
+            keter::min((radius / lower_radius - 1.0) / INTERP_RADIUS, 1.0)
+        }
+    }
+
+    #[tracked]
+    pub fn inv_project(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        interpolate: Expr<bool>,
+    ) -> (Expr<Vec3<f32>>, Expr<u32>) {
+        let radius = (pos - self.view.pos).length();
+        let effective_base_radius = if interpolate {
+            self.base_radius * (1.0 + INTERP_RADIUS)
+        } else {
+            self.base_radius
+        };
+        let cascade = keter::max((radius / effective_base_radius).log2(), 0.0)
             .ceil()
             .cast_u32();
         let spacing = self.base_grid_size * (1_u32 << cascade).cast_f32();
@@ -345,6 +365,9 @@ impl HashCache {
     pub fn num_data(&self) -> u32 {
         self.base_nodes * self.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y
     }
+    pub fn projection(&self) -> Expr<Projection> {
+        self.projection.read(0)
+    }
     #[tracked]
     pub fn get_encoder(&self, level: Expr<u32>) -> Expr<DirectionIndexer> {
         DirectionIndexer::from_comps_expr(DirectionIndexerComps {
@@ -376,7 +399,7 @@ impl HashCache {
     }
     #[tracked]
     pub fn quantize_fixed(&self, pos: Expr<Vec3<f32>>, cascade: Expr<u32>) -> Expr<Probe> {
-        let pos = self.projection.read(0).inv_project_fixed(pos, cascade);
+        let pos = self.projection().inv_project_fixed(pos, cascade);
         Probe::base(
             (pos.floor().cast_i32() - self.offset)
                 .cast_u32()
@@ -384,8 +407,8 @@ impl HashCache {
         )
     }
     #[tracked]
-    pub fn quantize(&self, pos: Expr<Vec3<f32>>) -> Expr<Probe> {
-        let (pos, cascade) = self.projection.read(0).inv_project(pos);
+    pub fn quantize(&self, pos: Expr<Vec3<f32>>, interpolate: Expr<bool>) -> Expr<Probe> {
+        let (pos, cascade) = self.projection().inv_project(pos, interpolate);
         Probe::base(
             (pos.floor().cast_i32() - self.offset)
                 .cast_u32()
@@ -394,7 +417,7 @@ impl HashCache {
     }
     #[tracked]
     pub fn dequantize(&self, probe: Expr<Probe>) -> Expr<Vec3<f32>> {
-        self.projection.read(0).project(
+        self.projection().project(
             ((probe.position.xyz() << probe.level).cast_i32() + self.offset).cast_f32()
                 + 0.5 * (1 << probe.level).cast_f32(),
             probe.position.w,
@@ -554,7 +577,7 @@ impl HashCache {
         level: Expr<u32>,
         normal: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
-        let (pos, cascade) = self.projection.read(0).inv_project(pos);
+        let (pos, cascade) = self.projection().inv_project(pos, false.expr());
         let spacing = (1_u32 << level).cast_f32();
         let base_probe = Probe::base(
             ((pos - spacing / 2.0).floor().cast_i32() - self.offset)
