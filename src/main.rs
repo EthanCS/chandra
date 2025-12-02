@@ -7,6 +7,7 @@ TODOS:
 [ ] C-1 merging for better contacts
 [ ] Optimize, switch to f16s everywhere
 [ ] Better hashmap impl without dropping things? Bias towards primary rays first.
+[ ] Some sorta anderson acceleration to make the infinite bounce convergence less obvious?
 
 Hashmap:
 It's fine if missing takes many iterations to hit (especially in 2nd / 3rd bounce, can cap the lookup as well).
@@ -19,7 +20,6 @@ So: Each node has a "rating" bit. When inserting:
 This probably works fine, but only for the min-level insert.
 
 BUGS:
-[ ] Currently the lit spots are brighter when there's no diffuse / multibounce.
 [ ] Convergence is just pretty damn slow currently. Make it so that lower cascades use higher cascade values if they don't have enough info?
 */
 
@@ -50,6 +50,11 @@ pub mod utils;
 pub mod world;
 
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
+
+fn sunlight_dir() -> Vec3<f32> {
+    let dir = glam::Vec3::new(0.1, 0.5, 1.0);
+    dir.normalize().into()
+}
 
 #[tracked]
 fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
@@ -172,6 +177,8 @@ fn main() {
         DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, app.size()[0], app.size()[1], 1);
     let accum_buf =
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
+    let sunlight_buf =
+        DEVICE.create_tex3d::<Vec3<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 2, 1);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
@@ -233,13 +240,13 @@ fn main() {
 
     #[derive(Clone, Copy)]
     enum MergeLevel {
-        First,
+        // First,
         Last,
         Middle(Expr<u32>),
     }
     let merge_cache_base = track!(|merge_level: MergeLevel| {
         let level = match merge_level {
-            MergeLevel::First => 0.expr(),
+            // MergeLevel::First => 0.expr(),
             MergeLevel::Last => (cache.num_levels - 1).expr(),
             MergeLevel::Middle(l) => l,
         };
@@ -308,18 +315,32 @@ fn main() {
             let data_index = node.data_offset + index;
             let radiance_deposit = cache.data.read(data_index).var();
             radiance_deposit.merge(total_radiance / 4.0);
-            if let MergeLevel::First = merge_level {
-                let base_radiance = primary_cache.read(data_index);
-                *radiance_deposit.radiance_weight +=
-                    (base_radiance.xyz() / base_radiance.w).extend(0.0);
-            }
             cache.data.write(data_index, radiance_deposit);
         }
     });
 
-    let merge_first_cache = DEVICE.create_kernel::<fn()>(&|| {
-        merge_cache_base(MergeLevel::First);
-    });
+    let add_primary_cache = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let index = dispatch_id().x;
+        let node = cache.read_node(0.expr(), index);
+        if node.position == POSITION_INVALID {
+            return;
+        }
+        let node = cache.load_index(
+            Probe::from_comps_expr(ProbeComps {
+                position: decode_position(node.position),
+                level: 0.expr(),
+            }),
+            index,
+        );
+        for index in 0_u32.expr()..node.encoder.linear_size() {
+            let data_index = node.data_offset + index;
+            let radiance_deposit = cache.data.read(data_index).var();
+            let primary = primary_cache.read(data_index);
+            *radiance_deposit.radiance_weight += (primary.xyz() / primary.w).extend(0.0);
+            cache.data.write(data_index, radiance_deposit);
+        }
+    }));
+
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&|level| {
         merge_cache_base(MergeLevel::Middle(level));
     });
@@ -437,16 +458,21 @@ fn main() {
                     RadianceDeposit::expr(fluence),
                 );
 
-                let sunlight_dir = Vec3::expr(0.1_f32, 0.5, 1.0).normalize();
                 let sunlight = world
-                    .trace_segment(**world_pos, sunlight_dir, Vec2::expr(1.0, 100000.0))
+                    .trace_segment(
+                        **world_pos,
+                        sunlight_dir().expr(),
+                        Vec2::expr(1.0, 100000.0),
+                    )
                     .valid()
-                    .select(Vec3::splat_expr(0.01_f32), Vec3::splat_expr(10.0_f32));
+                    .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
+                sunlight_buf.write(pixel.extend(i), sunlight);
+                // TODO: Added sunlight is downsampled at primary currently.
                 cache.query(
                     probe,
                     |node| {
                         let value = primary_cache.atomic_ref(
-                            node.data_offset + node.encoder.dir_to_linear(sunlight_dir),
+                            node.data_offset + node.encoder.dir_to_linear(sunlight_dir().expr()),
                         );
                         value.x.fetch_add(sunlight.x);
                         value.y.fetch_add(sunlight.y);
@@ -488,6 +514,7 @@ fn main() {
             }
             let normal = SphericalEncoder::decode(normal_buf.read(pixel));
             let world_pos = view.pos + ray_dir * depth;
+            let sunlight = sunlight_buf.read(pixel.extend(0));
 
             let probe = cache.quantize(world_pos).shift_level(level);
 
@@ -498,10 +525,11 @@ fn main() {
                 } else if result.x.is_infinite() {
                     Vec3::expr(1.0, 0.0, 1.0)
                 } else {
-                    result
+                    result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
                 }
             } else if mode == 1 {
                 cache.query_diffuse_bilinear(world_pos, level, normal)
+                    + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 2 {
                 if cache.contains(probe) {
                     inferno((probe.position.w.cast_f32() + 0.5) / 9.0)
@@ -607,7 +635,8 @@ fn main() {
                 .debug("Compute GBuffer"),
         );
 
-        if running || rt.key_pressed(KeyCode::Period) {
+        let running = running || rt.key_down(KeyCode::Period);
+        if running {
             commands.push(cache.set_view(camera.view()));
             for l in (0..cache.num_levels).rev() {
                 let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
@@ -615,7 +644,7 @@ fn main() {
                 commands.push(
                     decay_cache
                         .dispatch_async(dispatch_size, &l)
-                        .debug("Lower Cache"),
+                        .debug("Decay Cache"),
                 );
             }
             commands.push(
@@ -631,9 +660,7 @@ fn main() {
             for l in (0..cache.num_levels).rev() {
                 let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
                 commands.push(
-                    (if l == 0 {
-                        merge_first_cache.dispatch_async(dispatch_size)
-                    } else if l == cache.num_levels - 1 {
+                    (if l == cache.num_levels - 1 {
                         merge_last_cache.dispatch_async(dispatch_size)
                     } else {
                         merge_cache.dispatch_async(dispatch_size, &l)
@@ -657,16 +684,25 @@ fn main() {
                 .debug("Draw"),
         );
 
+        if running {
+            commands.push(
+                add_primary_cache
+                    .dispatch_async([cache.num_nodes_at_level(0), 1, 1])
+                    .debug("Add Primary Cache"),
+            );
+        }
+
         profiler.record(commands.chain().execute_timed());
 
         if profiler.time() > 1000.0 {
             profiler.print(
                 &[
                     "Compute GBuffer",
-                    "Merge",
-                    "Draw",
-                    "Lower Cache",
+                    "Decay Cache",
                     "Compute Radiance",
+                    "Merge",
+                    "Add Primary Cache",
+                    "Draw",
                 ],
                 true,
             );
