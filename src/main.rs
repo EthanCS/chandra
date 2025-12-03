@@ -539,8 +539,16 @@ fn main() {
                     result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
                 }
             } else if mode == 1 {
-                cache.query_diffuse_bilinear(world_pos, level, normal)
-                    + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
+                let factor = cache.projection().interpolation_factor(world_pos);
+                let result = cache.query_diffuse_bilinear(world_pos, level, normal, false.expr());
+                let result = if factor == 1.0 {
+                    result
+                } else {
+                    let other_result =
+                        cache.query_diffuse_bilinear(world_pos, level, normal, true.expr());
+                    result * factor + other_result * (1.0 - factor)
+                };
+                result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 2 {
                 if cache.contains(probe) {
                     inferno((probe.position.w.cast_f32() + 0.5) / 9.0)

@@ -576,8 +576,9 @@ impl HashCache {
         pos: Expr<Vec3<f32>>,
         level: Expr<u32>,
         normal: Expr<Vec3<f32>>,
+        interpolate: Expr<bool>,
     ) -> Expr<Radiance> {
-        let (pos, cascade) = self.projection().inv_project(pos, false.expr());
+        let (pos, cascade) = self.projection().inv_project(pos, interpolate);
         let spacing = (1_u32 << level).cast_f32();
         let base_probe = Probe::base(
             ((pos - spacing / 2.0).floor().cast_i32() - self.offset)
