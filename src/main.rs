@@ -3,7 +3,6 @@
 /*
 TODOS:
 [ ] Add more lights, fancier primary ray stuff?
-[ ] Interpolation between levels
 [ ] C-1 merging for better contacts
 [ ] Optimize, switch to f16s everywhere
 [ ] Better hashmap impl without dropping things? Bias towards primary rays first.
@@ -655,7 +654,7 @@ fn main() {
                 .debug("Compute GBuffer"),
         );
 
-        let running = running || rt.key_down(KeyCode::Period);
+        let running = running || rt.key_pressed(KeyCode::Period);
         if running {
             commands.push(cache.set_view(camera.view()));
             for l in (0..cache.num_levels).rev() {
