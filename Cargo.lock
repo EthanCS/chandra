@@ -787,6 +787,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "fragile"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28dd6caf6059519a65843af8fe2a3ae298b14b80179855aeb4adc2c1934ee619"
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3474,9 +3480,11 @@ name = "yesod"
 version = "0.1.0"
 dependencies = [
  "colorous",
+ "fragile",
  "glam 0.30.0",
  "keter",
  "nalgebra",
+ "take_mut",
  "winit",
 ]
 
