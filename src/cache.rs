@@ -116,14 +116,18 @@ pub struct DirectionIndexer {
 }
 impl DirectionIndexerExpr {
     #[tracked]
-    pub fn grid_to_dir(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
-        let v = (index.cast_f32() + 0.5) / (self.resolution * INDEX_SCALING).cast_f32();
+    pub fn grid_to_dir_f32(&self, index: Expr<Vec2<f32>>) -> Expr<Vec3<f32>> {
+        let v = index / self.grid_size().cast_f32();
         Encoder::decode(v)
+    }
+    #[tracked]
+    pub fn grid_to_dir(&self, index: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
+        self.grid_to_dir_f32(index.cast_f32() + 0.5)
     }
     #[tracked]
     pub fn dir_to_grid(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
         let v = Encoder::encode(dir);
-        (v * next_float_down_pos_2((self.resolution * INDEX_SCALING).cast_f32()))
+        (v * next_float_down_pos_2(self.grid_size().cast_f32()))
             .floor()
             .cast_u32()
     }
@@ -508,7 +512,12 @@ impl HashCache {
         }
     }
     #[tracked]
-    pub fn get_diffuse(&self, node: Expr<LoadedNode>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
+    pub fn get_diffuse(
+        &self,
+        node: Expr<LoadedNode>,
+        normal: Expr<Vec3<f32>>,
+        shadow_mask: Expr<u32>,
+    ) -> Expr<Radiance> {
         let total_radiance = Vec4::splat(0.0_f32).var();
         for i in 0_u32.expr()..node.encoder.linear_size() {
             let dir = node.encoder.linear_to_dir(i);
@@ -516,7 +525,10 @@ impl HashCache {
             if weight > 0.0 {
                 let data_index = node.data_offset + i;
                 let deposit = self.data.read(data_index);
-                *total_radiance += deposit.radiance().extend(1.0) * weight;
+                *total_radiance += (deposit.radiance()
+                    * (shadow_mask & (1 << i) == 0).cast_u32().cast_f32())
+                .extend(1.0)
+                    * weight;
             }
         }
         // TODO: Why the hell is this necessary??? Is a rust-analyzer issue.
@@ -563,10 +575,15 @@ impl HashCache {
         **total_radiance
     }
     #[tracked]
-    pub fn query_diffuse(&self, probe: Expr<Probe>, normal: Expr<Vec3<f32>>) -> Expr<Radiance> {
+    pub fn query_diffuse(
+        &self,
+        probe: Expr<Probe>,
+        normal: Expr<Vec3<f32>>,
+        shadow_mask: Expr<u32>,
+    ) -> Expr<Radiance> {
         self.query(
             probe,
-            |node| self.get_diffuse(node, normal),
+            |node| self.get_diffuse(node, normal, shadow_mask),
             || Vec3::splat_expr(-1.0),
         )
     }
@@ -577,6 +594,7 @@ impl HashCache {
         level: Expr<u32>,
         normal: Expr<Vec3<f32>>,
         interpolate: Expr<bool>,
+        shadow_mask: Expr<u32>,
     ) -> Expr<Radiance> {
         let (pos, cascade) = self.projection().inv_project(pos, interpolate);
         let spacing = (1_u32 << level).cast_f32();
@@ -587,6 +605,7 @@ impl HashCache {
         )
         .shift_level(level);
 
+        // TODO: Do queries and then sum them up ?
         let frac = (pos / spacing - 0.5).fract(); // or something like it
         let total_radiance = Vec4::splat(0.0_f32).var();
         for i in (0..8) {
@@ -606,7 +625,7 @@ impl HashCache {
             });
             *total_radiance += self.query(
                 probe,
-                |node| self.get_diffuse(node, normal).extend(1.0) * weight,
+                |node| self.get_diffuse(node, normal, shadow_mask).extend(1.0) * weight,
                 || Vec4::splat_expr(0.0),
             );
         }

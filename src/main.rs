@@ -3,10 +3,16 @@
 /*
 TODOS:
 [X] Add more lights, fancier primary ray stuff?
-[ ] C-1 merging for better contacts
-[ ] Optimize, switch to f16s everywhere
+[X] C-1 merging for better contacts
+[ ] Optimize, switch to u64 everywhere
 [ ] Better hashmap impl without dropping things? Bias towards primary rays first.
 [ ] Some sorta anderson acceleration to make the infinite bounce convergence less obvious?
+
+[ ] Precompute ndotl lighting separately? At least for offscreen?
+[ ] Add separate world-space cache with lower resolution? Preferably get both to use the same map to prevent overflow...
+[ ] Ray counting / quality metrics.
+[ ] Test how much memory saved if each probe element is sparse?
+[ ] Optimize the c-1 merging or remove it.
 
 Hashmap:
 It's fine if missing takes many iterations to hit (especially in 2nd / 3rd bounce, can cap the lookup as well).
@@ -22,6 +28,8 @@ Idea: Two keys per node: primary and secondary. Look up primary over secondary.
 
 BUGS:
 [ ] Convergence is just pretty damn slow currently. Make it so that lower cascades use higher cascade values if they don't have enough info?
+
+Split into two caches. Also measure ray divergence and use that to stochastically reduce ray count.
 */
 
 use std::f32::consts::TAU;
@@ -29,6 +37,7 @@ use std::path::PathBuf;
 
 use glam::Mat3 as FMat3;
 use image::{GenericImageView, ImageReader};
+use keter::bindless::BINDLESS;
 use keter::graph::profile::Profiler;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
@@ -52,7 +61,11 @@ pub mod fluence;
 pub mod utils;
 pub mod world;
 
+const RAY_LENGTH: f32 = 12.0;
+
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
+const C_1_MERGE: u32 = 0b10;
+const C_0_START: f32 = 1.0;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -146,7 +159,7 @@ fn main() {
         ))
     });
 
-    let world = {
+    /*let world = {
         let a = 6000.0;
         let b = 50.0;
         let h1 = 7.0;
@@ -167,15 +180,23 @@ fn main() {
             &[[0, 2, 1], [1, 2, 3], [0, 2, 1], [1, 2, 3]],
             &[[0, 0], [2, 4]],
         )
-    };
+    };*/
 
-    // let world = TriangleWorld::load(
-    //     "assets/sponza.obj",
-    //     FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
-    // );
+    let world = TriangleWorld::load(
+        "assets/sponza.obj",
+        FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
+    );
 
     let depth_buf =
         DEVICE.create_tex2d::<f32>(PixelStorage::Float1, app.size()[0], app.size()[1], 1);
+    let depth_buf = BINDLESS.push_tex2d(
+        depth_buf,
+        Sampler {
+            filter: SamplerFilter::LinearLinear,
+            address: SamplerAddress::Edge,
+        },
+    );
+    BINDLESS.update();
     let normal_buf =
         DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, app.size()[0], app.size()[1], 1);
     let accum_buf =
@@ -412,7 +433,16 @@ fn main() {
                 let bounce_hit = world.trace_segment(
                     **world_pos,
                     **bounce_ray,
-                    Vec2::expr(0.01, 100000.0), // * (1_u32 << probe.position.w).cast_f32(),
+                    Vec2::expr(
+                        if flags & C_1_MERGE != 0 {
+                            C_0_START
+                                * cache.base_grid_size
+                                * (1_u32 << probe.position.w).cast_f32()
+                        } else {
+                            0.01.expr()
+                        },
+                        100000.0,
+                    ), // * (1_u32 << probe.position.w).cast_f32(),
                 );
                 let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
                 let bounce_normal = if bounce_hit.valid() {
@@ -424,7 +454,7 @@ fn main() {
                 let (hit_level, fluence) = if bounce_hit.valid() {
                     let level = keter::max(
                         (bounce_hit.committed_ray_t
-                            / (12.0
+                            / (RAY_LENGTH
                                 * cache.base_grid_size
                                 * (1_u32 << probe.position.w).cast_f32()))
                         .log2(), // TODO: change to depend on grid size.
@@ -441,8 +471,11 @@ fn main() {
                         }
                     } else {
                         let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        let value = cache
-                            .query_diffuse(cache.quantize(bounce_pos, false.expr()), bounce_normal);
+                        let value = cache.query_diffuse(
+                            cache.quantize(bounce_pos, false.expr()),
+                            bounce_normal,
+                            0.expr(),
+                        );
 
                         if value.x == -1.0 {
                             Vec3::splat_expr(0.0_f32) // skip because undefined
@@ -477,7 +510,7 @@ fn main() {
                         Vec2::expr(1.0, 100000.0),
                     )
                     .valid()
-                    .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(0.1_f32));
+                    .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
                 sunlight_buf.write(pixel.extend(i), sunlight);
                 // TODO: Added sunlight is downsampled at primary currently.
                 cache.query(
@@ -504,7 +537,7 @@ fn main() {
         }),
     );
 
-    let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32, Vec2<u32>)>(
+    let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32, u32, Vec2<u32>)>(
         KernelBuildOptions {
             name: Some("draw_kernel".into()),
             enable_debug_info: true,
@@ -513,7 +546,7 @@ fn main() {
             enable_fast_math: false,
             ..Default::default()
         },
-        &track!(|view, tick, mode, level, cursor_pixel| {
+        &track!(|view, tick, flags, mode, level, cursor_pixel| {
             set_block_size([8, 8, 1]);
 
             let pixel = dispatch_id().xy();
@@ -530,14 +563,43 @@ fn main() {
 
             let probe = cache.quantize(world_pos, false.expr()).shift_level(level);
 
+            let shadow_mask = 0u32.var();
+
+            if (flags & C_1_MERGE) != 0 && mode < 2 {
+                let c_1_len =
+                    C_0_START * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32();
+                let encoder = cache.get_encoder(0.expr());
+
+                for i in 0_u32.expr()..32_u32.expr() {
+                    let offset = pcg3df(pixel.extend(i + tick * 32)).xy();
+                    let c_1_dir =
+                        encoder.grid_to_dir_f32(encoder.linear_to_grid(i).cast_f32() + offset);
+                    let c_1_dir = c_1_dir * c_1_len;
+                    // raymarch in screenspace
+                    for j in 0_u32.expr()..4_u32.expr() {
+                        let sample_pos = world_pos + c_1_dir * ((j.cast_f32() + 0.5) / 4.0);
+                        let screen_pos = view.project(sample_pos);
+                        let sample_depth = (sample_pos - view.pos).length();
+                        let object_depth = depth_buf
+                            .var()
+                            .sample((screen_pos + 0.5) / view.screen_size)
+                            .x;
+                        if object_depth != 0.0 && object_depth < sample_depth {
+                            *shadow_mask |= 1 << i;
+                            break;
+                        }
+                    }
+                }
+            }
+
             let color = if mode == 0 {
                 let other_probe = cache.quantize(world_pos, true.expr()).shift_level(level);
                 let factor = cache.projection().interpolation_factor(world_pos);
-                let result = cache.query_diffuse(probe, normal);
+                let result = cache.query_diffuse(probe, normal, **shadow_mask);
                 let result = if factor == 1.0 {
                     result
                 } else {
-                    let other_result = cache.query_diffuse(other_probe, normal);
+                    let other_result = cache.query_diffuse(other_probe, normal, **shadow_mask);
                     result * factor + other_result * (1.0 - factor)
                 };
                 if result.x.is_nan() {
@@ -549,12 +611,23 @@ fn main() {
                 }
             } else if mode == 1 {
                 let factor = cache.projection().interpolation_factor(world_pos);
-                let result = cache.query_diffuse_bilinear(world_pos, level, normal, false.expr());
+                let result = cache.query_diffuse_bilinear(
+                    world_pos,
+                    level,
+                    normal,
+                    false.expr(),
+                    **shadow_mask,
+                );
                 let result = if factor == 1.0 {
                     result
                 } else {
-                    let other_result =
-                        cache.query_diffuse_bilinear(world_pos, level, normal, true.expr());
+                    let other_result = cache.query_diffuse_bilinear(
+                        world_pos,
+                        level,
+                        normal,
+                        true.expr(),
+                        **shadow_mask,
+                    );
                     result * factor + other_result * (1.0 - factor)
                 };
                 result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
@@ -619,9 +692,9 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 6.1442695,
-        pitch: 0.5001559,
-        pos: glam::Vec3::new(-65.621124, -530.2255, 747.84515),
+        yaw: 7.4975963,
+        pitch: 0.332344,
+        pos: glam::Vec3::new(-78.53391, -402.59995, 495.0998),
         fov: 1.15,
     };
     let mut running = true;
@@ -657,6 +730,9 @@ fn main() {
         if rt.key_pressed(KeyCode::KeyR) {
             radiance_flags ^= RADIANCE_DIRECT_ONLY;
         }
+        if rt.key_pressed(KeyCode::KeyT) {
+            radiance_flags ^= C_1_MERGE;
+        }
         let mut commands = vec![];
         commands.push(
             compute_gbuffer_kernel
@@ -667,14 +743,14 @@ fn main() {
         let running = running || rt.key_pressed(KeyCode::Period);
         if running {
             commands.push(cache.set_view(camera.view()));
-            // for l in (0..cache.num_levels).rev() {
-            //     let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
-            //     commands.push(
-            //         decay_cache
-            //             .dispatch_async(dispatch_size, &l)
-            //             .debug("Decay Cache"),
-            //     );
-            // }
+            for l in (0..cache.num_levels).rev() {
+                let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+                commands.push(
+                    decay_cache
+                        .dispatch_async(dispatch_size, &l)
+                        .debug("Decay Cache"),
+                );
+            }
             commands.push(
                 compute_radiance_kernel
                     .dispatch_async(
@@ -685,17 +761,17 @@ fn main() {
                     )
                     .debug("Compute Radiance"),
             );
-            // for l in (0..cache.num_levels).rev() {
-            //     let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
-            //     commands.push(
-            //         (if l == cache.num_levels - 1 {
-            //             merge_last_cache.dispatch_async(dispatch_size)
-            //         } else {
-            //             merge_cache.dispatch_async(dispatch_size, &l)
-            //         })
-            //         .debug(format!("Merge Cache Level {l}")),
-            //     );
-            // }
+            for l in (0..cache.num_levels).rev() {
+                let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+                commands.push(
+                    (if l == cache.num_levels - 1 {
+                        merge_last_cache.dispatch_async(dispatch_size)
+                    } else {
+                        merge_cache.dispatch_async(dispatch_size, &l)
+                    })
+                    .debug(format!("Merge Cache Level {l}")),
+                );
+            }
         }
 
         if camera_updated {
@@ -712,6 +788,7 @@ fn main() {
                     rt.dispatch_size(),
                     &camera.view(),
                     &rt.tick,
+                    &radiance_flags,
                     &mode,
                     &level,
                     &rt.cursor_position.map(|x| x as u32),
