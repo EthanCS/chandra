@@ -165,13 +165,13 @@ pub struct LoadedNode {
     // little bit redundant, but whatever.
     pub encoder: DirectionIndexer,
     pub data_offset: u32,
+    pub node_index: u32,
 }
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value)]
 pub struct Node {
     pub position: u64,
-    pub lifetime: u32,
     // Still no solution to do this without spinning.
     // pub data_index: u32,
     // can be used to decide when to remove nodes.
@@ -181,7 +181,6 @@ impl Default for Node {
     fn default() -> Self {
         Self {
             position: POSITION_INVALID,
-            lifetime: 0,
             // total_count: 0.0,
         }
     }
@@ -449,6 +448,7 @@ impl HashCache {
             probe,
             encoder,
             data_offset,
+            node_index: index,
         })
     }
     #[tracked]
@@ -500,7 +500,6 @@ impl HashCache {
             if prev == POSITION_INVALID || prev == position {
                 // Success.
                 *loaded = true;
-                node.lifetime.exchange(NODE_LIFETIME);
                 break;
             }
             *node_index = (node_index + 1) % table_size;
