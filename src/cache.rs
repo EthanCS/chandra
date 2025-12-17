@@ -15,7 +15,6 @@ pub type Fluence = Vec4<f32>;
 const NUM_BITS: u64 = 18;
 const MASK: u32 = (1 << NUM_BITS) - 1;
 pub const POSITION_INVALID: u64 = u64::MAX;
-const NODE_LIFETIME: u32 = 10;
 
 // TODO: This really isn't that good.
 #[tracked]
@@ -165,7 +164,7 @@ pub struct LoadedNode {
     // little bit redundant, but whatever.
     pub encoder: DirectionIndexer,
     pub data_offset: u32,
-    pub node_index: u32,
+    pub index: u32,
 }
 
 #[repr(C)]
@@ -448,7 +447,7 @@ impl HashCache {
             probe,
             encoder,
             data_offset,
-            node_index: index,
+            index: index + self.get_node_offset(probe.level),
         })
     }
     #[tracked]

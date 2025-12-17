@@ -67,10 +67,10 @@ const RADIANCE_DIRECT_ONLY: u32 = 0b1;
 const C_1_MERGE: u32 = 0b10;
 const C_0_START: f32 = 1.0;
 
-const QUALITY_CUTOFF: f32 = 0.0; // 0.3;
 const TARGET_QUALITY_MULTIPLIER: f32 = 50.0;
-const QUALITY_DECAY: f32 = 1.0;
+const QUALITY_DECAY: f32 = 0.95;
 const MAX_RAYS: u32 = 1 << 22;
+const NODE_LIFETIME: u32 = 10;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -218,7 +218,7 @@ fn main() {
     let sunlight_buf =
         DEVICE.create_tex3d::<Vec3<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 2, 1);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 16, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
         (cache.base_nodes
             * cache.base_angular_resolution.pow(2)
@@ -230,6 +230,7 @@ fn main() {
     let base_probe_num_rays =
         DEVICE.create_buffer_from_fn::<u32>(cache.base_nodes as usize, |_| 0_u32);
     let node_quality = DEVICE.create_buffer_from_fn::<f32>(cache.nodes.len(), |_| 0.0_f32);
+    let node_lifetime = DEVICE.create_buffer_from_fn::<u32>(cache.nodes.len(), |_| 0_u32);
     let traced_rays = DEVICE.create_buffer::<Ray>(MAX_RAYS as usize);
     let next_traced_ray = Singleton::<u32>::new(0_u32);
 
@@ -238,26 +239,28 @@ fn main() {
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
     let decay_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
-        let node_index = dispatch_id().x;
-        let node = cache.read_node(level, node_index).var();
+        let node_index = dispatch_id().x + cache.get_node_offset(level);
+        let node = cache.nodes.read(node_index).var();
         if node.position == POSITION_INVALID {
             return;
         }
         let quality = node_quality.read(node_index).var();
         *quality *= QUALITY_DECAY;
-        let is_invalid =
-            quality < QUALITY_CUTOFF * cache.get_encoder(level).linear_size().cast_f32();
+        let lifetime = node_lifetime.read(node_index).var();
+        *lifetime -= 1_u32;
+        let is_invalid = lifetime == 0;
         if is_invalid {
             *node.position = POSITION_INVALID;
             *quality = 0.0;
         }
-        cache.write_node(level, node_index, **node);
-        node_quality.write(node_index + cache.get_node_offset(level), **quality);
+        cache.nodes.write(node_index, **node);
+        node_quality.write(node_index, **quality);
+        node_lifetime.write(node_index, **lifetime);
 
         if is_invalid {
             let position = decode_position(**node.position);
             let probe = Probe::from_comps_expr(ProbeComps { position, level });
-            let node = cache.load_index(probe, node_index);
+            let node = cache.load_index(probe, dispatch_id().x);
 
             for index in 0_u32.expr()..node.encoder.linear_size() {
                 cache
@@ -344,7 +347,7 @@ fn main() {
                                 probe,
                                 encoder: cache.get_encoder(probe.level),
                                 data_offset: 0_u32.expr(),
-                                node_index: 0_u32.expr(),
+                                index: 0_u32.expr(),
                             }),
                             0_f32.expr(),
                         )
@@ -424,7 +427,7 @@ fn main() {
         normal_buf.write(pixel, SphericalEncoder::encode(normal));
     }));
 
-    let compute_num_rays_kernel = DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, tick| {
+    let compute_num_rays_kernel = DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, _tick| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
         let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
@@ -439,7 +442,7 @@ fn main() {
 
         let probe = cache.quantize(**world_pos, interpolate_side);
 
-        let loaded_node = cache.query_init(
+        let node = cache.query_init(
             probe,
             |n| n,
             || {
@@ -448,7 +451,7 @@ fn main() {
             },
         );
         base_probe_num_rays
-            .atomic_ref(loaded_node.node_index)
+            .atomic_ref(node.index)
             .fetch_add(1_u32.expr());
     }));
     let compute_rays_kernel = DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, tick| {
@@ -468,7 +471,7 @@ fn main() {
 
         let probe = cache.quantize(world_pos, interpolate_side);
 
-        let loaded_node = cache.query_init(
+        let node = cache.query_init(
             probe,
             |n| n,
             || {
@@ -485,10 +488,10 @@ fn main() {
             )),
         );
 
-        let num_rays = base_probe_num_rays.read(loaded_node.node_index);
+        let num_rays = base_probe_num_rays.read(node.index);
         let target_rays = keter::max(
             cache.get_encoder(0.expr()).linear_size().cast_f32() * TARGET_QUALITY_MULTIPLIER
-                - node_quality.read(loaded_node.node_index),
+                - node_quality.read(node.index),
             0.0,
         );
         let extinction = target_rays / keter::max(num_rays, 1).cast_f32();
@@ -595,9 +598,10 @@ fn main() {
                                 node.data_offset + node.encoder.dir_to_linear(bounce_ray),
                             );
                             data.deposit(RadianceDeposit::expr(fluence));
-                            node_quality
-                                .atomic_ref(node.node_index + cache.get_node_offset(level))
-                                .fetch_add(1.0);
+                            node_quality.atomic_ref(node.index).fetch_add(1.0);
+                            node_lifetime
+                                .atomic_ref(node.index)
+                                .fetch_max(NODE_LIFETIME.expr());
                         },
                         || {},
                     )
@@ -748,18 +752,17 @@ fn main() {
                 cache.query(
                     probe,
                     |node| {
-                        let quality =
-                            node_quality.read(node.node_index + cache.get_node_offset(level));
+                        let quality = node_quality.read(node.index);
                         let quality_ratio = quality
                             / (TARGET_QUALITY_MULTIPLIER
                                 * cache.get_encoder(level).linear_size().cast_f32());
-                        // if (cursor_pixel == pixel).all() {
-                        //     device_println!(
-                        //         "Probe at quality: {}",
-                        //         // probe.position.w.host(),
-                        //         quality_ratio.host()
-                        //     );
-                        // }
+                        if (cursor_pixel == pixel).all() {
+                            device_println!(
+                                "Probe at quality: {}",
+                                // probe.position.w.host(),
+                                quality.host()
+                            );
+                        }
                         inferno(quality_ratio)
                     },
                     || Vec3::splat_expr(0.0),
@@ -769,11 +772,11 @@ fn main() {
                 cache.query(
                     probe,
                     |node| {
-                        let num_rays = base_probe_num_rays.read(node.node_index);
+                        let num_rays = base_probe_num_rays.read(node.index);
                         let target_rays = keter::max(
                             cache.get_encoder(0.expr()).linear_size().cast_f32()
                                 * TARGET_QUALITY_MULTIPLIER
-                                - node_quality.read(node.node_index),
+                                - node_quality.read(node.index),
                             0.0,
                         );
                         let extinction = target_rays / keter::max(num_rays, 1).cast_f32();
