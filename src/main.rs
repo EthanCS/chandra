@@ -39,6 +39,8 @@ use glam::Mat3 as FMat3;
 use image::{GenericImageView, ImageReader};
 use keter::bindless::BINDLESS;
 use keter::graph::profile::Profiler;
+use keter::lang::functions::sync_block;
+use keter::lang::types::shared::Shared;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
@@ -215,8 +217,7 @@ fn main() {
         DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, app.size()[0], app.size()[1], 1);
     let accum_buf =
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
-    let sunlight_buf =
-        DEVICE.create_tex3d::<Vec3<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 2, 1);
+    let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 17, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
@@ -297,6 +298,10 @@ fn main() {
     }));
     let reset_next_traced_ray = DEVICE.create_kernel::<fn()>(&track!(|| {
         next_traced_ray.write(0_u32);
+    }));
+
+    let reset_radiance_buf = DEVICE.create_kernel::<fn()>(&track!(|| {
+        radiance_buf.write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
     }));
 
     #[derive(Clone, Copy)]
@@ -650,6 +655,96 @@ fn main() {
         }),
     );
 
+    let compute_screen_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
+        set_block_size([1, 32, 1]);
+        let node = cache.nodes.read(dispatch_id().x);
+        if node.position == POSITION_INVALID || node_lifetime.read(dispatch_id().x) != NODE_LIFETIME
+        {
+            return;
+        }
+        let position = decode_position(node.position);
+        let probe = Probe::from_comps_expr(ProbeComps {
+            position,
+            level: 0.expr(),
+        });
+        let node = cache.load_index(probe, dispatch_id().x);
+        let quality = node_quality.read(dispatch_id().x);
+
+        let radiance_data = Shared::<Vec3<f32>>::new(32);
+        let v = cache
+            .data
+            .read(node.data_offset + dispatch_id().y)
+            .radiance();
+        radiance_data.write(dispatch_id().y, v);
+        sync_block();
+
+        let screen_min = Vec2::from(app.size()).expr().cast_f32().var();
+        let screen_max = Vec2::splat(0.0_f32).var();
+
+        let spacing = cache.base_grid_size * (1 << probe.position.w).cast_f32();
+        let probe_pos = cache.dequantize(probe);
+
+        // TODO: May go schizo if the probe is behind the camera...
+        for i in 0..8 {
+            let coord = probe_pos
+                + spacing
+                    * (Vec3::<bool>::expr((i & 1) != 0, (i & 2) != 0, (i & 4) != 0)
+                        .select(Vec3::splat_expr(-1.0_f32), Vec3::splat_expr(1.0_f32)));
+            let screen_pos = view.project(coord);
+            *screen_min = keter::min(**screen_min, screen_pos);
+            *screen_max = keter::max(**screen_max, screen_pos);
+        }
+        let screen_min = keter::max(0.0_f32, **screen_min).floor().cast_u32();
+        let screen_max = keter::min(Vec2::from(app.size()).expr().cast_f32(), **screen_max)
+            .ceil()
+            .cast_u32();
+        let size = screen_max - screen_min;
+        let area = size.reduce_prod();
+        let i = dispatch_id().y.var();
+        while i < area {
+            let pixel = screen_min + Vec2::expr(i % size.x, i / size.x);
+            *i += dispatch_size().y;
+
+            let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
+            let depth = depth_buf.read(pixel);
+            if depth == 0.0 {
+                continue;
+            }
+            let world_pos = view.pos + ray_dir * depth;
+            let normal = SphericalEncoder::decode(normal_buf.read(pixel));
+            let weight = keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
+                .reduce_prod()
+                * keter::min(quality, TARGET_QUALITY_MULTIPLIER * 32.0 * 0.75);
+            if weight == 0.0 {
+                continue;
+            }
+            let (factor, cascade) = cache.projection().interpolation_factor_cascade(world_pos);
+            let factor = if cascade == probe.position.w {
+                factor
+            } else {
+                1.0 - factor
+            };
+            let weight = weight * factor;
+
+            // let total_radiance = Vec3::splat_expr(weight).extend(1.0);
+            let total_radiance = Vec4::splat(0.0_f32).var();
+            for j in 0..32_u32 {
+                let dir = node.encoder.linear_to_dir(j);
+                let weight = dir.dot(normal);
+                if weight > 0.0 {
+                    *total_radiance += weight * radiance_data.read(j).extend(1.0);
+                }
+            }
+            let total_radiance = total_radiance.xyz() / total_radiance.w;
+            let total_radiance = total_radiance.extend(1.0) * weight;
+            let dest = radiance_buf.atomic_ref(pixel.y * app.size()[0] + pixel.x);
+            dest.x.fetch_add(total_radiance.x);
+            dest.y.fetch_add(total_radiance.y);
+            dest.z.fetch_add(total_radiance.z);
+            dest.w.fetch_add(total_radiance.w);
+        }
+    }));
+
     let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32, u32, Vec2<u32>)>(
         KernelBuildOptions {
             name: Some("draw_kernel".into()),
@@ -731,26 +826,30 @@ fn main() {
                     result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
                 }
             } else if mode == 1 {
-                let factor = cache.projection().interpolation_factor(world_pos);
-                let result = cache.query_diffuse_bilinear(
-                    world_pos,
-                    level,
-                    normal,
-                    false.expr(),
-                    **shadow_mask,
-                );
-                let result = if factor == 1.0 {
-                    result
-                } else {
-                    let other_result = cache.query_diffuse_bilinear(
-                        world_pos,
-                        level,
-                        normal,
-                        true.expr(),
-                        **shadow_mask,
-                    );
-                    result * factor + other_result * (1.0 - factor)
-                };
+                // let factor = cache.projection().interpolation_factor(world_pos);
+                // let result = cache.query_diffuse_bilinear(
+                //     world_pos,
+                //     level,
+                //     normal,
+                //     false.expr(),
+                //     **shadow_mask,
+                // );
+                // let result = if factor == 1.0 {
+                //     result
+                // } else {
+                //     let other_result = cache.query_diffuse_bilinear(
+                //         world_pos,
+                //         level,
+                //         normal,
+                //         true.expr(),
+                //         **shadow_mask,
+                //     );
+                //     result * factor + other_result * (1.0 - factor)
+                // };
+                // let weight = radiance_buf.read(pixel.y * app.size()[0] + pixel.x).w;
+                // plasma(weight / 10.0)
+                let r = radiance_buf.read(pixel.y * app.size()[0] + pixel.x);
+                let result = r.xyz() / r.w;
                 result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 2 {
                 if cache.contains(probe) {
@@ -948,12 +1047,12 @@ fn main() {
             commands.push(
                 compute_num_rays_kernel
                     .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick)
-                    .debug("Compute Radiance: Num Rays"),
+                    .debug("Compute Radiance Num Rays"),
             );
             commands.push(
                 compute_rays_kernel
                     .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick)
-                    .debug("Compute Radiance: Rays"),
+                    .debug("Compute Radiance Rays"),
             );
             commands.push(
                 compute_radiance_kernel
@@ -968,7 +1067,7 @@ fn main() {
                             _ => unreachable!(),
                         },
                     )
-                    .debug("Compute Radiance: Trace"),
+                    .debug("Compute Radiance Trace"),
             );
 
             for l in (0..cache.num_levels).rev() {
@@ -991,6 +1090,17 @@ fn main() {
                     .debug("Reset Accumulation"),
             );
         }
+
+        commands.push(
+            reset_radiance_buf
+                .dispatch_async([radiance_buf.len() as u32, 1, 1])
+                .debug("Reset Radiance Buffer"),
+        );
+        commands.push(
+            compute_screen_kernel
+                .dispatch_async([cache.base_nodes, 32, 1], &camera.view())
+                .debug("Compute Screen"),
+        );
 
         commands.push(
             draw_kernel
@@ -1024,6 +1134,7 @@ fn main() {
                     "Compute Radiance",
                     "Merge",
                     "Add Primary Cache",
+                    "Compute Screen",
                     "Draw",
                 ],
                 true,

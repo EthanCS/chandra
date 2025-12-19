@@ -260,23 +260,36 @@ pub struct Projection {
 }
 impl ProjectionExpr {
     #[tracked]
-    pub fn inv_project_fixed(&self, pos: Expr<Vec3<f32>>, cascde: Expr<u32>) -> Expr<Vec3<f32>> {
-        let spacing = self.base_grid_size * (1_u32 << cascde).cast_f32();
+    pub fn inv_project_fixed(&self, pos: Expr<Vec3<f32>>, cascade: Expr<u32>) -> Expr<Vec3<f32>> {
+        let spacing = self.base_grid_size * (1_u32 << cascade).cast_f32();
         pos / spacing
     }
 
     #[tracked]
     pub fn interpolation_factor(&self, pos: Expr<Vec3<f32>>) -> Expr<f32> {
         let radius = (pos - self.view.pos).length();
+        if radius <= self.base_radius {
+            1.0.expr()
+        } else {
+            keter::min((radius / self.base_radius - 1.0) / INTERP_RADIUS, 1.0)
+        }
+    }
+
+    #[tracked]
+    pub fn interpolation_factor_cascade(&self, pos: Expr<Vec3<f32>>) -> (Expr<f32>, Expr<u32>) {
+        let radius = (pos - self.view.pos).length();
         let cascade = keter::max((radius / self.base_radius).log2(), 0.5)
             .ceil()
             .cast_u32();
         let lower_radius = self.base_radius * (1_u32 << (cascade - 1)).cast_f32();
-        if radius <= self.base_radius {
-            1.0.expr()
-        } else {
-            keter::min((radius / lower_radius - 1.0) / INTERP_RADIUS, 1.0)
-        }
+        (
+            if radius <= self.base_radius {
+                1.0.expr()
+            } else {
+                keter::min((radius / lower_radius - 1.0) / INTERP_RADIUS, 1.0)
+            },
+            cascade,
+        )
     }
 
     #[tracked]
@@ -303,9 +316,9 @@ impl ProjectionExpr {
         // xy.extend(pos.z.log2() * 16.0)
     }
     #[tracked]
-    pub fn project(&self, pos: Expr<Vec3<f32>>, cascade: Expr<u32>) -> Expr<Vec3<f32>> {
+    pub fn project(&self, probe_pos: Expr<Vec3<f32>>, cascade: Expr<u32>) -> Expr<Vec3<f32>> {
         let spacing = self.base_grid_size * (1_u32 << cascade).cast_f32();
-        pos * spacing
+        probe_pos * spacing
     }
 }
 
