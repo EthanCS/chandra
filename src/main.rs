@@ -61,11 +61,13 @@ pub mod fluence;
 pub mod utils;
 pub mod world;
 
-const RAY_LENGTH: f32 = 12.0;
+const RAY_LENGTH: f32 = 4.0;
 
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
 const C_1_MERGE: u32 = 0b10;
 const C_0_START: f32 = 1.0;
+// TODO: Probably should scale with distance
+const C_1_OBJECT_THICKNESS: f32 = 4.0;
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 50.0;
 const QUALITY_DECAY: f32 = 0.95;
@@ -305,7 +307,9 @@ fn main() {
         Last,
         Middle(Expr<u32>),
     }
+    // TODO: Can reduce memory by adding 2x2 blocks. Morton-code for further efficiencies.
     let merge_cache_base = track!(|merge_level: MergeLevel| {
+        set_block_size([1, 32, 1]);
         let level = match merge_level {
             // MergeLevel::First => 0.expr(),
             MergeLevel::Last => (cache.num_levels - 1).expr(),
@@ -563,11 +567,20 @@ fn main() {
                     .cast_u32();
                     let level = keter::min(level, cache.num_levels.expr() - 1);
                     let radiance = if (flags & RADIANCE_DIRECT_ONLY) != 0 {
-                        if bounce_hit.inst == 1 {
-                            Vec3::expr(10.0, 0.0, 0.0)
-                        } else {
-                            Vec3::splat_expr(0.0_f32)
-                        }
+                        let sunlight = world
+                            .trace_segment(
+                                bounce_pos,
+                                sunlight_dir().expr(),
+                                Vec2::expr(0.01, 100000.0),
+                            )
+                            .valid()
+                            .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
+                        sunlight
+                            + if bounce_hit.inst == 1 {
+                                Vec3::expr(10.0, 0.0, 0.0)
+                            } else {
+                                Vec3::splat_expr(0.0_f32)
+                            }
                     } else {
                         let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
                         let value = cache.query_diffuse(
@@ -613,29 +626,21 @@ fn main() {
                 }
                 deposit(hit_level, fluence);
 
-                let sunlight = world
-                    .trace_segment(
-                        **world_pos,
-                        sunlight_dir().expr(),
-                        Vec2::expr(1.0, 100000.0),
-                    )
-                    .valid()
-                    .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
                 // sunlight_buf.write(pixel.extend(i), sunlight);
                 // TODO: Added sunlight is downsampled at primary currently.
-                cache.query(
-                    probe,
-                    |node| {
-                        let value = primary_cache.atomic_ref(
-                            node.data_offset + node.encoder.dir_to_linear(sunlight_dir().expr()),
-                        );
-                        value.x.fetch_add(sunlight.x);
-                        value.y.fetch_add(sunlight.y);
-                        value.z.fetch_add(sunlight.z);
-                        value.w.fetch_add(1.0);
-                    },
-                    || {},
-                );
+                // cache.query(
+                //     probe,
+                //     |node| {
+                //         let value = primary_cache.atomic_ref(
+                //             node.data_offset + node.encoder.dir_to_linear(sunlight_dir().expr()),
+                //         );
+                //         value.x.fetch_add(sunlight.x);
+                //         value.y.fetch_add(sunlight.y);
+                //         value.z.fetch_add(sunlight.z);
+                //         value.w.fetch_add(1.0);
+                //     },
+                //     || {},
+                // );
 
                 if !bounce_hit.valid() || (flags & RADIANCE_DIRECT_ONLY) != 0 {
                     break;
@@ -694,13 +699,21 @@ fn main() {
                             .var()
                             .sample((screen_pos + 0.5) / view.screen_size)
                             .x;
-                        if object_depth != 0.0 && object_depth < sample_depth {
+                        if object_depth != 0.0
+                            && object_depth < sample_depth
+                            && object_depth > sample_depth - C_1_OBJECT_THICKNESS
+                        {
                             *shadow_mask |= 1 << i;
                             break;
                         }
                     }
                 }
             }
+
+            let sunlight = world
+                .trace_segment(world_pos, sunlight_dir().expr(), Vec2::expr(0.01, 100000.0))
+                .valid()
+                .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
 
             let color = if mode == 0 {
                 let other_probe = cache.quantize(world_pos, true.expr()).shift_level(level);
@@ -717,7 +730,7 @@ fn main() {
                 } else if result.x.is_infinite() {
                     Vec3::expr(1.0, 0.0, 1.0)
                 } else {
-                    result // + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
+                    result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
                 }
             } else if mode == 1 {
                 let factor = cache.projection().interpolation_factor(world_pos);
@@ -740,7 +753,7 @@ fn main() {
                     );
                     result * factor + other_result * (1.0 - factor)
                 };
-                result // + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
+                result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 2 {
                 if cache.contains(probe) {
                     inferno((probe.position.w.cast_f32() + 0.5) / 9.0)
