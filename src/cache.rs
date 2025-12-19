@@ -468,9 +468,6 @@ impl HashCache {
                 // Success.
                 *loaded = true;
                 break;
-            } else if node.position == POSITION_INVALID {
-                // Fail.
-                break;
             }
             *node_index = (node_index + 1) % table_size;
         }
@@ -494,14 +491,27 @@ impl HashCache {
         // TODO: This should probably always be true if the hashmap works but just in case.
         let loaded = false.var();
         for _i in 0..10 {
-            let node = self.nodes.atomic_ref(node_offset + node_index);
-            let prev = node.position.compare_exchange(POSITION_INVALID, position);
-            if prev == POSITION_INVALID || prev == position {
+            let node = self.nodes.read(node_offset + node_index);
+            if node.position == position {
                 // Success.
                 *loaded = true;
                 break;
             }
             *node_index = (node_index + 1) % table_size;
+        }
+        if !loaded {
+            // insert
+            *node_index = hash64(position) % table_size;
+            for _i in 0..10 {
+                let node = self.nodes.atomic_ref(node_offset + node_index);
+                let prev = node.position.compare_exchange(POSITION_INVALID, position);
+                if prev == POSITION_INVALID || prev == position {
+                    // Success.
+                    *loaded = true;
+                    break;
+                }
+                *node_index = (node_index + 1) % table_size;
+            }
         }
         if loaded {
             success(self.load_index(probe, **node_index))
@@ -696,9 +706,6 @@ impl HashCache {
             if node.position == position {
                 // Success.
                 *loaded = true;
-                break;
-            } else if node.position == POSITION_INVALID {
-                // Fail.
                 break;
             }
             *node_index = (node_index + 1) % table_size;

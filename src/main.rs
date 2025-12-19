@@ -61,8 +61,6 @@ pub mod fluence;
 pub mod utils;
 pub mod world;
 
-const RAY_LENGTH: f32 = 4.0;
-
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
 const C_1_MERGE: u32 = 0b10;
 const C_0_START: f32 = 1.0;
@@ -220,7 +218,7 @@ fn main() {
     let sunlight_buf =
         DEVICE.create_tex3d::<Vec3<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 2, 1);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 16, 6);
+    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 17, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
         (cache.base_nodes
             * cache.base_angular_resolution.pow(2)
@@ -513,7 +511,7 @@ fn main() {
         }
     }));
 
-    let compute_radiance_kernel = DEVICE.create_kernel_with_options::<fn(u32, u32)>(
+    let compute_radiance_kernel = DEVICE.create_kernel_with_options::<fn(u32, u32, f32)>(
         KernelBuildOptions {
             name: Some("compute_radiance_kernel".into()),
             enable_debug_info: true,
@@ -522,7 +520,7 @@ fn main() {
             enable_fast_math: false,
             ..Default::default()
         },
-        &track!(|_tick, flags| {
+        &track!(|_tick, flags, c0_len| {
             set_block_size([64, 1, 1]);
 
             if dispatch_id().x >= next_traced_ray.read() {
@@ -557,7 +555,7 @@ fn main() {
                 let (hit_level, fluence) = if bounce_hit.valid() {
                     let level = keter::max(
                         (bounce_hit.committed_ray_t
-                            / (RAY_LENGTH
+                            / (c0_len
                                 * cache.base_grid_size
                                 * (1_u32 << probe.position.w).cast_f32()))
                         .log2(), // TODO: change to depend on grid size.
@@ -814,13 +812,29 @@ fn main() {
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
                 let radiance = if bounce_hit.valid() {
-                    Vec3::splat_expr(0.0_f32)
+                    let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
+                    let sunlight = world
+                        .trace_segment(
+                            bounce_pos,
+                            sunlight_dir().expr(),
+                            Vec2::expr(0.01, 100000.0),
+                        )
+                        .valid()
+                        .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
+                    let normal = world.get_normal_flat(bounce_hit);
+                    (sunlight
+                        + if bounce_hit.inst == 1 {
+                            Vec3::expr(10.0, 0.0, 0.0)
+                        } else {
+                            Vec3::splat_expr(0.0_f32)
+                        })
+                        * keter::max(normal.dot(sunlight_dir()), 0.0)
                 } else {
-                    sunlight_radiance(bounce_ray)
+                    Vec3::splat_expr(0.0_f32)
                 };
                 let value = accum_buf.read(pixel) + radiance.extend(1.0);
                 accum_buf.write(pixel, value);
-                value.xyz() / value.w
+                value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 7 {
                 inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
             } else if mode == 8 {
@@ -833,7 +847,11 @@ fn main() {
             } else if mode == 9 {
                 let (has_probe, cost) = cache.contains_cost(probe);
                 if has_probe {
-                    plasma(cost.cast_f32() / 9.0)
+                    if cost > 8 {
+                        Vec3::expr(1.0, 1.0, 1.0)
+                    } else {
+                        plasma(cost.cast_f32() / 9.0)
+                    }
                 } else {
                     Vec3::splat_expr(0.0)
                 }
@@ -846,15 +864,16 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 7.4975963,
-        pitch: 0.332344,
-        pos: glam::Vec3::new(-78.53391, -402.59995, 495.0998),
+        yaw: 6.7495747,
+        pitch: 0.47168064,
+        pos: glam::Vec3::new(-574.74164, -1301.9124, 681.66754),
         fov: 1.15,
     };
     let mut running = true;
     let mut mode = 1;
     let mut level = 0;
     let mut radiance_flags = RADIANCE_DIRECT_ONLY;
+    let mut c0_len_mode = 0;
 
     let mut profiler = Profiler::new();
 
@@ -878,6 +897,9 @@ fn main() {
         if rt.key_pressed(KeyCode::KeyL) {
             level = (level + 1) % cache.num_levels;
             println!("Level set {level}");
+        }
+        if rt.key_pressed(KeyCode::KeyK) {
+            c0_len_mode = (c0_len_mode + 1) % 3;
         }
         if rt.key_pressed(KeyCode::KeyO) {
             running = !running;
@@ -935,7 +957,17 @@ fn main() {
             );
             commands.push(
                 compute_radiance_kernel
-                    .dispatch_async([MAX_RAYS, 1, 1], &rt.tick, &radiance_flags)
+                    .dispatch_async(
+                        [MAX_RAYS, 1, 1],
+                        &rt.tick,
+                        &radiance_flags,
+                        &match c0_len_mode {
+                            0 => 4.0,
+                            1 => 12.0,
+                            2 => 999.0,
+                            _ => unreachable!(),
+                        },
+                    )
                     .debug("Compute Radiance: Trace"),
             );
 
