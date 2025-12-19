@@ -12,7 +12,14 @@ TODOS:
 [ ] Add separate world-space cache with lower resolution? Preferably get both to use the same map to prevent overflow...
 [ ] Ray counting / quality metrics.
 [ ] Test how much memory saved if each probe element is sparse?
-[ ] Optimize the c-1 merging or remove it.
+
+[ ] Test completely normal RC implementation for performance
+[ ] Compress probe lists. Then can use bigger hashmap.
+  - Could use a freelist to avoid duplication, or just double everything.
+[ ] Need to fix LODs. How??
+[ ] Merging optimization..
+[ ] Convert to SH at C0?
+[ ] Alternative final-level gathering?
 
 Hashmap:
 It's fine if missing takes many iterations to hit (especially in 2nd / 3rd bounce, can cap the lookup as well).
@@ -43,6 +50,7 @@ use keter::lang::functions::sync_block;
 use keter::lang::types::shared::Shared;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
+use keter::rtx::SurfaceHit;
 use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
@@ -72,7 +80,7 @@ const C_1_OBJECT_THICKNESS: f32 = 4.0;
 const TARGET_QUALITY_MULTIPLIER: f32 = 50.0;
 const QUALITY_DECAY: f32 = 0.95;
 const MAX_RAYS: u32 = 1 << 22;
-const NODE_LIFETIME: u32 = 10;
+const NODE_LIFETIME: u32 = 4;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -177,7 +185,7 @@ fn main() {
 
     /*let world = {
         let a = 6000.0;
-        let b = 50.0;
+        let b = 150.0;
         let h1 = 7.0;
         let h2 = 307.0;
 
@@ -219,7 +227,7 @@ fn main() {
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(16.0 / 8.0, 16.0 * 50.0 / 8.0, 4, 1 << 17, 6);
+    let cache = HashCache::new(1.0, 100.0, 4, 1 << 17, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
         (cache.base_nodes
             * cache.base_angular_resolution.pow(2)
@@ -304,6 +312,35 @@ fn main() {
         radiance_buf.write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
     }));
 
+    let get_fluence = track!(|start: Expr<Vec3<f32>>,
+                              dir: Expr<Vec3<f32>>,
+                              hit: Expr<SurfaceHit>| {
+        if hit.valid() {
+            let bounce_pos = start + dir * hit.committed_ray_t;
+            let normal = world.get_normal_flat(hit);
+            let weight = normal.dot(sunlight_dir());
+            let radiance = Vec3::splat(0.0_f32).var();
+
+            if weight > 0.0 {
+                *radiance += world
+                    .trace_segment(
+                        bounce_pos,
+                        sunlight_dir().expr(),
+                        Vec2::expr(0.01, 100000.0),
+                    )
+                    .valid()
+                    .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32))
+                    * weight;
+            }
+            if hit.inst == 1 {
+                *radiance += Vec3::expr(10.0, 0.0, 0.0);
+            }
+            radiance.extend(0.0)
+        } else {
+            Vec3::splat_expr(0.0_f32).extend(1.0)
+        }
+    });
+
     #[derive(Clone, Copy)]
     enum MergeLevel {
         // First,
@@ -327,19 +364,6 @@ fn main() {
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
         // TODO: best to process in batches of 8.
-
-        // let total_weight = 1.0_f32.var();
-        // let next = [(
-        //     cache.query(
-        //         probe.next_nearest(),
-        //         |x| x,
-        //         || {
-        //             return;
-        //             LoadedNode::expr_zeroed()
-        //         },
-        //     ),
-        //     1.0_f32.expr(),
-        // )];
 
         // TODO: pre-load all of the data batched.
         let total_weight = 0.0_f32.var();
@@ -385,8 +409,38 @@ fn main() {
                 }
             }
             let data_index = node.data_offset + index;
+
+            let far = total_radiance / 4.0;
+
             let radiance_deposit = cache.data.read(data_index).var();
-            radiance_deposit.merge(total_radiance / 4.0);
+
+            /*{
+                let probe_pos = cache.dequantize(probe);
+                let segment = (12.0
+                    * Vec2::new(0.5, 1.0)
+                    * cache.base_grid_size
+                    * (1_u32 << (probe.position.w + probe.level)).cast_f32())
+                .var();
+                if matches!(merge_level, MergeLevel::Last) {
+                    *segment.y = 999999.0;
+                }
+                if level == 0 {
+                    *segment.x =
+                        2.0 * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32();
+                }
+                let dir = node.encoder.linear_to_dir(index);
+                let hit = world.trace_segment(probe_pos, dir, **segment);
+                let fluence = get_fluence(probe_pos, dir, hit).var();
+                if matches!(merge_level, MergeLevel::Last) {
+                    *fluence.w = 0.0;
+                }
+                let radiance = fluence.xyz() + fluence.w * far;
+                *radiance_deposit.radiance_weight.x = radiance.x;
+                *radiance_deposit.radiance_weight.y = radiance.y;
+                *radiance_deposit.radiance_weight.z = radiance.z;
+            }*/
+
+            radiance_deposit.merge(far);
             cache.data.write(data_index, radiance_deposit);
         }
     });
@@ -534,124 +588,64 @@ fn main() {
 
             let ray = traced_rays.read(dispatch_id().x);
             let ray_dir = ray.dir.normalize();
-            let world_pos = ray.start.var();
+            let world_pos = ray.start;
 
-            for i in 0_u32.expr()..1_u32.expr() {
-                let bounce_ray = ray_dir;
+            let bounce_ray = ray_dir;
 
-                let probe = ray.base_probe;
+            let probe = ray.base_probe;
 
-                let bounce_hit = world.trace_segment(
-                    **world_pos,
-                    bounce_ray,
-                    Vec2::expr(
-                        if flags & C_1_MERGE != 0 {
-                            C_0_START
-                                * cache.base_grid_size
-                                * (1_u32 << probe.position.w).cast_f32()
-                        } else {
-                            0.01.expr()
-                        },
-                        100000.0,
-                    ), // * (1_u32 << probe.position.w).cast_f32(),
-                );
-                let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-
-                let (hit_level, fluence) = if bounce_hit.valid() {
-                    let level = keter::max(
-                        (bounce_hit.committed_ray_t
-                            / (c0_len
-                                * cache.base_grid_size
-                                * (1_u32 << probe.position.w).cast_f32()))
-                        .log2(), // TODO: change to depend on grid size.
-                        0.0,
-                    )
-                    .ceil()
-                    .cast_u32();
-                    let level = keter::min(level, cache.num_levels.expr() - 1);
-                    let radiance = if (flags & RADIANCE_DIRECT_ONLY) != 0 {
-                        let sunlight = world
-                            .trace_segment(
-                                bounce_pos,
-                                sunlight_dir().expr(),
-                                Vec2::expr(0.01, 100000.0),
-                            )
-                            .valid()
-                            .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
-                        sunlight
-                            + if bounce_hit.inst == 1 {
-                                Vec3::expr(10.0, 0.0, 0.0)
-                            } else {
-                                Vec3::splat_expr(0.0_f32)
-                            }
+            let bounce_hit = world.trace_segment(
+                world_pos,
+                bounce_ray,
+                Vec2::expr(
+                    if flags & C_1_MERGE != 0 {
+                        C_0_START * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32()
                     } else {
-                        let color = Vec3::splat_expr(0.7); // world.get_color(bounce_start, bounce_ray, bounce_hit);
-                        let value = cache.query_diffuse(
-                            cache.quantize(bounce_pos, false.expr()),
-                            world.get_normal_flat(bounce_hit),
-                            0.expr(),
-                        );
+                        0.01.expr()
+                    },
+                    100000.0,
+                ), // * (1_u32 << probe.position.w).cast_f32(),
+            );
 
-                        if value.x == -1.0 {
-                            Vec3::splat_expr(0.0_f32) // skip because undefined
-                        } else {
-                            value * color
-                        }
-                    };
-                    (level, radiance.extend(0.0))
-                } else {
-                    (
-                        cache.num_levels.expr() - 1,
-                        Vec4::splat_expr(0.0), // sunlight_radiance(bounce_ray).extend(0.0),
-                    )
-                };
+            let (hit_level, fluence) = if bounce_hit.valid() {
+                let level = keter::max(
+                    (bounce_hit.committed_ray_t
+                        / (c0_len * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32()))
+                    .log2(),
+                    0.0,
+                )
+                .ceil()
+                .cast_u32();
+                (
+                    keter::min(level, cache.num_levels.expr() - 1),
+                    get_fluence(world_pos, bounce_ray, bounce_hit),
+                )
+            } else {
+                (cache.num_levels.expr() - 1, Vec4::splat_expr(0.0))
+            };
 
-                let deposit = |level, fluence| {
-                    cache.query_init(
-                        probe.shift_level(level),
-                        |node| {
-                            let data = cache.data.atomic_ref(
-                                node.data_offset + node.encoder.dir_to_linear(bounce_ray),
-                            );
-                            data.deposit(RadianceDeposit::expr(fluence));
-                            node_quality.atomic_ref(node.index).fetch_add(1.0);
-                            node_lifetime
-                                .atomic_ref(node.index)
-                                .fetch_max(NODE_LIFETIME.expr());
-                        },
-                        || {},
-                    )
-                    // cache.deposit(probe.shift_level(level), bounce_ray, RadianceDeposit::expr(fluence));
-                };
+            let deposit = |level, fluence| {
+                cache.query_init(
+                    probe.shift_level(level),
+                    |node| {
+                        let data = cache
+                            .data
+                            .atomic_ref(node.data_offset + node.encoder.dir_to_linear(bounce_ray));
+                        data.deposit(RadianceDeposit::expr(fluence));
+                        node_quality.atomic_ref(node.index).fetch_add(1.0);
+                        node_lifetime
+                            .atomic_ref(node.index)
+                            .fetch_max(NODE_LIFETIME.expr());
+                    },
+                    || {},
+                )
+                // cache.deposit(probe.shift_level(level), bounce_ray, RadianceDeposit::expr(fluence));
+            };
 
-                for level in 0.expr()..hit_level {
-                    deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
-                }
-                deposit(hit_level, fluence);
-
-                // sunlight_buf.write(pixel.extend(i), sunlight);
-                // TODO: Added sunlight is downsampled at primary currently.
-                // cache.query(
-                //     probe,
-                //     |node| {
-                //         let value = primary_cache.atomic_ref(
-                //             node.data_offset + node.encoder.dir_to_linear(sunlight_dir().expr()),
-                //         );
-                //         value.x.fetch_add(sunlight.x);
-                //         value.y.fetch_add(sunlight.y);
-                //         value.z.fetch_add(sunlight.z);
-                //         value.w.fetch_add(1.0);
-                //     },
-                //     || {},
-                // );
-
-                if !bounce_hit.valid() || (flags & RADIANCE_DIRECT_ONLY) != 0 {
-                    break;
-                }
-
-                *world_pos = bounce_pos;
-                // *normal = bounce_normal;
+            for level in 0.expr()..hit_level {
+                deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
             }
+            deposit(hit_level, fluence);
         }),
     );
 
@@ -726,7 +720,6 @@ fn main() {
             };
             let weight = weight * factor;
 
-            // let total_radiance = Vec3::splat_expr(weight).extend(1.0);
             let total_radiance = Vec4::splat(0.0_f32).var();
             for j in 0..32_u32 {
                 let dir = node.encoder.linear_to_dir(j);
@@ -754,7 +747,7 @@ fn main() {
             enable_fast_math: false,
             ..Default::default()
         },
-        &track!(|view, tick, flags, mode, level, cursor_pixel| {
+        &track!(|view, tick, _flags, mode, level, cursor_pixel| {
             set_block_size([8, 8, 1]);
 
             let pixel = dispatch_id().xy();
@@ -767,41 +760,10 @@ fn main() {
             }
             let normal = SphericalEncoder::decode(normal_buf.read(pixel));
             let world_pos = view.pos + ray_dir * depth;
-            // let sunlight = sunlight_buf.read(pixel.extend(0));
 
             let probe = cache.quantize(world_pos, false.expr()).shift_level(level);
 
             let shadow_mask = 0u32.var();
-
-            if (flags & C_1_MERGE) != 0 && mode < 2 {
-                let c_1_len =
-                    C_0_START * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32();
-                let encoder = cache.get_encoder(0.expr());
-
-                for i in 0_u32.expr()..32_u32.expr() {
-                    let offset = pcg3df(pixel.extend(i + tick * 32)).xy();
-                    let c_1_dir =
-                        encoder.grid_to_dir_f32(encoder.linear_to_grid(i).cast_f32() + offset);
-                    let c_1_dir = c_1_dir * c_1_len;
-                    // raymarch in screenspace
-                    for j in 0_u32.expr()..4_u32.expr() {
-                        let sample_pos = world_pos + c_1_dir * ((j.cast_f32() + 0.5) / 4.0);
-                        let screen_pos = view.project(sample_pos);
-                        let sample_depth = (sample_pos - view.pos).length();
-                        let object_depth = depth_buf
-                            .var()
-                            .sample((screen_pos + 0.5) / view.screen_size)
-                            .x;
-                        if object_depth != 0.0
-                            && object_depth < sample_depth
-                            && object_depth > sample_depth - C_1_OBJECT_THICKNESS
-                        {
-                            *shadow_mask |= 1 << i;
-                            break;
-                        }
-                    }
-                }
-            }
 
             let sunlight = world
                 .trace_segment(world_pos, sunlight_dir().expr(), Vec2::expr(0.01, 100000.0))
@@ -826,28 +788,6 @@ fn main() {
                     result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
                 }
             } else if mode == 1 {
-                // let factor = cache.projection().interpolation_factor(world_pos);
-                // let result = cache.query_diffuse_bilinear(
-                //     world_pos,
-                //     level,
-                //     normal,
-                //     false.expr(),
-                //     **shadow_mask,
-                // );
-                // let result = if factor == 1.0 {
-                //     result
-                // } else {
-                //     let other_result = cache.query_diffuse_bilinear(
-                //         world_pos,
-                //         level,
-                //         normal,
-                //         true.expr(),
-                //         **shadow_mask,
-                //     );
-                //     result * factor + other_result * (1.0 - factor)
-                // };
-                // let weight = radiance_buf.read(pixel.y * app.size()[0] + pixel.x).w;
-                // plasma(weight / 10.0)
                 let r = radiance_buf.read(pixel.y * app.size()[0] + pixel.x);
                 let result = r.xyz() / r.w;
                 result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
@@ -910,27 +850,7 @@ fn main() {
 
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
-                let radiance = if bounce_hit.valid() {
-                    let bounce_pos = world_pos + bounce_ray * bounce_hit.committed_ray_t;
-                    let sunlight = world
-                        .trace_segment(
-                            bounce_pos,
-                            sunlight_dir().expr(),
-                            Vec2::expr(0.01, 100000.0),
-                        )
-                        .valid()
-                        .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
-                    let normal = world.get_normal_flat(bounce_hit);
-                    (sunlight
-                        + if bounce_hit.inst == 1 {
-                            Vec3::expr(10.0, 0.0, 0.0)
-                        } else {
-                            Vec3::splat_expr(0.0_f32)
-                        })
-                        * keter::max(normal.dot(sunlight_dir()), 0.0)
-                } else {
-                    Vec3::splat_expr(0.0_f32)
-                };
+                let radiance = get_fluence(world_pos, bounce_ray, bounce_hit).xyz();
                 let value = accum_buf.read(pixel) + radiance.extend(1.0);
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
@@ -963,9 +883,9 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 6.7495747,
-        pitch: 0.47168064,
-        pos: glam::Vec3::new(-574.74164, -1301.9124, 681.66754),
+        yaw: 6.437008,
+        pitch: 0.47492924,
+        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         fov: 1.15,
     };
     let mut running = true;
