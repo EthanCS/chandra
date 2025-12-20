@@ -284,7 +284,7 @@ impl ProjectionExpr {
         let lower_radius = self.base_radius * (1_u32 << (cascade - 1)).cast_f32();
         (
             if radius <= self.base_radius {
-                1.0.expr()
+                0.0.expr()
             } else {
                 keter::min((radius / lower_radius - 1.0) / INTERP_RADIUS, 1.0)
             },
