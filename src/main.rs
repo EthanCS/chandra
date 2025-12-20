@@ -72,10 +72,7 @@ pub mod utils;
 pub mod world;
 
 const RADIANCE_DIRECT_ONLY: u32 = 0b1;
-const C_1_MERGE: u32 = 0b10;
-const C_0_START: f32 = 1.0;
 // TODO: Probably should scale with distance
-const C_1_OBJECT_THICKNESS: f32 = 4.0;
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 50.0;
 const QUALITY_DECAY: f32 = 0.95;
@@ -597,14 +594,7 @@ fn main() {
             let bounce_hit = world.trace_segment(
                 world_pos,
                 bounce_ray,
-                Vec2::expr(
-                    if flags & C_1_MERGE != 0 {
-                        C_0_START * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32()
-                    } else {
-                        0.01.expr()
-                    },
-                    100000.0,
-                ), // * (1_u32 << probe.position.w).cast_f32(),
+                Vec2::expr(0.01, 100000.0), // * (1_u32 << probe.position.w).cast_f32(),
             );
 
             let (hit_level, fluence) = if bounce_hit.valid() {
@@ -926,9 +916,6 @@ fn main() {
         }
         if rt.key_pressed(KeyCode::KeyR) {
             radiance_flags ^= RADIANCE_DIRECT_ONLY;
-        }
-        if rt.key_pressed(KeyCode::KeyT) {
-            radiance_flags ^= C_1_MERGE;
         }
         let mut commands = vec![];
         commands.push(
