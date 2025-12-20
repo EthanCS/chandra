@@ -3,7 +3,6 @@
 /*
 TODOS:
 [X] Add more lights, fancier primary ray stuff?
-[X] C-1 merging for better contacts
 [ ] Optimize, switch to u64 everywhere
 [ ] Better hashmap impl without dropping things? Bias towards primary rays first.
 [ ] Some sorta anderson acceleration to make the infinite bounce convergence less obvious?
@@ -13,10 +12,11 @@ TODOS:
 [ ] Ray counting / quality metrics.
 [ ] Test how much memory saved if each probe element is sparse?
 
-[ ] Test completely normal RC implementation for performance
+[X] Test completely normal RC implementation for performance
 [ ] Compress probe lists. Then can use bigger hashmap.
   - Could use a freelist to avoid duplication, or just double everything.
 [ ] Need to fix LODs. How??
+  [ ] Write every ray to two LODs and have perfect blending.
 [ ] Merging optimization..
 [ ] Convert to SH at C0?
 [ ] Alternative final-level gathering?
@@ -632,10 +632,21 @@ fn main() {
                 // cache.deposit(probe.shift_level(level), bounce_ray, RadianceDeposit::expr(fluence));
             };
 
-            for level in 0.expr()..hit_level {
-                deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
+            for level in 0..cache.num_levels {
+                deposit(
+                    level,
+                    if level < hit_level {
+                        Vec3::splat_expr(0.0_f32).extend(1.0)
+                    } else {
+                        fluence
+                    },
+                );
             }
-            deposit(hit_level, fluence);
+
+            // for level in 0.expr()..hit_level {
+            //     deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
+            // }
+            // deposit(hit_level, fluence);
         }),
     );
 
@@ -873,9 +884,12 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        yaw: 6.437008,
-        pitch: 0.47492924,
-        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        yaw: 6.857436,
+        pitch: 0.12587574,
+        pos: glam::Vec3::new(308.5938, -573.01685, 240.64691),
+        // yaw: 6.437008,
+        // pitch: 0.47492924,
+        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         fov: 1.15,
     };
     let mut running = true;
