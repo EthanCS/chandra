@@ -717,7 +717,8 @@ fn main() {
                 let normal = SphericalEncoder::decode(normal_buf.read(pixel));
                 let weight = keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
                     .reduce_prod()
-                    * keter::min(quality, TARGET_QUALITY_MULTIPLIER * 32.0 * 0.75);
+                    * keter::min(quality, TARGET_QUALITY_MULTIPLIER * 32.0 * 0.75)
+                    * (1 << (2 * probe.position.w)).cast_f32().recip();
                 if weight == 0.0 {
                     continue;
                 }
@@ -881,7 +882,7 @@ fn main() {
         fov: 1.15,
     };
     let mut running = true;
-    let mut mode = 1;
+    let mut mode = 0;
     let mut level = 0;
     let mut radiance_flags = 0;
     let mut c0_len_mode = 0;
