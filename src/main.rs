@@ -21,17 +21,10 @@ TODOS:
 [ ] Convert to SH at C0?
 [ ] Alternative final-level gathering?
 
-Hashmap:
-It's fine if missing takes many iterations to hit (especially in 2nd / 3rd bounce, can cap the lookup as well).
-Missing on primary should not happen at all. For efficiency, also make primary override secondary? Can that be done atomically??
-
-So: Each node has a "rating" bit. When inserting:
-* Scan for the first node with a higher rating; atomically set (fetch_min) it.
-  * Then set its position to invalid.
-* Scan for the first node with position invalid, and claim it.
-This probably works fine, but only for the min-level insert.
-
-Idea: Two keys per node: primary and secondary. Look up primary over secondary.
+[ ] Fix the ray start bias to actually use stuff from that paper.
+[ ] Fix the shadow fix causing overdarkening / inconsistency between cascades.
+[ ] Init cascades upon screenspace rather than rays and merge upwards.
+[ ] Investigate light leaking near pillars without shadow fix
 
 BUGS:
 [ ] Convergence is just pretty damn slow currently. Make it so that lower cascades use higher cascade values if they don't have enough info?
@@ -52,24 +45,17 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::SurfaceHit;
 use keter_testbed::{App, KeyCode};
+use sunfall::cache::{
+    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe,
+    ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
+};
+use sunfall::world::TriangleWorld;
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
 use yesod::device_println;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::printer::global::{PrintExt, flush_printer};
 use yesod::rand::{pcg3d, pcg3df};
-
-use crate::cache::{
-    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe,
-    ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
-};
-use crate::world::TriangleWorld;
-
-pub mod cache;
-pub mod color;
-pub mod fluence;
-pub mod utils;
-pub mod world;
 
 const TERMINATE_DEPOSIT: u32 = 0b1;
 // TODO: Probably should scale with distance
@@ -162,7 +148,6 @@ struct Ray {
     dir: Vec3<f32>,
     start: Vec3<f32>,
     base_probe: Probe,
-    // base_probe: Probe,
 }
 
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
@@ -363,7 +348,7 @@ fn main() {
         // TODO: best to process in batches of 8.
 
         // TODO: pre-load all of the data batched.
-        let total_weight = 0.0_f32.var();
+        // let total_weight = 0.0_f32.var();
         let next_probes = (!matches!(merge_level, MergeLevel::Last)).then(|| {
             let next_probes = probe.next_bilinear().map(|(probe, weight)| {
                 let (next, weight) = cache.query(
@@ -381,33 +366,35 @@ fn main() {
                         )
                     },
                 );
-                *total_weight += weight;
+                // *total_weight += weight;
                 (next, weight)
             });
-            *total_weight = keter::max(total_weight, 0.001);
-            next_probes.map(|(next, weight)| (next, weight / total_weight))
+            // *total_weight = keter::max(total_weight, 0.001);
+            next_probes // next_probes.map(|(next, weight)| (next, weight / total_weight))
         });
         for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
             let dir = node.encoder.linear_to_grid(index);
-            let total_radiance = Vec3::splat(0.0_f32).var();
+            let total_radiance = Vec4::splat(0.0_f32).var();
             if let MergeLevel::Last = merge_level {
                 // Shouldn't be used.
-                *total_radiance = Vec3::expr(10000.0, 0.0, 0.0);
+                *total_radiance = Vec4::expr(10000.0, 0.0, 0.0, 1.0);
             } else {
                 for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
                     let sample_dir = dir * 2 + offset;
                     // TODO: Can optimize because half are empty.
                     for (next, weight) in next_probes.unwrap() {
                         let sample_index = next.encoder.grid_to_linear(sample_dir);
-                        *total_radiance +=
-                            weight * cache.data.read(next.data_offset + sample_index).radiance();
+                        let radiance = cache.data.read(next.data_offset + sample_index).radiance();
+                        if radiance.is_finite().all() {
+                            *total_radiance += weight * radiance.extend(1.0);
+                        }
                     }
                 }
             }
             let data_index = node.data_offset + index;
 
-            let far = total_radiance / 4.0;
+            let far = total_radiance.xyz() / total_radiance.w;
 
             let radiance_deposit = cache.data.read(data_index).var();
 
@@ -735,7 +722,10 @@ fn main() {
                     let dir = node.encoder.linear_to_dir(j);
                     let weight = dir.dot(normal);
                     if weight > 0.0 {
-                        *total_radiance += weight * radiance_data.read(j).extend(1.0);
+                        let radiance = radiance_data.read(j);
+                        if radiance.is_finite().all() {
+                            *total_radiance += weight * radiance_data.read(j).extend(1.0);
+                        }
                     }
                 }
                 let total_radiance = total_radiance.xyz() / total_radiance.w;
@@ -772,8 +762,6 @@ fn main() {
             let world_pos = view.pos + ray_dir * depth;
 
             let probe = cache.quantize(world_pos, false.expr()).shift_level(level);
-
-            let shadow_mask = 0u32.var();
 
             let sunlight = world
                 .trace_segment(world_pos, sunlight_dir().expr(), Vec2::expr(0.01, 100000.0))

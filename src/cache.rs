@@ -63,7 +63,7 @@ impl Default for RadianceElement {
     fn default() -> Self {
         Self {
             fluence: Vec4::splat(0.0),
-            radiance_weight: Vec4::new(0.0, 0.0, 0.0, 0.001),
+            radiance_weight: Vec4::new(0.0, 0.0, 0.0, 0.0),
         }
     }
 }
