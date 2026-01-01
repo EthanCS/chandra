@@ -35,6 +35,11 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 use std::f32::consts::TAU;
 use std::path::PathBuf;
 
+use chandra::cache::{
+    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe,
+    ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
+};
+use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
 use image::{GenericImageView, ImageReader};
 use keter::bindless::BINDLESS;
@@ -45,11 +50,6 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::SurfaceHit;
 use keter_testbed::{App, KeyCode};
-use sunfall::cache::{
-    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe,
-    ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
-};
-use sunfall::world::TriangleWorld;
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
 use yesod::device_println;
@@ -137,6 +137,33 @@ fn load_noise_textures(names: impl Fn(u32) -> PathBuf) -> NoiseTexture {
     texture.view(0).copy_from(&data);
     texture
 }
+fn load_noise2_textures(names: impl Fn(u32) -> PathBuf) -> Tex3d<Vec2<u32>> {
+    let storage = PixelStorage::Byte2;
+    let mut num_images = 0;
+    let mut data = vec![];
+    let mut shape = (0, 0);
+    while let Ok(image) = ImageReader::open(names(num_images)) {
+        let image = image.decode().unwrap();
+        if shape == (0, 0) {
+            shape = image.dimensions();
+        } else {
+            assert_eq!(shape, image.dimensions());
+        }
+        num_images += 1;
+        assert_eq!(image.color(), image::ColorType::Rgb8);
+
+        data.extend(
+            image
+                .into_rgb8()
+                .pixels()
+                .map(|p| Vec2::new(p.0[0], p.0[1])),
+        );
+    }
+    let texture = DEVICE.create_tex3d(storage, shape.0, shape.1, num_images, 1);
+    texture.view(0).copy_from(&data);
+    texture
+}
+
 #[tracked]
 fn as_normal(v: Expr<Vec4<f32>>) -> Expr<Vec3<f32>> {
     v.xyz() * 2.0 - 1.0
@@ -164,6 +191,7 @@ fn main() {
             "assets/noise/sphere/exp/sphere_coshemi_binomial3x3_exp0101_product_{i}.png",
         ))
     });
+    let noise2 = load_noise2_textures(|i| PathBuf::from(format!("assets/noise2/{i}.png",)));
 
     /*let world = {
         let a = 6000.0;
@@ -346,11 +374,9 @@ fn main() {
         let probe = Probe::from_comps_expr(ProbeComps { position, level });
         let node = cache.load_index(probe, node_index);
         // TODO: best to process in batches of 8.
-
         // TODO: pre-load all of the data batched.
-        // let total_weight = 0.0_f32.var();
         let next_probes = (!matches!(merge_level, MergeLevel::Last)).then(|| {
-            let next_probes = probe.next_bilinear().map(|(probe, weight)| {
+            probe.next_bilinear().map(|(probe, weight)| {
                 let (next, weight) = cache.query(
                     probe,
                     |n| (n, weight),
@@ -366,11 +392,8 @@ fn main() {
                         )
                     },
                 );
-                // *total_weight += weight;
                 (next, weight)
-            });
-            // *total_weight = keter::max(total_weight, 0.001);
-            next_probes // next_probes.map(|(next, weight)| (next, weight / total_weight))
+            })
         });
         for index in 0_u32.expr()..(node.encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
@@ -525,6 +548,16 @@ fn main() {
             },
         );
 
+        /*let bounce_ray = noise2
+            .read(pixel.extend(tick) % Vec3::new(noise2.width(), noise2.height(), noise2.depth()))
+            / 2;
+        let bounce_ray = bounce_ray.cast_f32() + 0.5;
+        let bounce_ray = bounce_ray / 128.0;
+        let bounce_ray = bounce_ray * Vec2::new(0.5, 1.0); // X-axis is doubled because only hemisphere / mirroring.
+        let bounce_ray = SphericalEncoder::decode(bounce_ray);
+
+        let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
+        */
         let bounce_ray = rotate_hemi(
             normal,
             as_normal(hemi_noise.read(
@@ -727,6 +760,10 @@ fn main() {
                             *total_radiance += weight * radiance_data.read(j).extend(1.0);
                         }
                     }
+                }
+                // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
+                if total_radiance.w < 0.0001 {
+                    continue;
                 }
                 let total_radiance = total_radiance.xyz() / total_radiance.w;
                 let total_radiance = total_radiance.extend(1.0) * weight;

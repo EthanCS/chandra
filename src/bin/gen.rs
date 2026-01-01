@@ -1,7 +1,7 @@
+use chandra::noise::*;
 use glam::UVec2;
 use histo::Histogram;
 use image::RgbImage;
-use sunfall::noise::*;
 
 fn main() {
     let cascades = 6;

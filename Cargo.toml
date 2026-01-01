@@ -1,8 +1,8 @@
 [package]
-name = "sunfall"
+name = "chandra"
 version = "0.1.0"
 edition = "2024"
-# default-run = "next3"
+default-run = "chandra"
 
 [dependencies]
 dot_vox = "5.1.1"
