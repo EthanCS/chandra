@@ -180,7 +180,11 @@ struct Ray {
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
-    let app = App::new("Sunfall", [2048; 2]).agx().resize().init();
+    let app = App::new("Sunfall", [1920, 1080])
+        .scale(2)
+        .agx()
+        .resize()
+        .init();
 
     yesod::printer::global::set_capacity(1024 * 1024);
 
@@ -854,14 +858,14 @@ fn main() {
                 )
                 // inferno(1.0 - reinhard(depth / 1000.0))
             } else if mode == 4 {
-                let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
-                    % Vec2::new(hemi_noise.width(), hemi_noise.height());
-                let bounce_ray = as_normal(hemi_noise.read(
-                    (pixel + offset).extend(tick)
-                        % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
-                ));
-                let bounce_ray = rotate_hemi(normal, bounce_ray);
-                // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
+                // let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
+                //     % Vec2::new(hemi_noise.width(), hemi_noise.height());
+                // let bounce_ray = as_normal(hemi_noise.read(
+                //     (pixel + offset).extend(tick)
+                //         % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
+                // ));
+                // let bounce_ray = rotate_hemi(normal, bounce_ray);
+                let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
 
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
@@ -909,7 +913,7 @@ fn main() {
     let mut running = true;
     let mut mode = 0;
     let mut level = 0;
-    let mut radiance_flags = 0;
+    let mut radiance_flags = TERMINATE_DEPOSIT;
     let mut c0_len_mode = 0;
     let mut blend_radius_mode = 0;
 
