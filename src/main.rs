@@ -36,8 +36,8 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use chandra::cache::{
-    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Node, POSITION_INVALID, Probe,
-    ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
+    Fluence, HashCache, INDEX_SCALING, LoadedProbe, LoadedProbeComps, Node, POSITION_INVALID,
+    Probe, ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
 };
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
@@ -243,7 +243,7 @@ fn main() {
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     let cache = HashCache::new(1.0, 100.0, 4, 1 << 17, 6);
     let primary_cache = DEVICE.create_buffer_from_fn::<Vec4<f32>>(
-        (cache.base_nodes
+        (cache.base_probes
             * cache.base_angular_resolution.pow(2)
             * INDEX_SCALING.x
             * INDEX_SCALING.y) as usize,
@@ -251,7 +251,7 @@ fn main() {
     );
 
     let base_probe_num_rays =
-        DEVICE.create_buffer_from_fn::<u32>(cache.base_nodes as usize, |_| 0_u32);
+        DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0_u32);
     let node_quality = DEVICE.create_buffer_from_fn::<f32>(cache.nodes.len(), |_| 0.0_f32);
     let node_lifetime = DEVICE.create_buffer_from_fn::<u32>(cache.nodes.len(), |_| 0_u32);
     let traced_rays = DEVICE.create_buffer::<Ray>(MAX_RAYS as usize);
@@ -262,7 +262,7 @@ fn main() {
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
     let decay_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
-        let node_index = dispatch_id().x + cache.get_node_offset(level);
+        let node_index = dispatch_id().x + cache.get_index_offset(level);
         let node = cache.nodes.read(node_index).var();
         if node.position == POSITION_INVALID {
             return;
@@ -282,7 +282,7 @@ fn main() {
 
         if is_invalid {
             let position = decode_position(**node.position);
-            let probe = Probe::from_comps_expr(ProbeComps { position, level });
+            let probe = Probe::from_comps_expr(ProbeComps { position, cascade });
             let node = cache.load_index(probe, dispatch_id().x);
 
             for index in 0_u32.expr()..node.encoder.linear_size() {
@@ -375,7 +375,7 @@ fn main() {
             return;
         }
         let position = decode_position(node.position);
-        let probe = Probe::from_comps_expr(ProbeComps { position, level });
+        let probe = Probe::from_comps_expr(ProbeComps { position, cascade });
         let node = cache.load_index(probe, node_index);
         // TODO: best to process in batches of 8.
         // TODO: pre-load all of the data batched.
@@ -386,7 +386,7 @@ fn main() {
                     |n| (n, weight),
                     || {
                         (
-                            LoadedNode::from_comps_expr(LoadedNodeComps {
+                            LoadedProbe::from_comps_expr(LoadedProbeComps {
                                 probe,
                                 encoder: cache.get_encoder(probe.level),
                                 data_offset: 0_u32.expr(),
@@ -465,7 +465,7 @@ fn main() {
         let node = cache.load_index(
             Probe::from_comps_expr(ProbeComps {
                 position: decode_position(node.position),
-                level: 0.expr(),
+                cascade: 0.expr(),
             }),
             index,
         );
@@ -519,7 +519,7 @@ fn main() {
             |n| n,
             || {
                 return;
-                **LoadedNode::var_zeroed()
+                **LoadedProbe::var_zeroed()
             },
         );
         base_probe_num_rays
@@ -548,7 +548,7 @@ fn main() {
             |n| n,
             || {
                 return;
-                **LoadedNode::var_zeroed()
+                **LoadedProbe::var_zeroed()
             },
         );
 
@@ -688,7 +688,7 @@ fn main() {
             let position = decode_position(node.position);
             let probe = Probe::from_comps_expr(ProbeComps {
                 position,
-                level: 0.expr(),
+                cascade: 0.expr(),
             });
             let node = cache.load_index(probe, dispatch_id().x);
             let quality = node_quality.read(dispatch_id().x);
@@ -746,7 +746,7 @@ fn main() {
                 if weight == 0.0 {
                     continue;
                 }
-                let (factor, cascade) = cache.projection().interpolation_factor_cascade(world_pos);
+                let (factor, cascade) = cache.projection().interpolation_factor_lod(world_pos);
                 let factor = if cascade == probe.position.w {
                     factor
                 } else {
@@ -967,7 +967,7 @@ fn main() {
             }
             commands.push(cache.set_view(camera.view()));
             for l in (0..cache.num_levels).rev() {
-                let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+                let dispatch_size = [cache.num_nodes_at_cascade(l), 1 << l, 1];
                 commands.push(
                     decay_cache
                         .dispatch_async(dispatch_size, &l)
@@ -1014,7 +1014,7 @@ fn main() {
             );
 
             for l in (0..cache.num_levels).rev() {
-                let dispatch_size = [cache.num_nodes_at_level(l), 1 << l, 1];
+                let dispatch_size = [cache.num_nodes_at_cascade(l), 1 << l, 1];
                 commands.push(
                     (if l == cache.num_levels - 1 {
                         merge_last_cache.dispatch_async(dispatch_size)
@@ -1042,7 +1042,7 @@ fn main() {
         commands.push(
             compute_screen_kernel
                 .dispatch_async(
-                    [cache.base_nodes, 32, 1],
+                    [cache.base_probes, 32, 1],
                     &camera.view(),
                     &match blend_radius_mode {
                         0 => 1.0,
@@ -1071,7 +1071,7 @@ fn main() {
         if running {
             commands.push(
                 add_primary_cache
-                    .dispatch_async([cache.num_nodes_at_level(0), 1, 1])
+                    .dispatch_async([cache.num_nodes_at_cascade(0), 1, 1])
                     .debug("Add Primary Cache"),
             );
         }
