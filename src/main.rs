@@ -36,9 +36,10 @@ use std::f32::consts::TAU;
 use std::path::PathBuf;
 
 use chandra::cache::{
-    Fluence, HashCache, INDEX_SCALING, LoadedProbe, LoadedProbeComps, Node, POSITION_INVALID,
-    Probe, ProbeComps, Radiance, RadianceDeposit, RadianceElement, decode_position,
+    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Probe, ProbeComps, Radiance,
+    RadianceElement,
 };
+use chandra::table;
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
 use image::{GenericImageView, ImageReader};
@@ -52,10 +53,11 @@ use keter::rtx::SurfaceHit;
 use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
-use yesod::device_println;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
-use yesod::printer::global::{PrintExt, flush_printer};
+use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3d, pcg3df};
+use yesod::utils::dispatch0_async;
+use yesod::{device_println, host};
 
 const TERMINATE_DEPOSIT: u32 = 0b1;
 // TODO: Probably should scale with distance
@@ -252,15 +254,42 @@ fn main() {
 
     let base_probe_num_rays =
         DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0_u32);
-    let node_quality = DEVICE.create_buffer_from_fn::<f32>(cache.nodes.len(), |_| 0.0_f32);
-    let node_lifetime = DEVICE.create_buffer_from_fn::<u32>(cache.nodes.len(), |_| 0_u32);
+    let node_quality =
+        DEVICE.create_buffer_from_fn::<f32>(cache.table.data_capacity() as usize, |_| 0.0_f32);
+    let node_lifetime =
+        DEVICE.create_buffer_from_fn::<u32>(cache.table.data_capacity() as usize, |_| 0_u32);
     let traced_rays = DEVICE.create_buffer::<Ray>(MAX_RAYS as usize);
     let next_traced_ray = Singleton::<u32>::new(0_u32);
 
-    let cache_memory = cache.data.len() * std::mem::size_of::<RadianceElement>()
-        + cache.nodes.len() * std::mem::size_of::<Node>();
+    let cache_memory = cache.data.size_bytes() + cache.table.memory_size();
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
+    let build_freelists = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let data_index = dispatch_id().x;
+        cache.table.build_freelists(data_index, |key| {
+            /*let invalid = node_quality.read(data_index) < 0.1_f32;
+            if invalid {
+                node_quality.write(data_index, 0.0_f32);
+                let node = cache.load_index(probe, dispatch_id().x);
+
+                for index in 0_u32.expr()..node.encoder.linear_size() {
+                    cache
+                        .data
+                        .write(node.data_offset + index, RadianceElement::default());
+                }
+                if level == 0 {
+                    for index in 0_u32.expr()..node.encoder.linear_size() {
+                        primary_cache
+                            .write(node.data_offset + index, Vec4::new(0.0, 0.0, 0.0, 0.00001));
+                    }
+                }
+            }
+            invalid*/
+            true.expr()
+        });
+    }));
+
+    /*
     let decay_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
         let node_index = dispatch_id().x + cache.get_index_offset(level);
         let node = cache.nodes.read(node_index).var();
@@ -279,7 +308,7 @@ fn main() {
         cache.nodes.write(node_index, **node);
         node_quality.write(node_index, **quality);
         node_lifetime.write(node_index, **lifetime);
-
+        // Why was this ordered this way?
         if is_invalid {
             let position = decode_position(**node.position);
             let probe = Probe::from_comps_expr(ProbeComps { position, cascade });
@@ -297,10 +326,6 @@ fn main() {
                 }
             }
         }
-    }));
-    let reset_tex2d = DEVICE.create_kernel::<fn(Tex2d<Vec4<f32>>)>(&track!(|tex| {
-        let pixel = dispatch_id().xy();
-        tex.write(pixel, Vec4::splat_expr(0.0_f32));
     }));
     let reset_cache_nodes = DEVICE.create_kernel::<fn()>(&track!(|| {
         cache.nodes.write(dispatch_id().x, Node::default());
@@ -325,6 +350,7 @@ fn main() {
     let reset_radiance_buf = DEVICE.create_kernel::<fn()>(&track!(|| {
         radiance_buf.write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
     }));
+    */
 
     let get_fluence = track!(|start: Expr<Vec3<f32>>,
                               dir: Expr<Vec3<f32>>,
@@ -361,6 +387,7 @@ fn main() {
         Last,
         Middle(Expr<u32>),
     }
+    /*
     // TODO: Can reduce memory by adding 2x2 blocks. Morton-code for further efficiencies.
     let merge_cache_base = track!(|merge_level: MergeLevel| {
         set_block_size([1, 32, 1]);
@@ -386,7 +413,7 @@ fn main() {
                     |n| (n, weight),
                     || {
                         (
-                            LoadedProbe::from_comps_expr(LoadedProbeComps {
+                            LoadedNode::from_comps_expr(LoadedNodeComps {
                                 probe,
                                 encoder: cache.get_encoder(probe.level),
                                 data_offset: 0_u32.expr(),
@@ -484,6 +511,7 @@ fn main() {
     let merge_last_cache = DEVICE.create_kernel::<fn()>(&|| {
         merge_cache_base(MergeLevel::Last);
     });
+    */
     let compute_gbuffer_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
@@ -499,6 +527,33 @@ fn main() {
         normal_buf.write(pixel, SphericalEncoder::encode(normal));
     }));
 
+    let init_c0_probe_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
+        set_block_size([8, 8, 1]);
+        let pixel = dispatch_id().xy();
+        let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
+
+        let depth = depth_buf.read(pixel);
+        if depth == 0.0 {
+            return;
+        }
+        let world_pos = view.pos + ray_dir * depth;
+
+        let lod = cache.estimate_lod(world_pos);
+        let probe = cache.quantize(world_pos, lod, 0.expr());
+        cache.insert(probe);
+    }));
+    let init_probe_kernel = DEVICE.create_kernel::<fn(u32)>(&track!(|cascade| {
+        let index = dispatch_id().x + cache.get_index_offset(cascade);
+        let key = cache.table.data_key.read(index);
+        if key == table::INVALID_KEY {
+            return;
+        }
+        let probe = cache.decode(key, cascade);
+        let probe = probe.shift_level(1.expr());
+        cache.insert(probe);
+    }));
+
+    /*
     let compute_num_rays_kernel = DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, _tick| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
@@ -519,7 +574,7 @@ fn main() {
             |n| n,
             || {
                 return;
-                **LoadedProbe::var_zeroed()
+                **LoadedNode::var_zeroed()
             },
         );
         base_probe_num_rays
@@ -548,7 +603,7 @@ fn main() {
             |n| n,
             || {
                 return;
-                **LoadedProbe::var_zeroed()
+                **LoadedNode::var_zeroed()
             },
         );
 
@@ -778,6 +833,7 @@ fn main() {
                 dest.w.fetch_add(total_radiance.w);
             }
         }));
+     */
 
     let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32, u32, Vec2<u32>)>(
         KernelBuildOptions {
@@ -788,7 +844,7 @@ fn main() {
             enable_fast_math: false,
             ..Default::default()
         },
-        &track!(|view, tick, _flags, mode, level, cursor_pixel| {
+        &track!(|view, tick, _flags, mode, cascade, cursor_pixel| {
             set_block_size([8, 8, 1]);
 
             let pixel = dispatch_id().xy();
@@ -802,7 +858,8 @@ fn main() {
             let normal = SphericalEncoder::decode(normal_buf.read(pixel));
             let world_pos = view.pos + ray_dir * depth;
 
-            let probe = cache.quantize(world_pos, false.expr()).shift_level(level);
+            let lod = cache.estimate_lod(world_pos);
+            let probe = cache.quantize(world_pos, lod, cascade);
 
             let sunlight = world
                 .trace_segment(world_pos, sunlight_dir().expr(), Vec2::expr(0.01, 100000.0))
@@ -815,19 +872,29 @@ fn main() {
                 result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 1 {
                 if cache.contains(probe) {
-                    inferno((probe.position.w.cast_f32() + 0.5) / 9.0)
-                        * pcg3df(probe.position.xyz()).x
+                    let target_probe = cache.decode(cache.encode(probe), cascade);
+                    if (target_probe.position != probe.position).any()
+                        || (cache.quantize(world_pos, lod, cascade + 1).position
+                            != probe.shift_level(1.expr()).position)
+                            .any()
+                    {
+                        Vec3::splat_expr(1.0)
+                    } else {
+                        inferno((probe.position.w.cast_f32() + 0.5) / 9.0)
+                            * pcg3df(probe.position.xyz()).x
+                    }
                 } else {
                     Vec3::splat_expr(0.0)
                 }
-            } else if mode == 2 {
+            }
+            /*else if mode == 2 {
                 cache.query(
                     probe,
                     |node| {
                         let quality = node_quality.read(node.index);
                         let quality_ratio = quality
                             / (TARGET_QUALITY_MULTIPLIER
-                                * cache.get_encoder(level).linear_size().cast_f32());
+                                * cache.get_encoder(cascade).linear_size().cast_f32());
                         if (cursor_pixel == pixel).all() {
                             device_println!(
                                 "Probe at quality: {}",
@@ -857,7 +924,8 @@ fn main() {
                     || Vec3::splat_expr(0.0),
                 )
                 // inferno(1.0 - reinhard(depth / 1000.0))
-            } else if mode == 4 {
+            } */
+            else if mode == 4 {
                 // let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
                 //     % Vec2::new(hemi_noise.width(), hemi_noise.height());
                 // let bounce_ray = as_normal(hemi_noise.read(
@@ -879,12 +947,12 @@ fn main() {
                 let hit = world.trace(view.pos, ray_dir);
                 if (cursor_pixel == pixel).all() {
                     let inst = hit.inst;
-                    device_println!("Hit at {}", inst.host());
+                    device_println!("Hit at {}", host!(inst));
                 }
                 pcg3df(Vec3::expr(hit.inst, 37, 926))
             } else if mode == 7 {
-                let (has_probe, cost) = cache.contains_cost(probe);
-                if has_probe {
+                let cost = cache.cost(probe);
+                if cost != u32::MAX {
                     if cost > 8 {
                         Vec3::expr(1.0, 1.0, 1.0)
                     } else {
@@ -911,8 +979,8 @@ fn main() {
         fov: 1.15,
     };
     let mut running = true;
-    let mut mode = 0;
-    let mut level = 0;
+    let mut mode = 1;
+    let mut cascade = 0;
     let mut radiance_flags = TERMINATE_DEPOSIT;
     let mut c0_len_mode = 0;
     let mut blend_radius_mode = 0;
@@ -937,8 +1005,8 @@ fn main() {
             rt.tonemap(tonemap);
         }
         if rt.key_pressed(KeyCode::KeyL) {
-            level = (level + 1) % cache.num_levels;
-            println!("Level set {level}");
+            cascade = (cascade + 1) % cache.num_cascades;
+            println!("Level set {cascade}");
         }
         if rt.key_pressed(KeyCode::KeyK) {
             c0_len_mode = (c0_len_mode + 1) % 3;
@@ -966,6 +1034,46 @@ fn main() {
                 println!("Num rays traced: {}", next_traced_ray.read_blocking());
             }
             commands.push(cache.set_view(camera.view()));
+
+            // reset table
+            {
+                let table = &cache.table;
+                let clear_entries = dispatch0_async(
+                    track!(|| {
+                        table.entries.write(dispatch_id().x, table::Entry::EMPTY);
+                    }),
+                    [table.entries.len() as u32, 1, 1],
+                );
+                commands.push(
+                    (
+                        cache
+                            .table
+                            .table_data_start
+                            .copy_to_buffer_async(&table.freelist_index),
+                        clear_entries,
+                        build_freelists.dispatch_async([table.freelist.len() as u32, 1, 1]),
+                        cache
+                            .table
+                            .table_data_start
+                            .copy_to_buffer_async(&table.freelist_index),
+                    )
+                        .chain(),
+                );
+            }
+            // add c0 probes
+            commands.push(
+                init_c0_probe_kernel
+                    .dispatch_async(rt.dispatch_size(), &camera.view())
+                    .debug("Init Cascade 0 Probes"),
+            );
+            for c in 0..(cache.num_cascades - 1) {
+                commands.push(
+                    init_probe_kernel
+                        .dispatch_async([cache.max_probes_at_cascade(c), 1, 1], &c)
+                        .debug(format!("Init Cascade {} Probes", c + 1)),
+                );
+            }
+            /*
             for l in (0..cache.num_levels).rev() {
                 let dispatch_size = [cache.num_nodes_at_cascade(l), 1 << l, 1];
                 commands.push(
@@ -1024,22 +1132,32 @@ fn main() {
                     .debug(format!("Merge Cache Level {l}")),
                 );
             }
+            */
         }
 
         if camera_updated {
             commands.push(
-                reset_tex2d
-                    .dispatch_async([accum_buf.width(), accum_buf.height(), 1], &accum_buf)
-                    .debug("Reset Accumulation"),
+                dispatch0_async(
+                    track!(|| {
+                        let pixel = dispatch_id().xy();
+                        accum_buf.write(pixel, Vec4::splat_expr(0.0_f32));
+                    }),
+                    [accum_buf.width(), accum_buf.height(), 1],
+                )
+                .debug("Reset Accumulation"),
             );
         }
 
         commands.push(
-            reset_radiance_buf
-                .dispatch_async([radiance_buf.len() as u32, 1, 1])
-                .debug("Reset Radiance Buffer"),
+            dispatch0_async(
+                track!(|| {
+                    radiance_buf.write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
+                }),
+                [radiance_buf.len() as u32, 1, 1],
+            )
+            .debug("Reset Radiance Buffer"),
         );
-        commands.push(
+        /*commands.push(
             compute_screen_kernel
                 .dispatch_async(
                     [cache.base_probes, 32, 1],
@@ -1052,7 +1170,7 @@ fn main() {
                     },
                 )
                 .debug("Compute Screen"),
-        );
+        );*/
 
         commands.push(
             draw_kernel
@@ -1062,19 +1180,19 @@ fn main() {
                     &rt.tick,
                     &radiance_flags,
                     &mode,
-                    &level,
+                    &cascade,
                     &rt.cursor_position.map(|x| x as u32),
                 )
                 .debug("Draw"),
         );
 
-        if running {
-            commands.push(
-                add_primary_cache
-                    .dispatch_async([cache.num_nodes_at_cascade(0), 1, 1])
-                    .debug("Add Primary Cache"),
-            );
-        }
+        //  if running {
+        //      commands.push(
+        //          add_primary_cache
+        //              .dispatch_async([cache.num_nodes_at_cascade(0), 1, 1])
+        //              .debug("Add Primary Cache"),
+        //      );
+        //  }
 
         profiler.record(commands.chain().execute_timed());
 
@@ -1084,6 +1202,7 @@ fn main() {
                     "Compute GBuffer",
                     "Decay Cache",
                     "Compute Radiance",
+                    "Init",
                     "Merge",
                     "Add Primary Cache",
                     "Compute Screen",
@@ -1094,12 +1213,23 @@ fn main() {
             profiler.reset();
         }
 
-        if rt.key_down(KeyCode::Backslash) {
-            // println!("Resetting cache");
-            reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
-            reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
-            reset_primary_cache.dispatch([primary_cache.len() as u32, 1, 1]);
-        }
+        // let freelist_end = cache.table.freelist_index.copy_to_vec();
+        // println!("Freelist end: {freelist_end:?}");
+        // println!(
+        //     "Used: {:?}",
+        //     freelist_end
+        //         .iter()
+        //         .enumerate()
+        //         .map(|(i, x)| x - cache.get_index_offset_host(i as u32))
+        //         .collect::<Vec<_>>()
+        // );
+
+        // if rt.key_down(KeyCode::Backslash) {
+        //     // println!("Resetting cache");
+        //     reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
+        //     reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
+        //     reset_primary_cache.dispatch([primary_cache.len() as u32, 1, 1]);
+        // }
         flush_printer();
     });
 }

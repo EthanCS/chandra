@@ -33,15 +33,16 @@ impl Entry {
 #[derive(Debug)]
 pub struct HashTable {
     pub num_tables: u32,
-    capacity: u32,
+    pub entry_capacity: u32,
+    pub data_capacity: u32,
     // per entry
-    entries: Buffer<Entry>,
+    pub entries: Buffer<Entry>,
     // per datum
-    freelist: Buffer<u32>,
-    data_key: Buffer<Key>,
+    pub freelist: Buffer<u32>,
+    pub data_key: Buffer<Key>,
     // per table
-    table_data_start: Buffer<u32>,
-    freelist_index: Buffer<u32>, // reset to table_data_start after each build
+    pub table_data_start: Buffer<u32>,
+    pub freelist_index: Buffer<u32>, // reset to table_data_start after each build
 }
 
 /*
@@ -69,7 +70,8 @@ impl HashTable {
         assert_eq!(table_data_start.len() as u32, num_tables);
         Self {
             num_tables,
-            capacity: entry_capacity,
+            entry_capacity,
+            data_capacity: total_data_capacity,
 
             entries: DEVICE.create_buffer_from_fn(total_entry_capacity as usize, |_| Entry::EMPTY),
             freelist: DEVICE.create_buffer(total_data_capacity as usize),
@@ -79,10 +81,23 @@ impl HashTable {
             freelist_index: DEVICE.create_buffer(num_tables as usize),
         }
     }
+    pub fn memory_size(&self) -> usize {
+        self.entries.size_bytes()
+            + self.freelist.size_bytes()
+            + self.data_key.size_bytes()
+            + self.table_data_start.size_bytes()
+            + self.freelist_index.size_bytes()
+    }
+    pub fn data_capacity(&self) -> u32 {
+        self.data_capacity
+    }
+    pub fn entry_capacity(&self) -> u32 {
+        self.entry_capacity
+    }
     #[tracked]
     fn insert_entry_index(&self, key: Expr<u32>, table: Expr<u32>, index: Expr<u32>) {
-        let entry_index = (hash32(key) % self.capacity).var();
-        let offset = self.capacity * table;
+        let entry_index = (hash32(key) % self.entry_capacity).var();
+        let offset = self.entry_capacity * table;
         loop {
             let entry = self.entries.atomic_ref(entry_index + offset);
             let prev = entry.key.compare_exchange(INVALID_KEY, key);
@@ -94,13 +109,14 @@ impl HashTable {
                 break;
             }
 
-            *entry_index = (entry_index + 1) % self.capacity;
+            *entry_index = (entry_index + 1) % self.entry_capacity;
         }
     }
+    // Inserts a key into the table. It takes a while to get the index, so that has to be done later after synchronization.
     #[tracked]
     pub fn insert(&self, key: Expr<u32>, table: Expr<u32>) {
-        let entry_index = (hash32(key) % self.capacity).var();
-        let offset = self.capacity * table;
+        let entry_index = (hash32(key) % self.entry_capacity).var();
+        let offset = self.entry_capacity * table;
         loop {
             let entry = self.entries.atomic_ref(offset + entry_index);
             let prev = entry.key.compare_exchange(INVALID_KEY, key);
@@ -115,27 +131,51 @@ impl HashTable {
                 self.data_key.write(index, key);
                 break;
             }
-
-            *entry_index = (entry_index + 1) % self.capacity;
+            *entry_index = (entry_index + 1) % self.entry_capacity;
         }
     }
     #[tracked]
     pub fn get(&self, key: Expr<u32>, table: Expr<u32>) -> Expr<u32> {
-        let entry_index = (hash32(key) % self.capacity).var();
-        let offset = self.capacity * table;
+        let entry_index = (hash32(key) % self.entry_capacity).var();
+        let offset = self.entry_capacity * table;
         let result = u32::MAX.var();
         loop {
             let entry = self.entries.read(offset + entry_index);
             if entry.key == key {
                 *result = entry.value.index;
                 break;
+            } else if entry.key == INVALID_KEY {
+                break;
             }
+            *entry_index = (entry_index + 1) % self.entry_capacity;
         }
         **result
     }
     #[tracked]
-    pub fn build_freelists(&self, remove: impl Fn(Expr<u32>) -> Expr<bool>) {
-        let data_index = dispatch_id().x;
+    pub fn contains(&self, key: Expr<u32>, table: Expr<u32>) -> Expr<bool> {
+        self.get(key, table) != u32::MAX
+    }
+    #[tracked]
+    pub fn cost(&self, key: Expr<u32>, table: Expr<u32>) -> Expr<u32> {
+        let entry_index = (hash32(key) % self.entry_capacity).var();
+        let offset = self.entry_capacity * table;
+        let cost = 0_u32.var();
+        loop {
+            let entry = self.entries.read(offset + entry_index);
+            if entry.key == key {
+                break;
+            } else if entry.key == INVALID_KEY {
+                *cost = u32::MAX;
+                break;
+            }
+            *entry_index = (entry_index + 1) % self.entry_capacity;
+            *cost += 1;
+        }
+        **cost
+    }
+    // remove: if true, then item is removed from the table
+    #[tracked]
+    pub fn build_freelists(&self, data_index: Expr<u32>, remove: impl Fn(Expr<u32>) -> Expr<bool>) {
         let table = 0_u32.var();
         // TODO: Can be optimized if we know more about the table sizes
         for i in 1..self.num_tables {
