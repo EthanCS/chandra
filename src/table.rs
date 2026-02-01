@@ -203,4 +203,9 @@ impl HashTable {
             self.freelist.write(freelist_index, data_index);
         }
     }
+    #[tracked]
+    pub fn get_occupied_index(&self, table: Expr<u32>, index: Expr<u32>) -> Expr<u32> {
+        self.freelist
+            .read(self.table_data_start.read(table) + index)
+    }
 }

@@ -1,6 +1,7 @@
 #![allow(unused_parens)]
 
 use keter::graph::NodeConfigs;
+use keter::lang::types::AtomicRef;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use yesod::camera::View;
@@ -153,12 +154,16 @@ pub struct LoadedNode {
     // 0 if not loaded so that things don't go out of bounds
     pub data_offset: u32,
     // index in the table
-    // if u32::MAX, this isn't loade
+    // if u32::MAX, this isn't loaded
     pub index: u32,
 }
 impl LoadedNodeExpr {
     #[tracked]
-    pub fn is_loaded(&self) -> Expr<bool> {
+    pub fn invalid(&self) -> Expr<bool> {
+        self.index == u32::MAX.expr()
+    }
+    #[tracked]
+    pub fn loaded(&self) -> Expr<bool> {
         self.index != u32::MAX.expr()
     }
 }
@@ -312,9 +317,16 @@ impl HashCache {
             .cast_u32()
     }
     #[tracked]
-    pub fn read_grid(&self, node: Expr<LoadedNode>, dir: Expr<Vec2<u32>>) -> Expr<RadianceElement> {
-        self.data
-            .read(node.data_offset + self.get_encoder(node.probe.cascade).grid_to_linear(dir))
+    pub fn read_element(&self, node: Expr<LoadedNode>, index: Expr<u32>) -> Expr<RadianceElement> {
+        self.data.read(node.data_offset + index)
+    }
+    #[tracked]
+    pub fn atomic_element(
+        &self,
+        node: Expr<LoadedNode>,
+        index: Expr<u32>,
+    ) -> AtomicRef<RadianceElement> {
+        self.data.atomic_ref(node.data_offset + index)
     }
     #[tracked]
     pub fn quantize(
@@ -394,6 +406,12 @@ impl HashCache {
     #[tracked]
     pub fn get(&self, probe: Expr<Probe>) -> Expr<LoadedNode> {
         let index = self.table.get(self.encode(probe), probe.cascade);
+        self.load_index(probe, index)
+    }
+    #[tracked]
+    pub fn get_occupied(&self, cascade: Expr<u32>, index: Expr<u32>) -> Expr<LoadedNode> {
+        let index = self.table.get_occupied_index(cascade, index);
+        let probe = self.decode(self.table.data_key.read(index), cascade);
         self.load_index(probe, index)
     }
 }

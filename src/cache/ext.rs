@@ -120,14 +120,14 @@ impl HashCache {
         fluence: Expr<Fluence>,
     ) -> Expr<bool> {
         let node = self.get(probe);
-        if node.is_loaded() {
+        if node.loaded() {
             let encoder = self.get_encoder(probe.cascade);
             let index = encoder.dir_to_linear(dir);
             let data_index = node.data_offset + index;
             let deposit = self.data.atomic_ref(data_index);
             deposit.deposit(fluence);
         }
-        node.is_loaded()
+        node.loaded()
     }
     #[tracked]
     pub fn contains(&self, probe: Expr<Probe>) -> Expr<bool> {
