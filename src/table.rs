@@ -1,5 +1,6 @@
 use keter::prelude::Value as _; // Shadowed for some reason
 use keter::prelude::*;
+use yesod::device_println;
 use yesod::rand::pcg;
 
 pub const INVALID_KEY: u32 = u32::MAX;
@@ -43,6 +44,8 @@ pub struct HashTable {
     // per table
     pub table_data_start: Buffer<u32>,
     pub freelist_index: Buffer<u32>, // reset to table_data_start after each build
+    pub last_occupied_index: Buffer<u32>,
+    pub total_occupied: Buffer<u32>,
 }
 
 /*
@@ -79,6 +82,8 @@ impl HashTable {
 
             table_data_start: DEVICE.create_buffer_from_slice(&table_data_start),
             freelist_index: DEVICE.create_buffer(num_tables as usize),
+            last_occupied_index: DEVICE.create_buffer(num_tables as usize),
+            total_occupied: DEVICE.create_buffer(num_tables as usize),
         }
     }
     pub fn memory_size(&self) -> usize {
@@ -87,6 +92,7 @@ impl HashTable {
             + self.data_key.size_bytes()
             + self.table_data_start.size_bytes()
             + self.freelist_index.size_bytes()
+            + self.last_occupied_index.size_bytes()
     }
     pub fn data_capacity(&self) -> u32 {
         self.data_capacity
@@ -103,6 +109,7 @@ impl HashTable {
             let prev = entry.key.compare_exchange(INVALID_KEY, key);
             if prev == key {
                 // already inserted, do nothing
+                device_println!("Error: duplicate key insertion should be impossible");
                 break;
             } else if prev == INVALID_KEY {
                 entry.value.index.exchange(index);
@@ -114,7 +121,7 @@ impl HashTable {
     }
     // Inserts a key into the table. It takes a while to get the index, so that has to be done later after synchronization.
     #[tracked]
-    pub fn insert(&self, key: Expr<u32>, table: Expr<u32>) {
+    pub fn insert(&self, key: Expr<u32>, table: Expr<u32>, on_insert: impl Fn(Expr<u32>)) {
         let entry_index = (hash32(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         loop {
@@ -129,6 +136,7 @@ impl HashTable {
                     .read(self.freelist_index.atomic_ref(table).fetch_add(1));
                 entry.value.index.exchange(index);
                 self.data_key.write(index, key);
+                on_insert(index);
                 break;
             }
             *entry_index = (entry_index + 1) % self.entry_capacity;
@@ -175,7 +183,11 @@ impl HashTable {
     }
     // remove: if true, then item is removed from the table
     #[tracked]
-    pub fn build_freelists(&self, data_index: Expr<u32>, remove: impl Fn(Expr<u32>) -> Expr<bool>) {
+    pub fn build_freelists(
+        &self,
+        data_index: Expr<u32>,
+        remove: impl Fn(Expr<Key>, Expr<u32>) -> Expr<bool>,
+    ) {
         let table = 0_u32.var();
         // TODO: Can be optimized if we know more about the table sizes
         for i in 1..self.num_tables {
@@ -190,12 +202,16 @@ impl HashTable {
         let occupied = (key != INVALID_KEY).var();
         // Separate?
         if occupied {
-            if remove(data_index) {
+            if remove(key, **table) {
                 self.data_key.write(data_index, INVALID_KEY);
                 *occupied = false;
             } else {
                 let key = self.data_key.read(data_index);
                 self.insert_entry_index(key, **table, data_index);
+                self.last_occupied_index
+                    .atomic_ref(table)
+                    .fetch_max(data_index);
+                self.total_occupied.atomic_ref(table).fetch_add(1);
             }
         }
         if !occupied {
@@ -203,9 +219,9 @@ impl HashTable {
             self.freelist.write(freelist_index, data_index);
         }
     }
-    #[tracked]
-    pub fn get_occupied_index(&self, table: Expr<u32>, index: Expr<u32>) -> Expr<u32> {
-        self.freelist
-            .read(self.table_data_start.read(table) + index)
-    }
+    // #[tracked]
+    // pub fn get_occupied_index(&self, table: Expr<u32>, index: Expr<u32>) -> Expr<u32> {
+    //     self.freelist
+    //         .read(self.table_data_start.read(table) + index)
+    // }
 }

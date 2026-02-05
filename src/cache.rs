@@ -400,8 +400,9 @@ impl HashCache {
         })
     }
     #[tracked]
-    pub fn insert(&self, probe: Expr<Probe>) {
-        self.table.insert(self.encode(probe), probe.cascade);
+    pub fn insert(&self, probe: Expr<Probe>, on_insert: impl Fn(Expr<u32>)) {
+        self.table
+            .insert(self.encode(probe), probe.cascade, on_insert);
     }
     #[tracked]
     pub fn get(&self, probe: Expr<Probe>) -> Expr<LoadedNode> {
@@ -410,7 +411,7 @@ impl HashCache {
     }
     #[tracked]
     pub fn get_occupied(&self, cascade: Expr<u32>, index: Expr<u32>) -> Expr<LoadedNode> {
-        let index = self.table.get_occupied_index(cascade, index);
+        let index = self.get_index_offset(cascade) + index;
         let probe = self.decode(self.table.data_key.read(index), cascade);
         self.load_index(probe, index)
     }
