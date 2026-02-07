@@ -666,6 +666,7 @@ fn main() {
                 }
             } else {
                 // TODO: If we invert transmittance then the lower-deposits are just count increments.
+                // note: since lifetime is deposited, short rays can cause higher-cascades to vanish
                 for level in 0.expr()..hit_level {
                     deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
                 }
@@ -823,6 +824,20 @@ fn main() {
                     }
                 } else {
                     Vec3::splat_expr(0.0)
+                }
+            } else if mode == 2 {
+                let inner = dispatch_id().xy() % Vec2::expr(8, 4);
+                let outer = dispatch_id().xy() / Vec2::expr(8, 4);
+                let i = 32 * (outer.y * (dispatch_size().x / 4) + outer.x) + inner.y * 8 + inner.x;
+                if i < cache.table.data_capacity {
+                    let occupied = cache.table.data_key.read(i) != table::INVALID_KEY;
+                    if occupied {
+                        Vec3::splat_expr(1.0)
+                    } else {
+                        Vec3::splat_expr(0.0)
+                    }
+                } else {
+                    Vec3::expr(0.0, 0.0, 1.0)
                 }
             }
             /*else if mode == 2 {
@@ -1110,7 +1125,7 @@ fn main() {
             reset_table(&mut commands);
 
             for l in (0..cache.num_cascades).rev() {
-                let dispatch_size = [max_probes[l as usize], 1 << l, 1];
+                let dispatch_size = [max_probes[l as usize], 32 * (1 << l), 1];
                 commands.push(
                     (if l == cache.num_cascades - 1 {
                         merge_last_cache.dispatch_async(dispatch_size)
