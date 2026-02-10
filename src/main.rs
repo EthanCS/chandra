@@ -57,8 +57,8 @@ use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::printer::global::flush_printer;
-use yesod::rand::{pcg3d, pcg3df};
-use yesod::utils::dispatch0_async;
+use yesod::rand::{pcg, pcg3d, pcg3df, pcgf};
+use yesod::utils::{dispatch0, dispatch0_async};
 use yesod::{device_println, host};
 
 const TERMINATE_DEPOSIT: u32 = 0b1;
@@ -393,13 +393,36 @@ fn main() {
         let probe = node.probe;
         // TODO: best to process in batches of 8.
         // TODO: pre-load all of the data batched.
-        let next_probes = (!matches!(merge_level, MergeLevel::Last)).then(|| {
-            probe.next_bilinear().map(|(probe, weight)| {
+
+        let n = 0_u32.var();
+        let next_offsets = [0_u32; 8].var();
+        let next_weights = [0.0_f32; 8].var();
+
+        if !matches!(merge_level, MergeLevel::Last) {
+            /*for (probe, weight) in probe.next_bilinear() {
                 let next = cache.get(probe);
-                let weight = weight * next.loaded().cast_u32().cast_f32();
-                (next, weight)
-            })
-        });
+                if next.loaded() {
+                    next_offsets.write(n, next.data_offset);
+                    next_weights.write(n, weight);
+                    *n += 1;
+                }
+            }*/
+            let probe = probe.next_nearest();
+            let weight = 1.0_f32;
+            let next = cache.get(probe);
+            if next.loaded() {
+                next_offsets.write(n, next.data_offset);
+                next_weights.write(n, weight);
+                *n += 1;
+            }
+
+            if n == 0 {
+                return;
+            }
+            // if pcgf(dispatch_id().x) < 0.01 {
+            //     device_println!("Cascade: {:?}, {:?}", host!(cascade), host!(**n));
+            // }
+        }
         for index in 0_u32.expr()..(encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
             let dir = encoder.linear_to_grid(index);
@@ -411,11 +434,14 @@ fn main() {
                 for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
                     let sample_dir = dir * 2 + offset;
                     // TODO: Can optimize because half are empty.
-                    for (next, weight) in next_probes.unwrap() {
+                    for i in 0.expr()..**n {
                         let sample_index = next_encoder.grid_to_linear(sample_dir);
-                        let radiance = cache.data.read(next.data_offset + sample_index).radiance();
+                        let radiance = cache
+                            .data
+                            .read(next_offsets.read(i) + sample_index)
+                            .radiance();
                         if radiance.is_finite().all() {
-                            *total_radiance += weight * radiance.extend(1.0);
+                            *total_radiance += next_weights.read(i) * radiance.extend(1.0);
                         }
                     }
                 }
@@ -1038,6 +1064,15 @@ fn main() {
             reset_table(&mut commands);
         }
 
+        if rt.key_down(KeyCode::Backslash) {
+            println!("Resetting cache");
+
+            let mut commands = vec![];
+
+            reset_table(&mut commands);
+            reset_table(&mut commands);
+        }
+
         commands.push(
             compute_gbuffer_kernel
                 .dispatch_async(rt.dispatch_size(), &camera.view())
@@ -1218,23 +1253,6 @@ fn main() {
             );
         }
 
-        // let freelist_end = cache.table.freelist_index.copy_to_vec();
-        // println!("Freelist end: {freelist_end:?}");
-        // println!(
-        //     "Used: {:?}",
-        //     freelist_end
-        //         .iter()
-        //         .enumerate()
-        //         .map(|(i, x)| x - cache.get_index_offset_host(i as u32))
-        //         .collect::<Vec<_>>()
-        // );
-
-        // if rt.key_down(KeyCode::Backslash) {
-        //     // println!("Resetting cache");
-        //     reset_cache_nodes.dispatch([cache.nodes.len() as u32, 1, 1]);
-        //     reset_cache_data.dispatch([cache.data.len() as u32, 1, 1]);
-        //     reset_primary_cache.dispatch([primary_cache.len() as u32, 1, 1]);
-        // }
         flush_printer();
     });
 }
