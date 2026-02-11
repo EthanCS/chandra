@@ -8,7 +8,7 @@ use yesod::camera::View;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::utils::next_float_down_pos_2;
 
-use crate::table::HashTable;
+use crate::table::{HashTable, INVALID_KEY};
 
 mod ext;
 
@@ -188,6 +188,7 @@ impl Probe {
     }
 }
 impl ProbeExpr {
+    // TODO: This needs to add the bias, otherwise it only works if you're using it as a lookup.
     #[tracked]
     pub fn next_bilinear(&self) -> [(Expr<Probe>, Expr<f32>); 8] {
         let base_position = (self.position.xyz() - 1) >> 1;
@@ -412,7 +413,16 @@ impl HashCache {
     #[tracked]
     pub fn get_occupied(&self, cascade: Expr<u32>, index: Expr<u32>) -> Expr<LoadedNode> {
         let index = self.get_index_offset(cascade) + index;
-        let probe = self.decode(self.table.data_key.read(index), cascade);
-        self.load_index(probe, index)
+        let key = self.table.data_key.read(index);
+        let probe = self.decode(key, cascade);
+        if key == INVALID_KEY {
+            LoadedNode::from_comps_expr(LoadedNodeComps {
+                probe,
+                data_offset: 0.expr(),
+                index: u32::MAX.expr(),
+            })
+        } else {
+            self.load_index(probe, index)
+        }
     }
 }

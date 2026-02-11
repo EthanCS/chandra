@@ -12,6 +12,7 @@ use keter::rtx::{
     Ray, SurfaceHit, TriangleInterpolate,
 };
 use tobj::LoadOptions;
+use yesod::shapes::dda;
 
 use crate::utils::*;
 
