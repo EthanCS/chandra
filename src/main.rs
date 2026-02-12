@@ -399,26 +399,29 @@ fn main() {
         let next_weights = [0.0_f32; 8].var();
 
         if !matches!(merge_level, MergeLevel::Last) {
-            /*for (probe, weight) in probe.next_bilinear() {
+            for (probe, weight) in probe.next_bilinear() {
                 let next = cache.get(probe);
                 if next.loaded() {
                     next_offsets.write(n, next.data_offset);
                     next_weights.write(n, weight);
                     *n += 1;
                 }
-            }*/
-            let probe = probe.next_nearest();
-            let weight = 1.0_f32;
-            let next = cache.get(probe);
-            if next.loaded() {
-                next_offsets.write(n, next.data_offset);
-                next_weights.write(n, weight);
-                *n += 1;
             }
+            // let probe = probe.next_nearest();
+            // let weight = 1.0_f32;
+            // let next = cache.get(probe);
+            // if next.loaded() {
+            //     next_offsets.write(n, next.data_offset);
+            //     next_weights.write(n, weight);
+            //     *n += 1;
+            // }
 
-            if n == 0 {
-                return;
-            }
+            // if n == 0 {
+            // if pcgf(dispatch_id().x) < 0.01 && dispatch_id().y == 0 {
+            //     device_println!("Whoops!");
+            // }
+            //     return;
+            // }
             // if pcgf(dispatch_id().x) < 0.01 {
             //     device_println!("Cascade: {:?}, {:?}", host!(cascade), host!(**n));
             // }
@@ -448,7 +451,7 @@ fn main() {
             }
             let data_index = node.data_offset + index;
 
-            let far = total_radiance.xyz() / total_radiance.w;
+            let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
 
             let radiance_deposit = cache.data.read(data_index).var();
 
