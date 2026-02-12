@@ -392,51 +392,40 @@ fn main() {
 
         let probe = node.probe;
 
-        let n = 0_u32.var();
-        let next_offsets = [0_u32; 8].var();
-        let next_weights = [0.0_f32; 8].var();
-
-        if !matches!(merge_level, MergeLevel::Last) {
-            for (probe, weight) in probe.next_bilinear() {
+        let next_probes = (!matches!(merge_level, MergeLevel::Last)).then(|| {
+            probe.next_bilinear().map(|(probe, weight)| {
                 let next = cache.get(probe);
-                if next.loaded() {
-                    next_offsets.write(n, next.data_offset);
-                    next_weights.write(n, weight);
-                    *n += 1;
-                }
-            }
-        }
-        for index in 0_u32.expr()..(encoder.linear_size() / dispatch_size().y) {
-            let index = index * dispatch_size().y + dispatch_id().y;
-            let dir = encoder.linear_to_grid(index);
-            let total_radiance = Vec4::splat(0.0_f32).var();
-            if let MergeLevel::Last = merge_level {
-                // Shouldn't be used.
-                *total_radiance = Vec4::expr(10000.0, 0.0, 0.0, 1.0);
-            } else {
-                for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
-                    let sample_dir = dir * 2 + offset;
-                    for i in 0.expr()..**n {
+                let weight = weight * next.loaded().cast_u32().cast_f32();
+                (next.data_offset, weight)
+            })
+        });
+
+        let index = dispatch_id().y;
+        let dir = encoder.linear_to_grid(index);
+        let total_radiance = Vec4::splat(0.0_f32).var();
+        if !matches!(merge_level, MergeLevel::Last) {
+            for (next_offset, weight) in next_probes.unwrap() {
+                if weight != 0.0 {
+                    for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
+                        let sample_dir = dir * 2 + offset;
                         let sample_index = next_encoder.grid_to_linear(sample_dir);
-                        let radiance = cache
-                            .data
-                            .read(next_offsets.read(i) + sample_index)
-                            .radiance();
+                        let radiance = cache.data.read(next_offset + sample_index).radiance();
+
                         if radiance.is_finite().all() {
-                            *total_radiance += next_weights.read(i) * radiance.extend(1.0);
+                            *total_radiance += weight * radiance.extend(1.0);
                         }
                     }
                 }
             }
-            let data_index = node.data_offset + index;
-
-            let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
-
-            let radiance_deposit = cache.data.read(data_index).var();
-
-            radiance_deposit.merge(far);
-            cache.data.write(data_index, radiance_deposit);
         }
+        let data_index = node.data_offset + index;
+
+        let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
+
+        let radiance_deposit = cache.data.read(data_index).var();
+
+        radiance_deposit.merge(far);
+        cache.data.write(data_index, radiance_deposit);
     });
 
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&|level| {
@@ -1116,7 +1105,7 @@ fn main() {
             reset_table(&mut commands);
 
             for l in (0..cache.num_cascades).rev() {
-                let dispatch_size = [max_probes[l as usize], 32 * (1 << l), 1];
+                let dispatch_size = [max_probes[l as usize], 32 << (l * 2), 1];
                 commands.push(
                     (if l == cache.num_cascades - 1 {
                         merge_last_cache.dispatch_async(dispatch_size)
