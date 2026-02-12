@@ -41,12 +41,15 @@ use chandra::cache::{
     RadianceElement,
 };
 use chandra::table;
+use chandra::utils::{corner_to_index, index_to_corner};
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
 use image::{GenericImageView, ImageReader};
 use keter::bindless::BINDLESS;
 use keter::graph::profile::Profiler;
-use keter::lang::functions::sync_block;
+use keter::lang::functions::{
+    sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits, warp_read_lane_at,
+};
 use keter::lang::types::shared::Shared;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
@@ -392,28 +395,57 @@ fn main() {
 
         let probe = node.probe;
 
-        let next_probes = (!matches!(merge_level, MergeLevel::Last)).then(|| {
-            probe.next_bilinear().map(|(probe, weight)| {
-                let next = cache.get(probe);
-                let weight = weight * next.loaded().cast_u32().cast_f32();
-                (next.data_offset, weight)
-            })
-        });
+        let n = 0_u32.var();
+        let next_offsets = Shared::<u32>::new(8);
+        let next_weights = Shared::<f32>::new(8);
+
+        if !matches!(merge_level, MergeLevel::Last) {
+            if thread_id().y < 8 {
+                let i = thread_id().y;
+                let base_pos = probe.position.xyz() & !1_u32;
+                let j = corner_to_index(probe.position.xyz() & 1_u32);
+                let base_probe = Probe::from_comps_expr(ProbeComps {
+                    position: base_pos.extend(probe.position.w),
+                    cascade,
+                })
+                .next_nearest();
+                let pos = base_probe.position.xyz() + index_to_corner(i);
+                let next_probe = Probe::from_comps_expr(ProbeComps {
+                    position: pos.extend(base_probe.position.w),
+                    cascade: base_probe.cascade,
+                });
+                let next = cache.get(next_probe);
+                if next.loaded() {
+                    let index = warp_prefix_count_bits(true.expr());
+
+                    let corner_weights = std::array::from_fn::<_, 8, _>(|i| {
+                        let id = (i & 1) + ((i >> 1_u32) & 1) + ((i >> 2_u32) & 1);
+                        0.25_f32.powi(id as i32) * 0.75_f32.powi((3 - id) as i32)
+                    });
+
+                    next_offsets.write(index, next.data_offset);
+                    next_weights.write(index, corner_weights.expr().read(i ^ j));
+                }
+                *n = warp_active_count_bits(next.loaded());
+            }
+            sync_block();
+        }
+        let n = warp_read_lane_at(**n, 0);
 
         let index = dispatch_id().y;
         let dir = encoder.linear_to_grid(index);
         let total_radiance = Vec4::splat(0.0_f32).var();
         if !matches!(merge_level, MergeLevel::Last) {
-            for (next_offset, weight) in next_probes.unwrap() {
-                if weight != 0.0 {
-                    for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
-                        let sample_dir = dir * 2 + offset;
-                        let sample_index = next_encoder.grid_to_linear(sample_dir);
-                        let radiance = cache.data.read(next_offset + sample_index).radiance();
-
-                        if radiance.is_finite().all() {
-                            *total_radiance += weight * radiance.extend(1.0);
-                        }
+            for i in 0.expr()..n {
+                for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
+                    let sample_dir = dir * 2 + offset;
+                    let sample_index = next_encoder.grid_to_linear(sample_dir);
+                    let radiance = cache
+                        .data
+                        .read(next_offsets.read(i) + sample_index)
+                        .radiance();
+                    if radiance.is_finite().all() {
+                        *total_radiance += next_weights.read(i) * radiance.extend(1.0);
                     }
                 }
             }

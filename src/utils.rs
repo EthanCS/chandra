@@ -7,6 +7,11 @@ pub fn index_to_corner(i: Expr<u32>) -> Expr<Vec3<u32>> {
     Vec3::expr(i & 1, (i >> 1) & 1, (i >> 2) & 1)
 }
 
+#[tracked]
+pub fn corner_to_index(corner: Expr<Vec3<u32>>) -> Expr<u32> {
+    corner.x + (corner.y << 1) + (corner.z << 2)
+}
+
 pub fn to_linear(pos: UVec3, size: UVec3) -> usize {
     (pos.x + pos.y * size.x + pos.z * size.x * size.y) as usize
 }
