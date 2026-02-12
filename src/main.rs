@@ -391,8 +391,6 @@ fn main() {
         let next_encoder = cache.get_encoder(cascade + 1);
 
         let probe = node.probe;
-        // TODO: best to process in batches of 8.
-        // TODO: pre-load all of the data batched.
 
         let n = 0_u32.var();
         let next_offsets = [0_u32; 8].var();
@@ -407,24 +405,6 @@ fn main() {
                     *n += 1;
                 }
             }
-            // let probe = probe.next_nearest();
-            // let weight = 1.0_f32;
-            // let next = cache.get(probe);
-            // if next.loaded() {
-            //     next_offsets.write(n, next.data_offset);
-            //     next_weights.write(n, weight);
-            //     *n += 1;
-            // }
-
-            // if n == 0 {
-            // if pcgf(dispatch_id().x) < 0.01 && dispatch_id().y == 0 {
-            //     device_println!("Whoops!");
-            // }
-            //     return;
-            // }
-            // if pcgf(dispatch_id().x) < 0.01 {
-            //     device_println!("Cascade: {:?}, {:?}", host!(cascade), host!(**n));
-            // }
         }
         for index in 0_u32.expr()..(encoder.linear_size() / dispatch_size().y) {
             let index = index * dispatch_size().y + dispatch_id().y;
@@ -436,7 +416,6 @@ fn main() {
             } else {
                 for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
                     let sample_dir = dir * 2 + offset;
-                    // TODO: Can optimize because half are empty.
                     for i in 0.expr()..**n {
                         let sample_index = next_encoder.grid_to_linear(sample_dir);
                         let radiance = cache
@@ -454,32 +433,6 @@ fn main() {
             let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
 
             let radiance_deposit = cache.data.read(data_index).var();
-
-            /*{
-                let probe_pos = cache.dequantize(probe);
-                let segment = (12.0
-                    * Vec2::new(0.5, 1.0)
-                    * cache.base_grid_size
-                    * (1_u32 << (probe.position.w + probe.level)).cast_f32())
-                .var();
-                if matches!(merge_level, MergeLevel::Last) {
-                    *segment.y = 999999.0;
-                }
-                if level == 0 {
-                    *segment.x =
-                        2.0 * cache.base_grid_size * (1_u32 << probe.position.w).cast_f32();
-                }
-                let dir = node.encoder.linear_to_dir(index);
-                let hit = world.trace_segment(probe_pos, dir, **segment);
-                let fluence = get_fluence(probe_pos, dir, hit).var();
-                if matches!(merge_level, MergeLevel::Last) {
-                    *fluence.w = 0.0;
-                }
-                let radiance = fluence.xyz() + fluence.w * far;
-                *radiance_deposit.radiance_weight.x = radiance.x;
-                *radiance_deposit.radiance_weight.y = radiance.y;
-                *radiance_deposit.radiance_weight.z = radiance.z;
-            }*/
 
             radiance_deposit.merge(far);
             cache.data.write(data_index, radiance_deposit);
