@@ -6,7 +6,7 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use yesod::camera::View;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
-use yesod::utils::next_float_down_pos_2;
+use yesod::utils::{decode_morton2_16, encode_morton2_16, next_float_down_pos_2};
 
 use crate::table::{HashTable, INVALID_KEY};
 
@@ -42,23 +42,34 @@ fn decode_position(pos: Expr<u32>) -> Expr<Vec4<u32>> {
 pub struct RadianceElement {
     // actually pretty likely that the transmittance is 1 / the fluence is empty.
     pub weighted_fluence: Vec4<f32>, // xyz: unnormalized fluence, w: transmittance (multiplied by weight)
-    pub radiance_weight: Vec4<f32>,  // xyz: radiance, w: weight
+    pub weight: f32,                 // weight
 }
 impl Default for RadianceElement {
     fn default() -> Self {
         Self {
             weighted_fluence: Vec4::splat(0.0),
-            radiance_weight: Vec4::new(0.0, 0.0, 0.0, 0.0),
+            weight: 0.0,
         }
     }
 }
 impl RadianceElementExpr {
-    pub fn radiance(&self) -> Expr<Radiance> {
-        self.radiance_weight.xyz()
-    }
+    // pub fn radiance(&self) -> Expr<Radiance> {
+    //     self.radiance_weight.xyz()
+    // }
     #[tracked]
     pub fn fluence(&self) -> Expr<Fluence> {
-        self.weighted_fluence / self.radiance_weight.w
+        self.weighted_fluence / self.weight
+    }
+
+    #[tracked]
+    pub fn merge(&self, far: Expr<Radiance>) -> Expr<Vec4<f32>> {
+        // (self.weighted_fluence.xyz() + self.weighted_fluence.w * far).extend(self.weight)
+        if self.weight < 0.0001 {
+            Vec4::splat_expr(0.0)
+        } else {
+            let fluence = self.fluence();
+            (fluence.xyz() + fluence.w * far).extend(1.0)
+        }
     }
 }
 impl RadianceElementAtomicRef {
@@ -68,28 +79,20 @@ impl RadianceElementAtomicRef {
         self.weighted_fluence.y.fetch_add(fluence.y);
         self.weighted_fluence.z.fetch_add(fluence.z);
         self.weighted_fluence.w.fetch_add(fluence.w);
-        self.radiance_weight.w.fetch_add(1.0);
+        self.weight.fetch_add(1.0);
     }
 }
 impl RadianceElementVar {
     #[tracked]
     pub fn deposit(&self, fluence: Expr<Fluence>) {
         *self.weighted_fluence += fluence;
-        *self.radiance_weight.w += 1.0;
-    }
-    #[tracked]
-    pub fn merge(&self, far: Expr<Radiance>) {
-        let fluence = self.fluence();
-        let radiance = fluence.xyz() + fluence.w * far;
-        *self.radiance_weight.x = radiance.x;
-        *self.radiance_weight.y = radiance.y;
-        *self.radiance_weight.z = radiance.z;
+        *self.weight += 1.0;
     }
     #[tracked]
     pub fn decay(&self, factor: Expr<f32>, min_count: Expr<f32>) {
-        if self.radiance_weight.w > min_count {
+        if self.weight > min_count {
             *self.weighted_fluence *= factor;
-            *self.radiance_weight.w *= factor;
+            *self.weight *= factor;
         }
     }
 }
@@ -122,11 +125,13 @@ impl DirectionIndexerExpr {
     #[tracked]
     pub fn grid_to_linear(&self, index: Expr<Vec2<u32>>) -> Expr<u32> {
         let index = index % self.grid_size();
-        index.x * self.grid_size().y + index.y
+        encode_morton2_16(index)
+        // index.x * self.grid_size().y + index.y
     }
     #[tracked]
     pub fn linear_to_grid(&self, index: Expr<u32>) -> Expr<Vec2<u32>> {
-        Vec2::expr(index / self.grid_size().y, index % self.grid_size().y)
+        decode_morton2_16(index)
+        // Vec2::expr(index / self.grid_size().y, index % self.grid_size().y)
     }
     #[tracked]
     pub fn linear_to_dir(&self, index: Expr<u32>) -> Expr<Vec3<f32>> {

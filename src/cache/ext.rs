@@ -1,7 +1,7 @@
 use super::*;
 
 impl HashCache {
-    #[tracked]
+    /*#[tracked]
     pub fn get_diffuse(
         &self,
         node: Expr<LoadedNode>,
@@ -26,7 +26,6 @@ impl HashCache {
         let out: Expr<Vec3<f32>> = total_radiance.xyz() / total_radiance.w;
         out
     }
-    /*
     #[tracked]
     pub fn get_dir(&self, node: Expr<LoadedNode>, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
         self.data

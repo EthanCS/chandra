@@ -249,6 +249,8 @@ fn main() {
     let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     let cache = HashCache::new(1.0, 100.0, 4, 1 << 18, 6);
+    let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.data.len() / 4);
+    let cache_base_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.base_probes as usize * 32);
 
     let base_probe_num_rays =
         DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0_u32);
@@ -373,7 +375,7 @@ fn main() {
 
     #[derive(Clone, Copy)]
     enum MergeLevel {
-        // First,
+        First,
         Last,
         Middle(Expr<u32>),
     }
@@ -382,7 +384,7 @@ fn main() {
     let merge_cache_base = track!(|merge_level: MergeLevel| {
         set_block_size([1, 32, 1]);
         let cascade = match merge_level {
-            // MergeLevel::First => 0.expr(),
+            MergeLevel::First => 0.expr(),
             MergeLevel::Last => (cache.num_cascades - 1).expr(),
             MergeLevel::Middle(l) => l,
         };
@@ -433,20 +435,13 @@ fn main() {
         let n = warp_read_lane_at(**n, 0);
 
         let index = dispatch_id().y;
-        let dir = encoder.linear_to_grid(index);
         let total_radiance = Vec4::splat(0.0_f32).var();
         if !matches!(merge_level, MergeLevel::Last) {
             for i in 0.expr()..n {
-                for offset in [[0, 0], [0, 1], [1, 0], [1, 1]].map(Vec2::from) {
-                    let sample_dir = dir * 2 + offset;
-                    let sample_index = next_encoder.grid_to_linear(sample_dir);
-                    let radiance = cache
-                        .data
-                        .read(next_offsets.read(i) + sample_index)
-                        .radiance();
-                    if radiance.is_finite().all() {
-                        *total_radiance += next_weights.read(i) * radiance.extend(1.0);
-                    }
+                let radiance = cache_radiance.read(next_offsets.read(i) / 4 + index);
+                // necessary?
+                if radiance.is_finite().all() {
+                    *total_radiance += next_weights.read(i) * radiance.extend(1.0);
                 }
             }
         }
@@ -454,12 +449,28 @@ fn main() {
 
         let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
 
-        let radiance_deposit = cache.data.read(data_index).var();
+        let radiance_deposit = cache.data.read(data_index);
 
-        radiance_deposit.merge(far);
-        cache.data.write(data_index, radiance_deposit);
+        let radiance = radiance_deposit.merge(far);
+
+        if matches!(merge_level, MergeLevel::First) {
+            cache_base_radiance.write(data_index, radiance.xyz() / radiance.w);
+        } else {
+            let adj_radiance = warp_read_lane_at(radiance, (index + 1) % 32);
+            if index % 2 == 0 {
+                let radiance = radiance + adj_radiance;
+                let adj_radiance = warp_read_lane_at(radiance, (index + 2) % 32);
+                if index % 4 == 0 {
+                    let radiance = radiance + adj_radiance;
+                    cache_radiance.write(data_index / 4, radiance.xyz() / radiance.w);
+                }
+            }
+        }
     });
 
+    let merge_first_cache = DEVICE.create_kernel::<fn()>(&|| {
+        merge_cache_base(MergeLevel::First);
+    });
     let merge_cache = DEVICE.create_kernel::<fn(u32)>(&|level| {
         merge_cache_base(MergeLevel::Middle(level));
     });
@@ -691,10 +702,7 @@ fn main() {
             // let quality = node_quality.read(node.index);
 
             let radiance_data = Shared::<Vec3<f32>>::new(32);
-            let v = cache
-                .data
-                .read(node.data_offset + dispatch_id().y)
-                .radiance();
+            let v = cache_base_radiance.read(node.data_offset + dispatch_id().y);
             radiance_data.write(dispatch_id().y, v);
             sync_block();
 
@@ -1139,10 +1147,12 @@ fn main() {
             for l in (0..cache.num_cascades).rev() {
                 let dispatch_size = [max_probes[l as usize], 32 << (l * 2), 1];
                 commands.push(
-                    (if l == cache.num_cascades - 1 {
-                        merge_last_cache.dispatch_async(dispatch_size)
-                    } else {
-                        merge_cache.dispatch_async(dispatch_size, &l)
+                    (match l {
+                        0 => merge_first_cache.dispatch_async(dispatch_size),
+                        l if l == cache.num_cascades - 1 => {
+                            merge_last_cache.dispatch_async(dispatch_size)
+                        }
+                        l => merge_cache.dispatch_async(dispatch_size, &l),
                     })
                     .debug(format!("Merge Cache Level {l}")),
                 );
