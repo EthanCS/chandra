@@ -110,7 +110,6 @@ impl HashCache {
         }
         total_radiance.xyz() / total_radiance.w
     }
-    */
     #[tracked]
     pub fn deposit(
         &self,
@@ -128,6 +127,7 @@ impl HashCache {
         }
         node.loaded()
     }
+    */
     #[tracked]
     pub fn contains(&self, probe: Expr<Probe>) -> Expr<bool> {
         self.table.contains(self.encode(probe), probe.cascade)

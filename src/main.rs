@@ -37,8 +37,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chandra::cache::{
-    Fluence, HashCache, INDEX_SCALING, LoadedNode, LoadedNodeComps, Probe, ProbeComps, Radiance,
-    RadianceElement,
+    DirectionIndexer, DirectionIndexerComps, Fluence, HashCache, INDEX_SCALING, LoadedNode,
+    LoadedNodeComps, Probe, ProbeComps, Radiance, RadianceElement, RadianceElementComps,
 };
 use chandra::table;
 use chandra::utils::{corner_to_index, index_to_corner};
@@ -71,6 +71,7 @@ const TARGET_QUALITY_MULTIPLIER: f32 = 50.0;
 const QUALITY_DECAY: f32 = 0.95;
 const MAX_RAYS: u32 = 1 << 22;
 const NODE_LIFETIME: u32 = 1;
+const INCREASED_BASE_RESOLUTION: bool = false;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -249,7 +250,7 @@ fn main() {
     let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
     let cache = HashCache::new(1.0, 100.0, 4, 1 << 18, 6);
-    let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.data.len() / 4);
+    let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.weights.len() / 4);
     let cache_base_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.base_probes as usize * 32);
 
     let base_probe_num_rays =
@@ -261,7 +262,9 @@ fn main() {
     let traced_rays = DEVICE.create_buffer::<Ray>(MAX_RAYS as usize);
     let next_traced_ray = Singleton::<u32>::new(0_u32);
 
-    let cache_memory = cache.data.size_bytes() + cache.table.memory_size();
+    let cache_memory = cache.weighted_fluence.size_bytes()
+        + cache.weights.size_bytes()
+        + cache.table.memory_size();
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
     let build_freelists = DEVICE.create_kernel::<fn()>(&track!(|| {
@@ -277,8 +280,9 @@ fn main() {
 
                 for index in 0_u32.expr()..encoder.linear_size() {
                     cache
-                        .data
-                        .write(node.data_offset + index, RadianceElement::default());
+                        .weighted_fluence
+                        .write(node.data_offset + index, Vec4::splat(0.0));
+                    cache.weights.write(node.data_offset + index, 0.0);
                 }
             } else {
                 node_lifetime.write(data_index, **lifetime);
@@ -392,8 +396,6 @@ fn main() {
         if node.invalid() {
             return;
         }
-        let encoder = cache.get_encoder(cascade);
-        let next_encoder = cache.get_encoder(cascade + 1);
 
         let probe = node.probe;
 
@@ -449,11 +451,16 @@ fn main() {
 
         let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
 
-        let radiance_deposit = cache.data.read(data_index);
+        let weight = cache.weights.read(data_index);
+        let fluence = cache.weighted_fluence.read(data_index) / weight;
 
-        let radiance = radiance_deposit.merge(far);
+        let radiance = if weight < 0.0001 {
+            Vec4::splat_expr(0.0)
+        } else {
+            over(fluence, far).extend(1.0)
+        };
 
-        if matches!(merge_level, MergeLevel::First) {
+        if INCREASED_BASE_RESOLUTION && matches!(merge_level, MergeLevel::First) {
             cache_base_radiance.write(data_index, radiance.xyz() / radiance.w);
         } else {
             let adj_radiance = warp_read_lane_at(radiance, (index + 1) % 32);
@@ -658,8 +665,10 @@ fn main() {
                 let node = cache.get(probe.shift_level(cascade));
                 if node.loaded() {
                     let encoder = cache.get_encoder(cascade);
-                    let data = cache.atomic_element(node, encoder.dir_to_linear(bounce_ray));
-                    data.deposit(fluence);
+                    cache.deposit(
+                        node.data_offset + encoder.dir_to_linear(bounce_ray),
+                        fluence,
+                    );
                     node_quality.atomic_ref(node.index).fetch_add(1.0);
                     node_lifetime
                         .atomic_ref(node.index)
@@ -697,13 +706,27 @@ fn main() {
                 return;
             }
             let probe = node.probe;
-            let encoder = cache.get_encoder(0.expr());
+            let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
+                resolution: if INCREASED_BASE_RESOLUTION {
+                    4_u32
+                } else {
+                    2_u32
+                }
+                .expr(),
+            });
+            assert_eq!(cache.base_angular_resolution, 4);
 
             // let quality = node_quality.read(node.index);
 
-            let radiance_data = Shared::<Vec3<f32>>::new(32);
-            let v = cache_base_radiance.read(node.data_offset + dispatch_id().y);
-            radiance_data.write(dispatch_id().y, v);
+            let radiance_data =
+                Shared::<Vec3<f32>>::new(if INCREASED_BASE_RESOLUTION { 32 } else { 8 });
+            if INCREASED_BASE_RESOLUTION {
+                let v = cache_base_radiance.read(node.data_offset + dispatch_id().y);
+                radiance_data.write(dispatch_id().y, v);
+            } else if dispatch_id().y < 8 {
+                let v = cache_radiance.read(node.data_offset / 4 + dispatch_id().y);
+                radiance_data.write(dispatch_id().y, v);
+            }
             sync_block();
 
             let screen_min = Vec2::from(app.size()).expr().cast_f32().var();
@@ -760,17 +783,16 @@ fn main() {
                 // let weight = weight * factor;
 
                 let total_radiance = Vec4::splat(0.0_f32).var();
-                for j in 0..32_u32 {
+                for j in 0..radiance_data.len() as u32 {
                     let dir = encoder.linear_to_dir(j);
                     let weight = dir.dot(normal);
                     if weight > 0.0 {
                         let radiance = radiance_data.read(j);
                         if radiance.is_finite().all() {
-                            *total_radiance += weight * radiance_data.read(j).extend(1.0);
+                            *total_radiance += weight * radiance.extend(1.0);
                         }
                     }
-                }
-                // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
+                } // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
                 if total_radiance.w < 0.0001 {
                     continue;
                 }

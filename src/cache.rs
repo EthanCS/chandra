@@ -246,7 +246,8 @@ pub struct HashCache {
     pub num_cascades: u32,
     pub projection: Singleton<Projection>,
     pub table: HashTable,
-    pub data: Buffer<RadianceElement>,
+    pub weighted_fluence: Buffer<Vec4<f32>>,
+    pub weights: Buffer<f32>,
 }
 impl HashCache {
     pub fn new(
@@ -257,6 +258,11 @@ impl HashCache {
         num_cascades: u32,
     ) -> Self {
         assert!(base_probes.is_power_of_two());
+        let num_data = (base_angular_resolution.pow(2)
+            * INDEX_SCALING.x
+            * INDEX_SCALING.y
+            * base_probes
+            * num_cascades) as usize;
         Self {
             base_grid_size,
             base_radius,
@@ -270,14 +276,8 @@ impl HashCache {
                 base_probes * 4, // Can use an overly large amount to reduce collisions.
                 (0..num_cascades).map(|level| base_probes >> (level * 2)),
             ),
-            data: DEVICE.create_buffer_from_fn(
-                (base_angular_resolution.pow(2)
-                    * INDEX_SCALING.x
-                    * INDEX_SCALING.y
-                    * base_probes
-                    * num_cascades) as usize,
-                |_| RadianceElement::default(),
-            ),
+            weighted_fluence: DEVICE.create_buffer_from_fn(num_data, |_| Vec4::splat(0.0)),
+            weights: DEVICE.create_buffer_from_fn(num_data, |_| 0.0),
         }
     }
     pub fn set_view(&self, view: View) -> NodeConfigs<'static> {
@@ -322,6 +322,7 @@ impl HashCache {
             .ceil()
             .cast_u32()
     }
+    /*
     #[tracked]
     pub fn read_element(&self, node: Expr<LoadedNode>, index: Expr<u32>) -> Expr<RadianceElement> {
         self.data.read(node.data_offset + index)
@@ -334,6 +335,18 @@ impl HashCache {
     ) -> AtomicRef<RadianceElement> {
         self.data.atomic_ref(node.data_offset + index)
     }
+     */
+
+    #[tracked]
+    pub fn deposit(&self, offset: Expr<u32>, fluence: Expr<Fluence>) {
+        let fl = self.weighted_fluence.atomic_ref(offset);
+        fl.x.fetch_add(fluence.x);
+        fl.y.fetch_add(fluence.y);
+        fl.z.fetch_add(fluence.z);
+        fl.w.fetch_add(fluence.w);
+        self.weights.atomic_ref(offset).fetch_add(1.0);
+    }
+
     #[tracked]
     pub fn quantize(
         &self,
