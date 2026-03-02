@@ -8,13 +8,16 @@ use yesod::camera::View;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::utils::{decode_morton2_16, encode_morton2_16, next_float_down_pos_2};
 
-use crate::table::{HashTable, INVALID_KEY};
+use crate::table::{HashTable, INVALID_KEY, Key};
 
 mod ext;
 
 // Should be enough assuming LODs actually do their job.
-const NUM_BITS: u32 = 8;
-const MASK: u32 = (1 << NUM_BITS) - 1;
+#[cfg(feature = "small-key")]
+const NUM_BITS: Key = 8;
+#[cfg(not(feature = "small-key"))]
+const NUM_BITS: Key = 18;
+const MASK: Key = (1 << NUM_BITS) - 1;
 
 const OFFSET: u32 = 1 << 31;
 
@@ -22,19 +25,24 @@ pub type Radiance = Vec3<f32>;
 pub type Fluence = Vec4<f32>;
 
 #[tracked]
-fn encode_position(cell: Expr<Vec4<u32>>) -> Expr<u32> {
+fn encode_position(cell: Expr<Vec4<u32>>) -> Expr<Key> {
+    #[cfg(not(feature = "small-key"))]
+    let cell = cell.cast_u64();
     let cell = cell & MASK;
     cell.w << (NUM_BITS * 3) | (cell.z << (NUM_BITS * 2)) | (cell.y << NUM_BITS) | cell.x
 }
 
 #[tracked]
-fn decode_position(pos: Expr<u32>) -> Expr<Vec4<u32>> {
-    Vec4::expr(
+fn decode_position(pos: Expr<Key>) -> Expr<Vec4<u32>> {
+    let result = Vec4::expr(
         pos & MASK,
         (pos >> NUM_BITS) & MASK,
         (pos >> (NUM_BITS * 2)) & MASK,
         pos >> (NUM_BITS * 3),
-    )
+    );
+    #[cfg(not(feature = "small-key"))]
+    let result = result.cast_u32();
+    result
 }
 
 #[repr(C)]
@@ -376,8 +384,23 @@ impl HashCache {
     pub fn spacing(&self, lod: Expr<u32>, cascade: Expr<u32>) -> Expr<f32> {
         self.base_grid_size * (1_u32 << (cascade + lod)).cast_f32()
     }
+    #[cfg(not(feature = "small-key"))]
     #[tracked]
-    pub fn decode(&self, encoded_pos: Expr<u32>, cascade: Expr<u32>) -> Expr<Probe> {
+    pub fn decode(&self, encoded_pos: Expr<Key>, cascade: Expr<u32>) -> Expr<Probe> {
+        let pos = decode_position(encoded_pos);
+        let lod = pos.w;
+        let pos = pos.xyz();
+        let sign = pos >> (NUM_BITS - 1) as u32;
+        let sign_ext = sign * (u32::MAX - MASK as u32);
+        let pos = pos | sign_ext;
+        Probe::from_comps_expr(ProbeComps {
+            position: (pos + OFFSET).extend(lod),
+            cascade,
+        })
+    }
+    #[cfg(feature = "small-key")]
+    #[tracked]
+    pub fn decode(&self, encoded_pos: Expr<Key>, cascade: Expr<u32>) -> Expr<Probe> {
         let pos = decode_position(encoded_pos);
         let view_pos = self.projection().view_pos;
         let view_pos = self.quantize(view_pos, pos.w, cascade).position.xyz();
@@ -400,7 +423,7 @@ impl HashCache {
         })
     }
     #[tracked]
-    pub fn encode(&self, probe: Expr<Probe>) -> Expr<u32> {
+    pub fn encode(&self, probe: Expr<Probe>) -> Expr<Key> {
         encode_position(probe.position)
     }
     #[tracked]

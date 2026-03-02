@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 default-run = "chandra"
 
+[features]
+small-key = []
+
 [dependencies]
 dot_vox = "5.1.1"
 glam = { version = "0.30.0" }

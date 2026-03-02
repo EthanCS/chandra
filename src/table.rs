@@ -1,16 +1,25 @@
+use keter::lang::types::vector::Vec3;
 use keter::prelude::Value as _; // Shadowed for some reason
 use keter::prelude::*;
 use yesod::device_println;
-use yesod::rand::pcg;
 
-pub const INVALID_KEY: u32 = u32::MAX;
-
-#[tracked]
-fn hash32(key: Expr<u32>) -> Expr<u32> {
-    pcg(key)
-}
-
+#[cfg(not(feature = "small-key"))]
+pub type Key = u64;
+#[cfg(feature = "small-key")]
 pub type Key = u32;
+
+pub const INVALID_KEY: Key = Key::MAX;
+
+#[cfg(feature = "small-key")]
+#[tracked]
+fn hash(key: Expr<Key>) -> Expr<u32> {
+    yesod::rand::pcg(key)
+}
+#[cfg(not(feature = "small-key"))]
+#[tracked]
+fn hash(key: Expr<Key>) -> Expr<u32> {
+    yesod::rand::pcg3d(Vec3::expr((key >> 32).cast_u32(), key.cast_u32(), 937)).x
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Value)]
 #[repr(C)]
@@ -101,8 +110,8 @@ impl HashTable {
         self.entry_capacity
     }
     #[tracked]
-    fn insert_entry_index(&self, key: Expr<u32>, table: Expr<u32>, index: Expr<u32>) {
-        let entry_index = (hash32(key) % self.entry_capacity).var();
+    fn insert_entry_index(&self, key: Expr<Key>, table: Expr<u32>, index: Expr<u32>) {
+        let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         loop {
             let entry = self.entries.atomic_ref(entry_index + offset);
@@ -121,8 +130,8 @@ impl HashTable {
     }
     // Inserts a key into the table. It takes a while to get the index, so that has to be done later after synchronization.
     #[tracked]
-    pub fn insert(&self, key: Expr<u32>, table: Expr<u32>, on_insert: impl Fn(Expr<u32>)) {
-        let entry_index = (hash32(key) % self.entry_capacity).var();
+    pub fn insert(&self, key: Expr<Key>, table: Expr<u32>, on_insert: impl Fn(Expr<u32>)) {
+        let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         loop {
             let entry = self.entries.atomic_ref(offset + entry_index);
@@ -143,8 +152,8 @@ impl HashTable {
         }
     }
     #[tracked]
-    pub fn get(&self, key: Expr<u32>, table: Expr<u32>) -> Expr<u32> {
-        let entry_index = (hash32(key) % self.entry_capacity).var();
+    pub fn get(&self, key: Expr<Key>, table: Expr<u32>) -> Expr<u32> {
+        let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         let result = u32::MAX.var();
         loop {
@@ -160,12 +169,12 @@ impl HashTable {
         **result
     }
     #[tracked]
-    pub fn contains(&self, key: Expr<u32>, table: Expr<u32>) -> Expr<bool> {
+    pub fn contains(&self, key: Expr<Key>, table: Expr<u32>) -> Expr<bool> {
         self.get(key, table) != u32::MAX
     }
     #[tracked]
-    pub fn cost(&self, key: Expr<u32>, table: Expr<u32>) -> Expr<u32> {
-        let entry_index = (hash32(key) % self.entry_capacity).var();
+    pub fn cost(&self, key: Expr<Key>, table: Expr<u32>) -> Expr<u32> {
+        let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         let cost = 0_u32.var();
         loop {

@@ -249,7 +249,7 @@ fn main() {
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(1.0, 100.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(10.0, 100000.0, 4, 1 << 18, 6);
     let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.weights.len() / 4);
     let cache_base_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.base_probes as usize * 32);
 
