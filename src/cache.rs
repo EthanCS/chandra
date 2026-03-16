@@ -9,6 +9,7 @@ use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::utils::{decode_morton2_16, encode_morton2_16, next_float_down_pos_2};
 
 use crate::table::{HashTable, INVALID_KEY, Key};
+use crate::utils::{corner_to_index, index_to_corner};
 
 mod ext;
 
@@ -201,33 +202,43 @@ impl Probe {
     }
 }
 impl ProbeExpr {
-    // TODO: This needs to add the bias, otherwise it only works if you're using it as a lookup.
     #[tracked]
-    pub fn next_bilinear(&self) -> [(Expr<Probe>, Expr<f32>); 8] {
-        let base_position = (self.position.xyz() - 1) >> 1;
-        let offset = self.position.xyz() % 2;
-        std::array::from_fn(|i| {
-            let mask = Vec3::new(
-                if (i & 4) != 0 { 1 } else { 0 },
-                if (i & 2) != 0 { 1 } else { 0 },
-                if (i & 1) != 0 { 1 } else { 0 },
-            );
-            let position = base_position + mask;
-            let weight = (mask != offset)
-                .select(Vec3::splat_expr(0.75_f32), Vec3::splat_expr(0.25))
-                .reduce_prod();
-            (
-                Probe::from_comps_expr(ProbeComps {
-                    position: position.extend(self.position.w),
-                    cascade: self.cascade + 1,
-                }),
-                weight,
-            )
+    pub fn next_bilinear(&self, i: Expr<u32>) -> (Expr<Probe>, Expr<f32>) {
+        let base_pos = self.position.xyz() & !1_u32;
+        let j = corner_to_index(self.position.xyz() & 1_u32);
+        let base_probe = Probe::from_comps_expr(ProbeComps {
+            position: base_pos.extend(self.position.w),
+            cascade: self.cascade,
         })
+        .next_nearest();
+        let pos = base_probe.position.xyz() + index_to_corner(i);
+        let next_probe = Probe::from_comps_expr(ProbeComps {
+            position: pos.extend(base_probe.position.w),
+            cascade: base_probe.cascade,
+        });
+
+        let corner_weights = std::array::from_fn::<_, 8, _>(|i| {
+            let id = (i & 1) + ((i >> 1_u32) & 1) + ((i >> 2_u32) & 1);
+            0.25_f32.powi(id as i32) * 0.75_f32.powi((3 - id) as i32)
+        });
+
+        (next_probe, corner_weights.expr().read(i ^ j))
     }
     #[tracked]
     pub fn next_nearest(&self) -> Expr<Probe> {
         self.shift_level(1.expr())
+    }
+    // All values that have `next_nearest` equal to this.
+    #[tracked]
+    pub fn last_nearest(&self, i: Expr<u32>) -> Expr<Probe> {
+        let offset = index_to_corner(i);
+        let bias = OFFSET / 2;
+        let base = (self.position.xyz() - bias) << 1;
+        let pos = base + offset;
+        Probe::from_comps_expr(ProbeComps {
+            position: pos.extend(self.position.w),
+            cascade: self.cascade - 1,
+        })
     }
     #[tracked]
     pub fn shift_level(&self, delta: Expr<u32>) -> Expr<Probe> {
@@ -292,10 +303,19 @@ impl HashCache {
         self.projection
             .write_host(Projection { view_pos: view.pos })
     }
+    pub fn total_probes(&self) -> u32 {
+        self.table.data_capacity()
+    }
     pub fn max_probes_at_cascade(&self, cascade: u32) -> u32 {
         self.base_probes >> (cascade * 2)
     }
-    pub fn num_data(&self) -> u32 {
+    pub fn directions_per_probe(&self, cascade: u32) -> u32 {
+        self.base_angular_resolution.pow(2)
+            * INDEX_SCALING.x
+            * INDEX_SCALING.y
+            * (1 << (cascade * 2))
+    }
+    pub fn num_data_per_cascade(&self) -> u32 {
         self.base_probes * self.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y
     }
     pub fn projection(&self) -> Expr<Projection> {
@@ -432,7 +452,7 @@ impl HashCache {
         let data_offset = if index == u32::MAX {
             0_u32.expr()
         } else {
-            probe.cascade * self.num_data()
+            probe.cascade * self.num_data_per_cascade()
                 + (index - self.get_index_offset(probe.cascade)) * encoder.linear_size()
         };
         LoadedNode::from_comps_expr(LoadedNodeComps {

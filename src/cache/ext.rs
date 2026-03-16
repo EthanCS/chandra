@@ -6,7 +6,7 @@ impl HashCache {
         &self,
         node: Expr<LoadedNode>,
         normal: Expr<Vec3<f32>>,
-        shadow_mask: Expr<u32>,
+        // shadow_mask: Expr<u32>,
     ) -> Expr<Radiance> {
         let encoder = self.get_encoder(node.probe.cascade);
         let total_radiance = Vec4::splat(0.0_f32).var();
@@ -15,10 +15,11 @@ impl HashCache {
             let weight = dir.dot(normal);
             if weight > 0.0 {
                 let data_index = node.data_offset + i;
-                let deposit = self.data.read(data_index);
-                *total_radiance += (deposit.radiance()
-                    * (shadow_mask & (1 << i) == 0).cast_u32().cast_f32())
-                .extend(1.0)
+                let deposit = self.read(data_index);
+                *total_radiance += deposit
+                    .radiance()
+                    // * (shadow_mask & (1 << i) == 0).cast_u32().cast_f32())
+                    .extend(1.0)
                     * weight;
             }
         }

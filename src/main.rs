@@ -48,7 +48,8 @@ use image::{GenericImageView, ImageReader};
 use keter::bindless::BINDLESS;
 use keter::graph::profile::Profiler;
 use keter::lang::functions::{
-    sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits, warp_read_lane_at,
+    block_id, sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits,
+    warp_read_lane_at,
 };
 use keter::lang::types::shared::Shared;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
@@ -61,16 +62,17 @@ use yesod::color::{inferno, plasma, reinhard};
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg, pcg3d, pcg3df, pcgf};
+use yesod::shapes::intersect_sphere;
 use yesod::utils::{dispatch0, dispatch0_async};
 use yesod::{device_println, host};
 
 const TERMINATE_DEPOSIT: u32 = 0b1;
 // TODO: Probably should scale with distance
 
-const TARGET_QUALITY_MULTIPLIER: f32 = 50.0;
+const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const QUALITY_DECAY: f32 = 0.95;
 const MAX_RAYS: u32 = 1 << 22;
-const NODE_LIFETIME: u32 = 1;
+const NODE_LIFETIME: u32 = 100;
 const INCREASED_BASE_RESOLUTION: bool = false;
 
 fn sunlight_dir() -> Vec3<f32> {
@@ -248,17 +250,18 @@ fn main() {
     let accum_buf =
         DEVICE.create_tex2d::<Vec4<f32>>(PixelStorage::Float4, app.size()[0], app.size()[1], 1);
     let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
+    let radiance_depth_buf = DEVICE.create_buffer::<f32>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(10.0, 100000.0, 4, 1 << 18, 6);
+    let cache = HashCache::new(10.0, 100000.0, 4, 1 << 18, 4);
     let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.weights.len() / 4);
     let cache_base_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.base_probes as usize * 32);
 
     let base_probe_num_rays =
         DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0_u32);
     let node_quality =
-        DEVICE.create_buffer_from_fn::<f32>(cache.table.data_capacity() as usize, |_| 0.0_f32);
+        DEVICE.create_buffer_from_fn::<f32>(cache.total_probes() as usize, |_| 0.0_f32);
     let node_lifetime =
-        DEVICE.create_buffer_from_fn::<u32>(cache.table.data_capacity() as usize, |_| 0_u32);
+        DEVICE.create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0_u32);
     let traced_rays = DEVICE.create_buffer::<Ray>(MAX_RAYS as usize);
     let next_traced_ray = Singleton::<u32>::new(0_u32);
 
@@ -267,11 +270,13 @@ fn main() {
         + cache.table.memory_size();
     println!("Cache memory: {} MB", cache_memory / 1024 / 1024);
 
-    let build_freelists = DEVICE.create_kernel::<fn()>(&track!(|| {
+    let build_freelists = DEVICE.create_kernel::<fn(bool)>(&track!(|total| {
         let data_index = dispatch_id().x;
         cache.table.build_freelists(data_index, |key, cascade| {
             let lifetime = node_lifetime.read(data_index).var();
-            let invalid = lifetime == 0;
+            let quality = node_quality.read(data_index).var();
+            let quality = quality * QUALITY_DECAY;
+            let invalid = lifetime == 0 || total;
             *lifetime -= 1_u32;
             if invalid {
                 // device_println!("Deleting: {}", host!(data_index));
@@ -284,69 +289,14 @@ fn main() {
                         .write(node.data_offset + index, Vec4::splat(0.0));
                     cache.weights.write(node.data_offset + index, 0.0);
                 }
+                node_quality.write(data_index, 0.0);
             } else {
                 node_lifetime.write(data_index, **lifetime);
+                node_quality.write(data_index, quality);
             }
             invalid
         });
     }));
-
-    /*
-    let decay_cache = DEVICE.create_kernel::<fn(u32)>(&track!(|level| {
-        let node_index = dispatch_id().x + cache.get_index_offset(level);
-        let node = cache.nodes.read(node_index).var();
-        if node.position == POSITION_INVALID {
-            return;
-        }
-        let quality = node_quality.read(node_index).var();
-        *quality *= QUALITY_DECAY;
-        let lifetime = node_lifetime.read(node_index).var();
-        *lifetime -= 1_u32;
-        let is_invalid = lifetime == 0;
-        if is_invalid {
-            *node.position = POSITION_INVALID;
-            *quality = 0.0;
-        }
-        cache.nodes.write(node_index, **node);
-        node_quality.write(node_index, **quality);
-        node_lifetime.write(node_index, **lifetime);
-        // Why was this ordered this way?
-        if is_invalid {
-            let position = decode_position(**node.position);
-            let probe = Probe::from_comps_expr(ProbeComps { position, cascade });
-            let node = cache.load_index(probe, dispatch_id().x);
-
-            for index in 0_u32.expr()..node.encoder.linear_size() {
-                cache
-                    .data
-                    .write(node.data_offset + index, RadianceElement::default());
-            }
-            if level == 0 {
-                for index in 0_u32.expr()..node.encoder.linear_size() {
-                    primary_cache
-                        .write(node.data_offset + index, Vec4::new(0.0, 0.0, 0.0, 0.00001));
-                }
-            }
-        }
-    }));
-    let reset_cache_nodes = DEVICE.create_kernel::<fn()>(&track!(|| {
-        cache.nodes.write(dispatch_id().x, Node::default());
-        node_quality.write(dispatch_id().x, 0.0_f32);
-    }));
-    let reset_cache_data = DEVICE.create_kernel::<fn()>(&track!(|| {
-        cache
-            .data
-            .write(dispatch_id().x, RadianceElement::default());
-    }));
-
-    let reset_base_probe_num_rays = DEVICE.create_kernel::<fn()>(&track!(|| {
-        base_probe_num_rays.write(dispatch_id().x, 0_u32);
-    }));
-    let reset_next_traced_ray = DEVICE.create_kernel::<fn()>(&track!(|| {
-        next_traced_ray.write(0_u32);
-    }));
-
-    */
 
     let get_fluence = track!(|start: Expr<Vec3<f32>>,
                               dir: Expr<Vec3<f32>>,
@@ -377,6 +327,14 @@ fn main() {
         }
     });
 
+    let get_quality_weight = track!(|node: Expr<LoadedNode>| {
+        node_quality.read(node.index)
+        // let quality = node_quality.read(node.index);
+        // let encoder = cache.get_encoder(node.probe.cascade);
+        // let ratio = quality / encoder.linear_size().cast_f32();
+        // keter::min(1.0, ratio * TARGET_QUALITY_MULTIPLIER)
+    });
+
     #[derive(Clone, Copy)]
     enum MergeLevel {
         First,
@@ -384,7 +342,7 @@ fn main() {
         Middle(Expr<u32>),
     }
 
-    // TODO: Can reduce memory by adding 2x2 blocks. Morton-code for further efficiencies.
+    // Note: can additionally load all lower probes at once as well for increased efficiency.
     let merge_cache_base = track!(|merge_level: MergeLevel| {
         set_block_size([1, 32, 1]);
         let cascade = match merge_level {
@@ -406,29 +364,14 @@ fn main() {
         if !matches!(merge_level, MergeLevel::Last) {
             if thread_id().y < 8 {
                 let i = thread_id().y;
-                let base_pos = probe.position.xyz() & !1_u32;
-                let j = corner_to_index(probe.position.xyz() & 1_u32);
-                let base_probe = Probe::from_comps_expr(ProbeComps {
-                    position: base_pos.extend(probe.position.w),
-                    cascade,
-                })
-                .next_nearest();
-                let pos = base_probe.position.xyz() + index_to_corner(i);
-                let next_probe = Probe::from_comps_expr(ProbeComps {
-                    position: pos.extend(base_probe.position.w),
-                    cascade: base_probe.cascade,
-                });
+                let (next_probe, weight) = probe.next_bilinear(i);
+
                 let next = cache.get(next_probe);
                 if next.loaded() {
                     let index = warp_prefix_count_bits(true.expr());
 
-                    let corner_weights = std::array::from_fn::<_, 8, _>(|i| {
-                        let id = (i & 1) + ((i >> 1_u32) & 1) + ((i >> 2_u32) & 1);
-                        0.25_f32.powi(id as i32) * 0.75_f32.powi((3 - id) as i32)
-                    });
-
                     next_offsets.write(index, next.data_offset);
-                    next_weights.write(index, corner_weights.expr().read(i ^ j));
+                    next_weights.write(index, weight * get_quality_weight(next));
                 }
                 *n = warp_active_count_bits(next.loaded());
             }
@@ -522,7 +465,7 @@ fn main() {
             return;
         }
         let probe = cache.decode(key, cascade);
-        let probe = probe.shift_level(1.expr());
+        let probe = probe.next_nearest();
         cache.insert(probe, |_| {});
     }));
 
@@ -698,42 +641,60 @@ fn main() {
         }),
     );
 
-    let compute_screen_kernel =
-        DEVICE.create_kernel::<fn(View, f32)>(&track!(|view, blend_radius| {
+    let compute_screen_kernel = DEVICE.create_kernel::<fn(View, f32, u32, u32)>(&track!(
+        |view, blend_radius, cascade, draw_mode| {
             set_block_size([1, 32, 1]);
-            let node = cache.get_occupied(0.expr(), dispatch_id().x);
+            let node = cache.get_occupied(cascade, dispatch_id().x);
             if node.invalid() {
                 return;
             }
             let probe = node.probe;
             let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
-                resolution: if INCREASED_BASE_RESOLUTION {
-                    4_u32
+                resolution: if INCREASED_BASE_RESOLUTION && cascade == 0 {
+                    2_u32.expr()
                 } else {
-                    2_u32
-                }
-                .expr(),
+                    (cache.base_angular_resolution / 2) * (1 << cascade)
+                },
             });
             assert_eq!(cache.base_angular_resolution, 4);
 
             // let quality = node_quality.read(node.index);
 
-            let radiance_data =
-                Shared::<Vec3<f32>>::new(if INCREASED_BASE_RESOLUTION { 32 } else { 8 });
-            if INCREASED_BASE_RESOLUTION {
+            // 8 if !INCREASED_BASE_RESOLUTION
+            let radiance_data = Shared::<Vec3<f32>>::new(32);
+            if INCREASED_BASE_RESOLUTION && cascade == 0 {
                 let v = cache_base_radiance.read(node.data_offset + dispatch_id().y);
-                radiance_data.write(dispatch_id().y, v);
-            } else if dispatch_id().y < 8 {
+                radiance_data.write(thread_id().y, v);
+            } else if cascade != 0 || dispatch_id().y < 8 {
                 let v = cache_radiance.read(node.data_offset / 4 + dispatch_id().y);
-                radiance_data.write(dispatch_id().y, v);
+                radiance_data.write(thread_id().y, v);
             }
             sync_block();
 
             let screen_min = Vec2::from(app.size()).expr().cast_f32().var();
             let screen_max = Vec2::splat(0.0_f32).var();
 
-            let spacing = cache.base_grid_size * (1 << probe.position.w).cast_f32() * blend_radius;
+            let spacing = cache.base_grid_size
+                * (1 << (probe.position.w + cascade)).cast_f32()
+                * blend_radius;
             let probe_pos = cache.dequantize(probe);
+
+            /*if dispatch_id().y < 8 {
+                let i = dispatch_id().y;
+
+                let coord = probe_pos
+                    + spacing
+                        * (Vec3::<bool>::expr((i & 1) != 0, (i & 2) != 0, (i & 4) != 0)
+                            .select(Vec3::splat_expr(-1.0_f32), Vec3::splat_expr(1.0_f32)));
+                let screen_pos = view.project3(coord);
+                if screen_pos.z <= 0.0 {
+                    return;
+                }
+                let screen_pos = screen_pos.xy();
+
+                screen_min = warp_active_min(screen_pos);
+                screen_max = warp_active_max(screen_pos);
+            }*/
 
             // TODO: May go schizo if the probe is behind the camera...
             for i in 0..8 {
@@ -758,54 +719,99 @@ fn main() {
             let i = dispatch_id().y.var();
             while i < area {
                 let pixel = screen_min + Vec2::expr(i % size.x, i / size.x);
-                *i += dispatch_size().y;
+                *i += 32;
 
                 let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
-                let depth = depth_buf.read(pixel);
-                if depth == 0.0 {
-                    continue;
-                }
-                let world_pos = view.pos + ray_dir * depth;
-                let normal = SphericalEncoder::decode(normal_buf.read(pixel));
-                let weight = keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
-                    .reduce_prod()
-                    // * keter::min(quality, TARGET_QUALITY_MULTIPLIER * 32.0 * 0.75)
-                    * (1 << (2 * probe.position.w)).cast_f32().recip();
-                if weight == 0.0 {
-                    continue;
-                }
+
+                if draw_mode == 0 {
+                    let depth = depth_buf.read(pixel);
+                    if depth == 0.0 {
+                        continue;
+                    }
+                    let world_pos = view.pos + ray_dir * depth;
+                    let normal = SphericalEncoder::decode(normal_buf.read(pixel));
+                    let weight = keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
+                        .reduce_prod()
+                        * (1 << (2 * probe.position.w)).cast_f32().recip()
+                        * get_quality_weight(node);
+                    if weight == 0.0 {
+                        continue;
+                    }
                 // let (factor, cascade) = cache.projection().interpolation_factor_lod(world_pos);
                 // let factor = if cascade == probe.position.w {
                 //     factor
                 // } else {
                 //     1.0 - factor
                 // };
-                // let weight = weight * factor;
+                    // let weight = weight * factor;
 
-                let total_radiance = Vec4::splat(0.0_f32).var();
-                for j in 0..radiance_data.len() as u32 {
-                    let dir = encoder.linear_to_dir(j);
-                    let weight = dir.dot(normal);
-                    if weight > 0.0 {
-                        let radiance = radiance_data.read(j);
+                    let total_radiance = Vec4::splat(0.0_f32).var();
+                    for j in 0_u32.expr()..if cascade == 0 && !INCREASED_BASE_RESOLUTION {
+                        8_u32.expr()
+                    } else {
+                        32_u32.expr()
+                    } {
+                        let dir = encoder.linear_to_dir(j + block_id().y * 32);
+                        let weight = dir.dot(normal);
+                        if weight > 0.0 {
+                            let radiance = radiance_data.read(j);
                         if radiance.is_finite().all() {
                             *total_radiance += weight * radiance.extend(1.0);
                         }
                     }
                 } // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
-                if total_radiance.w < 0.0001 {
-                    continue;
+                    if total_radiance.w < 0.0001 {
+                        continue;
+                    }
+
+                    let total_radiance = total_radiance.xyz() / total_radiance.w;
+                    // let total_radiance = pcg3df(probe.position.xyz());
+                    let deposit_radiance = total_radiance.extend(1.0) * weight;
+                    let dest = radiance_buf.atomic_ref(pixel.y * app.size()[0] + pixel.x);
+                    dest.x.fetch_add(deposit_radiance.x);
+                    dest.y.fetch_add(deposit_radiance.y);
+                    dest.z.fetch_add(deposit_radiance.z);
+                    dest.w.fetch_add(deposit_radiance.w);
+                } else {
+                    let (time, intersected) =
+                        intersect_sphere(view.pos - probe_pos, ray_dir, spacing);
+                    if !intersected {
+                        continue;
+                    }
+                    let depth = time.x;
+                    let intersect_pos = view.pos + ray_dir * depth - probe_pos;
+
+                    let intersect_dir = intersect_pos.normalize();
+                    let index = encoder.dir_to_linear(intersect_dir) - block_id().y * 32;
+                    if index >= 32 {
+                        continue;
+                    }
+
+                    if draw_mode == 2 {
+                        // depth prepass
+                        radiance_depth_buf
+                            .atomic_ref(pixel.y * app.size()[0] + pixel.x)
+                            .fetch_min(depth);
+                    } else if draw_mode == 1 {
+                        let actual_depth =
+                            radiance_depth_buf.read(pixel.y * app.size()[0] + pixel.x);
+                        if depth == actual_depth {
+                            let radiance = radiance_data.read(index);
+                            if radiance.is_finite().all() {
+                                let deposit_radiance = radiance.extend(1.0);
+                                let dest =
+                                    radiance_buf.atomic_ref(pixel.y * app.size()[0] + pixel.x);
+                                dest.x.fetch_add(deposit_radiance.x);
+                                dest.y.fetch_add(deposit_radiance.y);
+                                dest.z.fetch_add(deposit_radiance.z);
+                                dest.w.fetch_add(deposit_radiance.w);
+                            }
+                        }
+                    }
                 }
-                let total_radiance = total_radiance.xyz() / total_radiance.w;
-                // let total_radiance = pcg3df(probe.position.xyz());
-                let total_radiance = total_radiance.extend(1.0) * weight;
-                let dest = radiance_buf.atomic_ref(pixel.y * app.size()[0] + pixel.x);
-                dest.x.fetch_add(total_radiance.x);
-                dest.y.fetch_add(total_radiance.y);
-                dest.z.fetch_add(total_radiance.z);
-                dest.w.fetch_add(total_radiance.w);
             }
-        }));
+        }
+    ));
 
     let draw_kernel = DEVICE.create_kernel_with_options::<fn(View, u32, u32, u32, u32, Vec2<u32>)>(
         KernelBuildOptions {
@@ -858,8 +864,16 @@ fn main() {
                 } else {
                     Vec3::splat_expr(0.0)
                 }
-            } else if mode == 2 {
-                let inner = dispatch_id().xy() % Vec2::expr(8, 4);
+            } else if mode == 2 && cascade < cache.num_cascades - 1 {
+                let num_next = 0_f32.var();
+                for i in 0..8u32 {
+                    let (next_probe, weight) = probe.next_bilinear(i);
+
+                    let next = cache.get(next_probe);
+                    *num_next += weight * next.loaded().select(1.0_f32.expr(), 0.0_f32.expr());
+                }
+                inferno(**num_next)
+                /*let inner = dispatch_id().xy() % Vec2::expr(8, 4);
                 let outer = dispatch_id().xy() / Vec2::expr(8, 4);
                 let i = 32 * (outer.y * (dispatch_size().x / 4) + outer.x) + inner.y * 8 + inner.x;
                 if i < cache.table.data_capacity {
@@ -871,47 +885,30 @@ fn main() {
                     }
                 } else {
                     Vec3::expr(0.0, 0.0, 1.0)
-                }
-            }
-            /*else if mode == 2 {
-                cache.query(
-                    probe,
-                    |node| {
-                        let quality = node_quality.read(node.index);
-                        let quality_ratio = quality
-                            / (TARGET_QUALITY_MULTIPLIER
-                                * cache.get_encoder(cascade).linear_size().cast_f32());
-                        if (cursor_pixel == pixel).all() {
-                            device_println!(
-                                "Probe at quality: {}",
-                                // probe.position.w.host(),
-                                quality.host()
-                            );
-                        }
-                        inferno(quality_ratio)
-                    },
-                    || Vec3::splat_expr(0.0),
-                )
+                }*/
             } else if mode == 3 {
-                let probe = cache.quantize(world_pos, false.expr());
-                cache.query(
-                    probe,
-                    |node| {
-                        let num_rays = base_probe_num_rays.read(node.index);
-                        let target_rays = keter::max(
-                            cache.get_encoder(0.expr()).linear_size().cast_f32()
-                                * TARGET_QUALITY_MULTIPLIER
-                                - node_quality.read(node.index),
-                            0.0,
-                        );
-                        let extinction = target_rays / keter::max(num_rays, 1).cast_f32();
-                        inferno(extinction)
-                    },
-                    || Vec3::splat_expr(0.0),
-                )
-                // inferno(1.0 - reinhard(depth / 1000.0))
-            } */
-            else if mode == 4 {
+                /*let node = cache.get(probe);
+                if node.loaded() {
+                    let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
+                        resolution: (cache.base_angular_resolution / 2) << cascade,
+                    });
+                    let total_radiance = Vec4::splat(0.0_f32).var();
+                    for j in 0_u32.expr()..encoder.linear_size() {
+                        let dir = encoder.linear_to_dir(j);
+                        let weight = dir.dot(normal);
+                        if weight > 0.0 {
+                            let radiance = cache_radiance.read(node.data_offset / 4 + j);
+                            if radiance.is_finite().all() {
+                                *total_radiance += weight * radiance.extend(1.0);
+                            }
+                        }
+                    }
+                    total_radiance.xyz() / total_radiance.w
+                } else {
+                    Vec3::expr(1.0, 0.0, 0.0)
+                }*/
+                pcg3df(probe.position.xyz())
+            } else if mode == 4 {
                 // let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
                 //     % Vec2::new(hemi_noise.width(), hemi_noise.height());
                 // let bounce_ray = as_normal(hemi_noise.read(
@@ -928,7 +925,17 @@ fn main() {
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 5 {
-                inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
+                let node = cache.get(probe);
+                if node.loaded() {
+                    let quality = node_quality.read(node.index);
+                    let quality_ratio = quality
+                        / (TARGET_QUALITY_MULTIPLIER
+                            * cache.get_encoder(cascade).linear_size().cast_f32());
+                    inferno(quality_ratio)
+                } else {
+                    Vec3::splat_expr(0.0)
+                }
+                // inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
             } else if mode == 6 {
                 let hit = world.trace(view.pos, ray_dir);
                 if (cursor_pixel == pixel).all() {
@@ -1014,7 +1021,7 @@ fn main() {
         let mut timings = vec![];
         let mut commands = vec![];
 
-        let mut reset_table = |commands: &mut Vec<_>| {
+        let mut reset_table = |commands: &mut Vec<_>, total: bool| {
             // reset table
             {
                 let table = &cache.table;
@@ -1036,7 +1043,7 @@ fn main() {
                             .copy_to_buffer_async(&table.last_occupied_index),
                         table.total_occupied.copy_from_async(&nc),
                         clear_entries,
-                        build_freelists.dispatch_async([table.freelist.len() as u32, 1, 1]),
+                        build_freelists.dispatch_async([table.freelist.len() as u32, 1, 1], &total),
                         cache
                             .table
                             .table_data_start
@@ -1068,7 +1075,7 @@ fn main() {
                 .collect();
         };
         if rt.tick == 0 {
-            reset_table(&mut commands);
+            reset_table(&mut commands, false);
         }
 
         if rt.key_down(KeyCode::Backslash) {
@@ -1076,8 +1083,7 @@ fn main() {
 
             let mut commands = vec![];
 
-            reset_table(&mut commands);
-            reset_table(&mut commands);
+            reset_table(&mut commands, true);
         }
 
         commands.push(
@@ -1088,9 +1094,9 @@ fn main() {
 
         let running = running || rt.key_pressed(KeyCode::Period);
         if running {
-            if mode == 3 {
-                println!("Num rays traced: {}", next_traced_ray.read_blocking());
-            }
+            // if mode == 3 {
+            //     println!("Num rays traced: {}", next_traced_ray.read_blocking());
+            // }
             commands.push(cache.set_view(camera.view()));
 
             // add c0 probes
@@ -1164,7 +1170,7 @@ fn main() {
                     .debug("Compute Radiance Trace"),
             );
 
-            reset_table(&mut commands);
+            reset_table(&mut commands, false);
 
             for l in (0..cache.num_cascades).rev() {
                 let dispatch_size = [max_probes[l as usize], 32 << (l * 2), 1];
@@ -1198,6 +1204,7 @@ fn main() {
             dispatch0_async(
                 track!(|| {
                     radiance_buf.write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
+                    radiance_depth_buf.write(dispatch_id().x, 100000.0_f32);
                 }),
                 [radiance_buf.len() as u32, 1, 1],
             )
@@ -1205,20 +1212,41 @@ fn main() {
         );
         // TODO: Freelist reset doesn't properly count number of probes.
         // println!("Num probes: {num_probes:?}");
-        commands.push(
-            compute_screen_kernel
-                .dispatch_async(
-                    [max_probes[0], 32, 1],
-                    &camera.view(),
-                    &match blend_radius_mode {
-                        0 => 1.0,
-                        1 => 0.5,
-                        2 => 0.6,
-                        _ => unreachable!(),
-                    },
-                )
-                .debug("Compute Screen"),
-        );
+
+        if mode == 0 {
+            let blend_radius = match blend_radius_mode {
+                0 => 1.0,
+                1 => 0.5,
+                2 => 0.4,
+                _ => unreachable!(),
+            };
+            let draw_circle = blend_radius_mode == 2;
+            let dispatch_size = 32 << (cascade.saturating_sub(1) * 2);
+            if draw_circle {
+                commands.push(
+                    compute_screen_kernel
+                        .dispatch_async(
+                            [max_probes[cascade as usize], dispatch_size, 1],
+                            &camera.view(),
+                            &blend_radius,
+                            &cascade,
+                            &2,
+                        )
+                        .debug("Compute Screen (Circle Depth)"),
+                );
+            }
+            commands.push(
+                compute_screen_kernel
+                    .dispatch_async(
+                        [max_probes[cascade as usize], dispatch_size, 1],
+                        &camera.view(),
+                        &blend_radius,
+                        &cascade,
+                        &if draw_circle { 1 } else { 0 },
+                    )
+                    .debug("Compute Screen"),
+            );
+        }
 
         commands.push(
             draw_kernel
