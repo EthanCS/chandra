@@ -61,7 +61,7 @@ use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
 use yesod::direction::{DirectionEncoder, SphericalEncoder, project_line};
 use yesod::printer::global::flush_printer;
-use yesod::rand::{pcg, pcg3d, pcg3df, pcgf, r2};
+use yesod::rand::{pcg, pcg3d, pcg3df, pcgf, r2, r2_u32};
 use yesod::shapes::intersect_sphere;
 use yesod::utils::{dispatch0, dispatch0_async};
 use yesod::{device_println, host};
@@ -70,7 +70,7 @@ const TERMINATE_DEPOSIT: u32 = 0b1;
 // TODO: Probably should scale with distance
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
-const QUALITY_DECAY: f32 = 0.95;
+const QUALITY_DECAY: f32 = 1.0; // 0.95;
 const MAX_RAYS: u32 = 1 << 22;
 const NODE_LIFETIME: u32 = 100;
 const INCREASED_BASE_RESOLUTION: bool = false;
@@ -913,19 +913,6 @@ fn main() {
                     *num_next += weight * next.loaded().select(1.0_f32.expr(), 0.0_f32.expr());
                 }
                 inferno(**num_next)
-                /*let inner = dispatch_id().xy() % Vec2::expr(8, 4);
-                let outer = dispatch_id().xy() / Vec2::expr(8, 4);
-                let i = 32 * (outer.y * (dispatch_size().x / 4) + outer.x) + inner.y * 8 + inner.x;
-                if i < cache.table.data_capacity {
-                    let occupied = cache.table.data_key.read(i) != table::INVALID_KEY;
-                    if occupied {
-                        Vec3::splat_expr(1.0)
-                    } else {
-                        Vec3::splat_expr(0.0)
-                    }
-                } else {
-                    Vec3::expr(0.0, 0.0, 1.0)
-                }*/
             } else if mode == 3 {
                 /*let node = cache.get(probe);
                 if node.loaded() {
@@ -949,18 +936,9 @@ fn main() {
                 }*/
                 pcg3df(probe.position.xyz())
             } else if mode == 4 {
-                // let offset = pcg3d(Vec3::expr(tick / hemi_noise.depth(), 392, 132)).xy()
-                //     % Vec2::new(hemi_noise.width(), hemi_noise.height());
-                // let bounce_ray = as_normal(hemi_noise.read(
-                //     (pixel + offset).extend(tick)
-                //         % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
-                // ));
-                // let bounce_ray = rotate_hemi(normal, bounce_ray);
-
+                // TODO: need cos weighting?
                 let bounce_ray = project_line((r2(tick) + pcg3df(pixel.extend(968)).xy()).fract());
                 let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
-
-                // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
 
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
@@ -968,9 +946,17 @@ fn main() {
                 let value = accum_buf.read(pixel) + radiance.extend(1.0);
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
-            } else if mode == 5 {
+            } else if mode == 5 && cascade == 0 {
                 let node = cache.get(probe);
                 if node.loaded() {
+                    let base_ray_offset = base_ray_offsets.read(node.index);
+                    let ray_count = node_ray_count.read(node.index);
+                    let ratio = base_ray_offset.cast_f32() / ray_count.cast_f32();
+                    inferno(ratio)
+                } else {
+                    Vec3::splat_expr(0.0)
+                }
+                /*if node.loaded() {
                     let quality = node_quality.read(node.index);
                     let quality_ratio = quality
                         / (TARGET_QUALITY_MULTIPLIER
@@ -978,7 +964,7 @@ fn main() {
                     inferno(quality_ratio)
                 } else {
                     Vec3::splat_expr(0.0)
-                }
+                }*/
                 // inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
             } else if mode == 6 {
                 let hit = world.trace(view.pos, ray_dir);
@@ -1176,7 +1162,7 @@ fn main() {
                 dispatch0_async(
                     track!(|| {
                         node_ray_count.write(dispatch_id().x, 0_u32);
-                        ray_direction_offsets.write(dispatch_id().x, 0_u32);
+                        // ray_direction_offsets.write(dispatch_id().x, 0_u32);
                     }),
                     [node_ray_count.len() as u32, 1, 1],
                 )
@@ -1215,11 +1201,14 @@ fn main() {
                 );
             }
             commands.push(
-                compute_max_cascade_ray_offsets_kernel
-                    .dispatch_async([cache.max_probes_at_cascade(cache.num_cascades - 1), 1, 1])
-                    .debug("Compute Max Cascade Ray Offsets"),
-            );
-            for c in (1..cache.num_cascades).rev() {
+                    compute_max_cascade_ray_offsets_kernel
+                        .dispatch_async([cache.max_probes_at_cascade(cache.num_cascades - 1), 1, 1])
+                        .debug(format!(
+                            "Compute Radiance Ray Offsets Cascade {}",
+                            cache.num_cascades - 1,
+                        )),
+                );
+                for c in (1..cache.num_cascades).rev() {
                 commands.push(
                     compute_ray_offsets_kernel
                         .dispatch_async([cache.max_probes_at_cascade(c), 1, 1], &c)
@@ -1231,6 +1220,7 @@ fn main() {
                     .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick)
                     .debug("Compute Radiance Rays"),
             );
+            println!("Num rays traced: {}", next_traced_ray.read_blocking());
             commands.push(
                 compute_radiance_kernel
                     .dispatch_async(
