@@ -256,14 +256,19 @@ fn main() {
     let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.weights.len() / 4);
     let cache_base_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.base_probes as usize * 32);
 
-    let base_probe_num_rays =
-        DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0_u32);
+    let node_ray_count =
+        DEVICE.create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0_u32);
     let node_quality =
         DEVICE.create_buffer_from_fn::<f32>(cache.total_probes() as usize, |_| 0.0_f32);
     let node_lifetime =
         DEVICE.create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0_u32);
     let traced_rays = DEVICE.create_buffer::<Ray>(MAX_RAYS as usize);
     let next_traced_ray = Singleton::<u32>::new(0_u32);
+
+    let next_max_cascade_ray_direction = Singleton::<u32>::new(0_u32);
+    let ray_direction_offsets =
+        DEVICE.create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0);
+    let base_ray_offsets = DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0);
 
     let cache_memory = cache.weighted_fluence.size_bytes()
         + cache.weights.size_bytes()
@@ -443,16 +448,18 @@ fn main() {
         normal_buf.write(pixel, SphericalEncoder::encode(normal));
     }));
 
-    let init_c0_probe_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
-        set_block_size([8, 8, 1]);
-        let pixel = dispatch_id().xy();
+    let get_world_pos = track!(|view: Expr<View>, pixel: Expr<Vec2<u32>>| {
         let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
-
         let depth = depth_buf.read(pixel);
         if depth == 0.0 {
             return;
         }
-        let world_pos = view.pos + ray_dir * depth;
+        view.pos + ray_dir * depth
+    });
+
+    let init_c0_probe_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
+        set_block_size([8, 8, 1]);
+        let world_pos = get_world_pos(view, dispatch_id().xy());
 
         let lod = cache.estimate_lod(world_pos);
         let probe = cache.quantize(world_pos, lod, 0.expr());
@@ -468,45 +475,101 @@ fn main() {
         let probe = probe.next_nearest();
         cache.insert(probe, |_| {});
     }));
-
-    let compute_num_rays_kernel = DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, _tick| {
+    let set_c0_lifetime_kernel = DEVICE.create_kernel::<fn(View)>(&track!(|view| {
         set_block_size([8, 8, 1]);
-        let pixel = dispatch_id().xy();
-        let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
-
-        let depth = depth_buf.read(pixel);
-        if depth == 0.0 {
-            return;
-        }
-        let world_pos = view.pos + ray_dir * depth;
+        let world_pos = get_world_pos(view, dispatch_id().xy());
 
         let lod = cache.estimate_lod(world_pos);
-
         let probe = cache.quantize(world_pos, lod, 0.expr());
 
         let node = cache.get(probe);
+        node_lifetime.write(node.index, NODE_LIFETIME);
+    }));
+    let set_lifetime_kernel = DEVICE.create_kernel::<fn(u32)>(&track!(|cascade| {
+        let index = dispatch_id().x + cache.get_index_offset(cascade);
+        let key = cache.table.data_key.read(index);
+        if key == table::INVALID_KEY {
+            return;
+        }
+        let probe = cache.decode(key, cascade);
+        let node = cache.load_index(probe, index);
+        let next = cache.get(probe.next_nearest());
+        node_lifetime
+            .atomic_ref(next.index)
+            .fetch_max(node_lifetime.read(node.index));
+    }));
 
-        // TODO: This shouldn't happen!
+    let compute_base_ray_count_kernel =
+        DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, _tick| {
+            set_block_size([8, 8, 1]);
+            let world_pos = get_world_pos(view, dispatch_id().xy());
+
+            let lod = cache.estimate_lod(world_pos);
+
+            let probe = cache.quantize(world_pos, lod, 0.expr());
+
+            let node = cache.get(probe);
+
+            // TODO: This shouldn't happen!
+            if node.invalid() {
+                return;
+            }
+
+            node_ray_count
+                .atomic_ref(node.index)
+                .fetch_add(1_u32.expr());
+        }));
+    // Note: Can make this not use atomics by gathering instead but this is simpler.
+    let compute_ray_count_kernel = DEVICE.create_kernel::<fn(u32)>(&track!(|cascade| {
+        let node = cache.get_occupied(cascade, dispatch_id().x);
         if node.invalid() {
             return;
         }
+        let next = node.probe.next_nearest();
+        let next = cache.get(next); // must exist
 
-        base_probe_num_rays
-            .atomic_ref(node.index)
-            .fetch_add(1_u32.expr());
+        node_ray_count
+            .atomic_ref(next.index)
+            .fetch_add(node_ray_count.read(node.index));
     }));
+
+    let compute_max_cascade_ray_offsets_kernel = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let node = cache.get_occupied((cache.num_cascades - 1).expr(), dispatch_id().x);
+        if node.invalid() {
+            return;
+        }
+        let num_rays = node_ray_count.read(node.index);
+        ray_direction_offsets.write(
+            node.index,
+            next_max_cascade_ray_direction.atomic().fetch_add(num_rays),
+        );
+    }));
+    let compute_ray_offsets_kernel = DEVICE.create_kernel::<fn(u32)>(&track!(|cascade| {
+        let node = cache.get_occupied(cascade, dispatch_id().x);
+        let lower_nodes = <[LoadedNode; 8]>::var_zeroed();
+        let counts = <[u32; 8]>::var_zeroed();
+        let j = 0_u32.var();
+        for i in 0_u32..8_u32 {
+            let lower_probe = node.probe.last_nearest(i);
+            let lower_node = cache.get(lower_probe);
+            if lower_node.loaded() {
+                lower_nodes.write(j, lower_node);
+                counts.write(j, node_ray_count.read(lower_node.index));
+                *j += 1;
+            }
+        }
+        let offset = ray_direction_offsets.read(node.index).var();
+        for i in 0.expr()..**j {
+            ray_direction_offsets.write(lower_nodes.read(i).index, offset);
+            *offset += counts.read(i);
+        }
+    }));
+
     let compute_rays_kernel = DEVICE.create_kernel::<fn(View, u32)>(&track!(|view, tick| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
-        let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
-
-        let depth = depth_buf.read(pixel);
-        if depth == 0.0 {
-            return;
-        }
+        let world_pos = get_world_pos(view, pixel);
         let normal = SphericalEncoder::decode(normal_buf.read(pixel));
-
-        let world_pos = view.pos + ray_dir * depth;
 
         let lod = cache.estimate_lod(world_pos);
 
@@ -518,33 +581,14 @@ fn main() {
             return;
         }
 
-        /*let bounce_ray = noise2
-            .read(pixel.extend(tick) % Vec3::new(noise2.width(), noise2.height(), noise2.depth()))
-            / 2;
-        let bounce_ray = bounce_ray.cast_f32() + 0.5;
-        let bounce_ray = bounce_ray / 128.0;
-        let bounce_ray = bounce_ray * Vec2::new(0.5, 1.0); // X-axis is doubled because only hemisphere / mirroring.
-        let bounce_ray = SphericalEncoder::decode(bounce_ray);
+        let offset = ray_direction_offsets.read(node.index);
 
+        let offset_index = offset + base_ray_offsets.atomic_ref(node.index).fetch_add(1);
+
+        let bounce_ray =
+            project_line((r2(offset_index) + pcg3df(Vec3::expr(tick, 29, 968)).xy()).fract());
         let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
-        */
-        let bounce_ray = rotate_hemi(
-            normal,
-            as_normal(hemi_noise.read(
-                pixel.extend(tick)
-                    % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
-            )),
-        );
 
-        let num_rays = base_probe_num_rays.read(node.index);
-        let target_rays = keter::max(
-            cache.get_encoder(0.expr()).linear_size().cast_f32() * TARGET_QUALITY_MULTIPLIER
-                - node_quality.read(node.index),
-            0.0,
-        );
-        // let extinction = target_rays / keter::max(num_rays, 1).cast_f32();
-
-        // if pcg3df((pixel + Vec2::new(3528, 9306)).extend(tick)).x < extinction {
         let ray = Ray::from_comps_expr(RayComps {
             dir: bounce_ray,
             start: world_pos,
@@ -554,7 +598,6 @@ fn main() {
         if ray_index < traced_rays.len_expr_u32() {
             traced_rays.write(ray_index, ray);
         }
-        // }
     }));
 
     let compute_radiance_kernel = DEVICE.create_kernel_with_options::<fn(u32, u32, f32)>(
@@ -613,9 +656,6 @@ fn main() {
                         fluence,
                     );
                     node_quality.atomic_ref(node.index).fetch_add(1.0);
-                    node_lifetime
-                        .atomic_ref(node.index)
-                        .fetch_max(NODE_LIFETIME.expr());
                 } // Otherwise should be impossible
             };
 
@@ -1116,32 +1156,46 @@ fn main() {
                         .debug(format!("Init Probes Cascade {}", c + 1)),
                 );
             }
-
-            /*
-            for l in (0..cache.num_levels).rev() {
-                let dispatch_size = [cache.num_nodes_at_cascade(l), 1 << l, 1];
+            commands.push(
+                set_c0_lifetime_kernel
+                    .dispatch_async(rt.dispatch_size(), &camera.view())
+                    .debug("Init Probes Cascade 0: Set Lifetime"),
+            );
+            for c in 0..(cache.num_cascades - 1) {
                 commands.push(
-                    decay_cache
-                        .dispatch_async(dispatch_size, &l)
-                        .debug("Decay Cache"),
+                    set_lifetime_kernel
+                        .dispatch_async([cache.max_probes_at_cascade(c), 1, 1], &c)
+                        .debug(format!("Init Probes Cascade {}: Set Lifetime", c + 1)),
                 );
             }
-            */
+
+            reset_table(&mut commands, false);
 
             // Reset ray counts
             commands.push(
                 dispatch0_async(
                     track!(|| {
-                        base_probe_num_rays.write(dispatch_id().x, 0_u32);
+                        node_ray_count.write(dispatch_id().x, 0_u32);
+                        ray_direction_offsets.write(dispatch_id().x, 0_u32);
                     }),
-                    [base_probe_num_rays.len() as u32, 1, 1],
+                    [node_ray_count.len() as u32, 1, 1],
                 )
-                .debug("Reset Base Probe Num Rays"),
+                .debug("Reset Node Ray Count"),
+            );
+            commands.push(
+                dispatch0_async(
+                    track!(|| {
+                        base_ray_offsets.write(dispatch_id().x, 0_u32);
+                    }),
+                    [base_ray_offsets.len() as u32, 1, 1],
+                )
+                .debug("Reset Base Ray Offsets"),
             );
             commands.push(
                 dispatch0_async(
                     track!(|| {
                         next_traced_ray.write(0_u32);
+                        next_max_cascade_ray_direction.write(0_u32);
                     }),
                     [1, 1, 1],
                 )
@@ -1149,10 +1203,29 @@ fn main() {
             );
 
             commands.push(
-                compute_num_rays_kernel
+                compute_base_ray_count_kernel
                     .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick)
-                    .debug("Compute Radiance Num Rays"),
+                    .debug("Compute Radiance Num Rays Cascade 0"),
             );
+            for c in 0..(cache.num_cascades - 1) {
+                commands.push(
+                    compute_ray_count_kernel
+                        .dispatch_async([cache.max_probes_at_cascade(c), 1, 1], &c)
+                        .debug(format!("Compute Radiance Num Rays Cascade {}", c + 1)),
+                );
+            }
+            commands.push(
+                compute_max_cascade_ray_offsets_kernel
+                    .dispatch_async([cache.max_probes_at_cascade(cache.num_cascades - 1), 1, 1])
+                    .debug("Compute Max Cascade Ray Offsets"),
+            );
+            for c in (1..cache.num_cascades).rev() {
+                commands.push(
+                    compute_ray_offsets_kernel
+                        .dispatch_async([cache.max_probes_at_cascade(c), 1, 1], &c)
+                        .debug(format!("Compute Radiance Ray Offsets Cascade {}", c - 1)),
+                );
+            }
             commands.push(
                 compute_rays_kernel
                     .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick)
@@ -1173,8 +1246,6 @@ fn main() {
                     )
                     .debug("Compute Radiance Trace"),
             );
-
-            reset_table(&mut commands, false);
 
             for l in (0..cache.num_cascades).rev() {
                 let dispatch_size = [max_probes[l as usize], 32 << (l * 2), 1];
