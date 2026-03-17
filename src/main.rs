@@ -59,9 +59,9 @@ use keter_testbed::{App, KeyCode};
 use parking_lot::Mutex;
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma, reinhard};
-use yesod::direction::{DirectionEncoder, SphericalEncoder};
+use yesod::direction::{DirectionEncoder, SphericalEncoder, project_line};
 use yesod::printer::global::flush_printer;
-use yesod::rand::{pcg, pcg3d, pcg3df, pcgf};
+use yesod::rand::{pcg, pcg3d, pcg3df, pcgf, r2};
 use yesod::shapes::intersect_sphere;
 use yesod::utils::{dispatch0, dispatch0_async};
 use yesod::{device_println, host};
@@ -737,12 +737,12 @@ fn main() {
                     if weight == 0.0 {
                         continue;
                     }
-                // let (factor, cascade) = cache.projection().interpolation_factor_lod(world_pos);
-                // let factor = if cascade == probe.position.w {
-                //     factor
-                // } else {
-                //     1.0 - factor
-                // };
+                    // let (factor, cascade) = cache.projection().interpolation_factor_lod(world_pos);
+                    // let factor = if cascade == probe.position.w {
+                    //     factor
+                    // } else {
+                    //     1.0 - factor
+                    // };
                     // let weight = weight * factor;
 
                     let total_radiance = Vec4::splat(0.0_f32).var();
@@ -755,11 +755,11 @@ fn main() {
                         let weight = dir.dot(normal);
                         if weight > 0.0 {
                             let radiance = radiance_data.read(j);
-                        if radiance.is_finite().all() {
-                            *total_radiance += weight * radiance.extend(1.0);
+                            if radiance.is_finite().all() {
+                                *total_radiance += weight * radiance.extend(1.0);
+                            }
                         }
-                    }
-                } // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
+                    } // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
                     if total_radiance.w < 0.0001 {
                         continue;
                     }
@@ -916,7 +916,11 @@ fn main() {
                 //         % Vec3::new(hemi_noise.width(), hemi_noise.height(), hemi_noise.depth()),
                 // ));
                 // let bounce_ray = rotate_hemi(normal, bounce_ray);
-                let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
+
+                let bounce_ray = project_line((r2(tick) + pcg3df(pixel.extend(968)).xy()).fract());
+                let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
+
+                // let bounce_ray = sample_bounce(normal, pcg3df(pixel.extend(tick)).xy());
 
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
