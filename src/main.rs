@@ -586,7 +586,7 @@ fn main() {
         let offset_index = offset + base_ray_offsets.atomic_ref(node.index).fetch_add(1);
 
         let bounce_ray =
-            project_line((r2(offset_index) + pcg3df(Vec3::expr(tick, 29, 968)).xy()).fract());
+            project_line((r2_u32(offset_index) + pcg3df(Vec3::expr(tick, 29, 968)).xy()).fract());
         let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
         let ray = Ray::from_comps_expr(RayComps {
@@ -946,25 +946,16 @@ fn main() {
                 let value = accum_buf.read(pixel) + radiance.extend(1.0);
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
-            } else if mode == 5 && cascade == 0 {
+            } else if mode == 5 {
                 let node = cache.get(probe);
                 if node.loaded() {
-                    let base_ray_offset = base_ray_offsets.read(node.index);
-                    let ray_count = node_ray_count.read(node.index);
-                    let ratio = base_ray_offset.cast_f32() / ray_count.cast_f32();
-                    inferno(ratio)
+                    let count = node_ray_count.read(node.index).cast_f32();
+                    let target = TARGET_QUALITY_MULTIPLIER
+                        * cache.get_encoder(cascade).linear_size().cast_f32();
+                    inferno(count / target)
                 } else {
                     Vec3::splat_expr(0.0)
                 }
-                /*if node.loaded() {
-                    let quality = node_quality.read(node.index);
-                    let quality_ratio = quality
-                        / (TARGET_QUALITY_MULTIPLIER
-                            * cache.get_encoder(cascade).linear_size().cast_f32());
-                    inferno(quality_ratio)
-                } else {
-                    Vec3::splat_expr(0.0)
-                }*/
                 // inferno(1.0 - reinhard((cache.dequantize(probe) - world_pos).length()))
             } else if mode == 6 {
                 let hit = world.trace(view.pos, ray_dir);
@@ -1124,9 +1115,9 @@ fn main() {
 
         let running = running || rt.key_pressed(KeyCode::Period);
         if running {
-            // if mode == 3 {
-            //     println!("Num rays traced: {}", next_traced_ray.read_blocking());
-            // }
+            if mode == 5 {
+                println!("Num rays traced: {}", next_traced_ray.read_blocking());
+            }
             commands.push(cache.set_view(camera.view()));
 
             // add c0 probes
@@ -1201,14 +1192,14 @@ fn main() {
                 );
             }
             commands.push(
-                    compute_max_cascade_ray_offsets_kernel
-                        .dispatch_async([cache.max_probes_at_cascade(cache.num_cascades - 1), 1, 1])
-                        .debug(format!(
-                            "Compute Radiance Ray Offsets Cascade {}",
-                            cache.num_cascades - 1,
-                        )),
-                );
-                for c in (1..cache.num_cascades).rev() {
+                compute_max_cascade_ray_offsets_kernel
+                    .dispatch_async([cache.max_probes_at_cascade(cache.num_cascades - 1), 1, 1])
+                    .debug(format!(
+                        "Compute Radiance Ray Offsets Cascade {}",
+                        cache.num_cascades - 1,
+                    )),
+            );
+            for c in (1..cache.num_cascades).rev() {
                 commands.push(
                     compute_ray_offsets_kernel
                         .dispatch_async([cache.max_probes_at_cascade(c), 1, 1], &c)
@@ -1220,7 +1211,6 @@ fn main() {
                     .dispatch_async(rt.dispatch_size(), &camera.view(), &rt.tick)
                     .debug("Compute Radiance Rays"),
             );
-            println!("Num rays traced: {}", next_traced_ray.read_blocking());
             commands.push(
                 compute_radiance_kernel
                     .dispatch_async(
