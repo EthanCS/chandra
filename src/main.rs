@@ -68,7 +68,8 @@ const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const QUALITY_DECAY: f32 = 1.0; // 0.95;
 const MAX_RAYS: u32 = 1 << 22;
 const NODE_LIFETIME: u32 = 10;
-const INCREASED_BASE_RESOLUTION: bool = false;
+const INCREASED_BASE_RESOLUTION: bool = true;
+const MERGE_NEAREST: bool = false;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -259,9 +260,13 @@ fn main() {
         let next_weights = Shared::<f32>::new(8);
 
         if !matches!(merge_level, MergeLevel::Last) {
-            if thread_id().y < 8 {
+            if thread_id().y < if MERGE_NEAREST { 1 } else { 8 } {
                 let i = thread_id().y;
-                let (next_probe, weight) = probe.next_bilinear(i);
+                let (next_probe, weight) = if MERGE_NEAREST {
+                    (probe.next_nearest(), 1.0.expr())
+                } else {
+                    probe.next_bilinear(i)
+                };
 
                 let next = cache.get(next_probe);
                 if next.loaded() {
@@ -583,7 +588,7 @@ fn main() {
             let probe = node.probe;
             let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
                 resolution: if INCREASED_BASE_RESOLUTION && cascade == 0 {
-                    2_u32.expr()
+                    4_u32.expr()
                 } else {
                     (cache.base_angular_resolution / 2) * (1 << cascade)
                 },
@@ -835,7 +840,7 @@ fn main() {
                 let bounce_hit =
                     world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
                 let radiance = get_fluence(world_pos, bounce_ray, bounce_hit).xyz();
-                let value = accum_buf.read(pixel) + radiance.extend(1.0);
+                let value = accum_buf.read(pixel) + radiance.extend(1.0) * bounce_ray.dot(normal);
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
             } else if mode == 5 {
