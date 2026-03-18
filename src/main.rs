@@ -58,7 +58,7 @@ use yesod::direction::{DirectionEncoder, SphericalEncoder, project_line};
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2, r2_u32};
 use yesod::shapes::intersect_sphere;
-use yesod::utils::dispatch0_async;
+use yesod::utils::{dispatch0_async, offset_ray};
 use yesod::{device_println, host};
 
 const TERMINATE_DEPOSIT: u32 = 0b1;
@@ -68,7 +68,7 @@ const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const QUALITY_DECAY: f32 = 1.0; // 0.95;
 const MAX_RAYS: u32 = 1 << 22;
 const NODE_LIFETIME: u32 = 10;
-const INCREASED_BASE_RESOLUTION: bool = true;
+const INCREASED_BASE_RESOLUTION: bool = false;
 const MERGE_NEAREST: bool = false;
 
 fn sunlight_dir() -> Vec3<f32> {
@@ -208,9 +208,9 @@ fn main() {
             if weight > 0.0 {
                 *radiance += world
                     .trace_segment(
-                        bounce_pos,
+                        offset_ray(bounce_pos, normal),
                         sunlight_dir().expr(),
-                        Vec2::expr(0.01, 100000.0),
+                        Vec2::expr(0.0, 100000.0),
                     )
                     .valid()
                     .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32))
@@ -488,7 +488,7 @@ fn main() {
 
         let ray = Ray::from_comps_expr(RayComps {
             dir: bounce_ray,
-            start: world_pos,
+            start: offset_ray(world_pos, normal),
             base_probe: probe,
         });
         let ray_index = next_traced_ray.atomic().fetch_add(1_u32.expr());
@@ -524,7 +524,7 @@ fn main() {
             let bounce_hit = world.trace_segment(
                 world_pos,
                 bounce_ray,
-                Vec2::expr(0.01, 100000.0), // * (1_u32 << probe.position.w).cast_f32(),
+                Vec2::expr(0.0, 100000.0), // * (1_u32 << probe.position.w).cast_f32(),
             );
 
             let (hit_level, fluence) = if bounce_hit.valid() {
@@ -772,19 +772,25 @@ fn main() {
             }
             let normal = SphericalEncoder::decode(normal_buf.read(pixel));
             let world_pos = view.pos + ray_dir * depth;
+            let ray_start_pos = offset_ray(world_pos, normal);
 
             let lod = cache.estimate_lod(world_pos);
             let probe = cache.quantize(world_pos, lod, cascade);
 
             let sunlight = world
-                .trace_segment(world_pos, sunlight_dir().expr(), Vec2::expr(0.01, 100000.0))
+                .trace_segment(
+                    offset_ray(ray_start_pos, normal),
+                    sunlight_dir().expr(),
+                    Vec2::expr(0.0, 100000.0),
+                )
                 .valid()
                 .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32));
+            let sunlight = sunlight * keter::max(normal.dot(sunlight_dir()), 0.0);
 
             let color = if mode == 0 {
                 let r = radiance_buf.read(pixel.y * app.size()[0] + pixel.x);
                 let result = r.xyz() / r.w;
-                result + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
+                result + sunlight
             } else if mode == 1 {
                 if cache.contains(probe) {
                     let target_probe = cache.decode(cache.encode(probe), cascade);
@@ -811,7 +817,7 @@ fn main() {
                 }
                 inferno(**num_next)
             } else if mode == 3 {
-                /*let node = cache.get(probe);
+                let node = cache.get(probe);
                 if node.loaded() {
                     let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
                         resolution: (cache.base_angular_resolution / 2) << cascade,
@@ -827,19 +833,20 @@ fn main() {
                             }
                         }
                     }
-                    total_radiance.xyz() / total_radiance.w
+                    let result = total_radiance.xyz() / total_radiance.w;
+                    result + sunlight
                 } else {
                     Vec3::expr(1.0, 0.0, 0.0)
-                }*/
-                pcg3df(probe.position.xyz())
+                }
+                // pcg3df(probe.position.xyz())
             } else if mode == 4 {
                 // TODO: need cos weighting?
                 let bounce_ray = project_line((r2(tick) + pcg3df(pixel.extend(968)).xy()).fract());
                 let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
                 let bounce_hit =
-                    world.trace_segment(world_pos, bounce_ray, Vec2::expr(0.1_f32, 10000.0));
-                let radiance = get_fluence(world_pos, bounce_ray, bounce_hit).xyz();
+                    world.trace_segment(ray_start_pos, bounce_ray, Vec2::expr(0.0, 10000.0));
+                let radiance = get_fluence(ray_start_pos, bounce_ray, bounce_hit).xyz();
                 let value = accum_buf.read(pixel) + radiance.extend(1.0) * bounce_ray.dot(normal);
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + sunlight * keter::max(normal.dot(sunlight_dir()), 0.0)
