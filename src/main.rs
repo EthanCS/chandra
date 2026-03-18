@@ -32,19 +32,14 @@ BUGS:
 Split into two caches. Also measure ray divergence and use that to stochastically reduce ray count.
 */
 
-use std::f32::consts::TAU;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use chandra::cache::{
-    DirectionIndexer, DirectionIndexerComps, Fluence, HashCache, INDEX_SCALING, LoadedNode,
-    LoadedNodeComps, Probe, ProbeComps, Radiance, RadianceElement, RadianceElementComps,
+    DirectionIndexer, DirectionIndexerComps, Fluence, HashCache, LoadedNode, Probe, Radiance,
 };
 use chandra::table;
-use chandra::utils::{corner_to_index, index_to_corner};
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
-use image::{GenericImageView, ImageReader};
 use keter::bindless::BINDLESS;
 use keter::graph::profile::Profiler;
 use keter::lang::functions::{
@@ -58,12 +53,12 @@ use keter::rtx::SurfaceHit;
 use keter_testbed::{App, KeyCode};
 use parking_lot::Mutex;
 use yesod::camera::{Camera, View};
-use yesod::color::{inferno, plasma, reinhard};
+use yesod::color::{inferno, plasma};
 use yesod::direction::{DirectionEncoder, SphericalEncoder, project_line};
 use yesod::printer::global::flush_printer;
-use yesod::rand::{pcg, pcg3d, pcg3df, pcgf, r2, r2_u32};
+use yesod::rand::{pcg3df, r2, r2_u32};
 use yesod::shapes::intersect_sphere;
-use yesod::utils::{dispatch0, dispatch0_async};
+use yesod::utils::dispatch0_async;
 use yesod::{device_println, host};
 
 const TERMINATE_DEPOSIT: u32 = 0b1;
@@ -72,7 +67,7 @@ const TERMINATE_DEPOSIT: u32 = 0b1;
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const QUALITY_DECAY: f32 = 1.0; // 0.95;
 const MAX_RAYS: u32 = 1 << 22;
-const NODE_LIFETIME: u32 = 100;
+const NODE_LIFETIME: u32 = 10;
 const INCREASED_BASE_RESOLUTION: bool = false;
 
 fn sunlight_dir() -> Vec3<f32> {
@@ -81,102 +76,8 @@ fn sunlight_dir() -> Vec3<f32> {
 }
 
 #[tracked]
-fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
-    dir - normal * (2.0_f32.expr() * dir.dot(normal))
-}
-
-#[tracked]
-fn rotate_hemi(normal: Expr<Vec3<f32>>, v: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
-    // Find perpendicular basis; due to hairy ball theorem this cannot be continuous.
-    let perp1 = if normal.z.abs() < 0.9 {
-        normal.cross(Vec3::expr(0.0_f32, 0.0, 1.0)).normalize()
-    } else {
-        normal.cross(Vec3::expr(0.0_f32, 1.0, 0.0)).normalize()
-    };
-    let perp2 = normal.cross(perp1);
-    v.x * perp1 + v.y * perp2 + v.z * normal
-}
-
-// https://ameye.dev/notes/sampling-the-hemisphere/
-#[tracked]
-fn sample_bounce(normal: Expr<Vec3<f32>>, rng: Expr<Vec2<f32>>) -> Expr<Vec3<f32>> {
-    let theta = rng.x.acos();
-    let phi = rng.y * TAU;
-    let v = Vec3::expr(
-        theta.sin() * phi.cos(),
-        theta.sin() * phi.sin(),
-        theta.cos(),
-    );
-    rotate_hemi(normal, v)
-}
-
-#[tracked]
 fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
     fluence.xyz() + radiance * fluence.w
-}
-
-#[tracked]
-fn sunlight_radiance(dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-    let sunlight_dir = Vec3::expr(0.3_f32, 1.5, 1.0).normalize();
-    if dir.dot(sunlight_dir) > 0.9 {
-        Vec3::splat_expr(10.0_f32)
-    } else {
-        Vec3::splat_expr(0.01_f32)
-    }
-}
-
-type NoiseTexture = Tex3d<Vec4<f32>>;
-fn load_noise_textures(names: impl Fn(u32) -> PathBuf) -> NoiseTexture {
-    let storage = PixelStorage::Byte4;
-    let mut num_images = 0;
-    let mut data = vec![];
-    let mut shape = (0, 0);
-    while let Ok(image) = ImageReader::open(names(num_images)) {
-        let image = image.decode().unwrap();
-        if shape == (0, 0) {
-            shape = image.dimensions();
-        } else {
-            assert_eq!(shape, image.dimensions());
-        }
-        num_images += 1;
-        assert_eq!(image.color(), image::ColorType::Rgba8);
-
-        data.extend(image.into_rgba8().pixels().map(|p| Vec4::from(p.0)));
-    }
-    let texture = DEVICE.create_tex3d(storage, shape.0, shape.1, num_images, 1);
-    texture.view(0).copy_from(&data);
-    texture
-}
-fn load_noise2_textures(names: impl Fn(u32) -> PathBuf) -> Tex3d<Vec2<u32>> {
-    let storage = PixelStorage::Byte2;
-    let mut num_images = 0;
-    let mut data = vec![];
-    let mut shape = (0, 0);
-    while let Ok(image) = ImageReader::open(names(num_images)) {
-        let image = image.decode().unwrap();
-        if shape == (0, 0) {
-            shape = image.dimensions();
-        } else {
-            assert_eq!(shape, image.dimensions());
-        }
-        num_images += 1;
-        assert_eq!(image.color(), image::ColorType::Rgb8);
-
-        data.extend(
-            image
-                .into_rgb8()
-                .pixels()
-                .map(|p| Vec2::new(p.0[0], p.0[1])),
-        );
-    }
-    let texture = DEVICE.create_tex3d(storage, shape.0, shape.1, num_images, 1);
-    texture.view(0).copy_from(&data);
-    texture
-}
-
-#[tracked]
-fn as_normal(v: Expr<Vec4<f32>>) -> Expr<Vec3<f32>> {
-    v.xyz() * 2.0 - 1.0
 }
 
 #[repr(C)]
@@ -197,15 +98,6 @@ fn main() {
         .init();
 
     yesod::printer::global::set_capacity(1024 * 1024);
-
-    // let sphere_noise =
-
-    let hemi_noise = load_noise_textures(|i| {
-        PathBuf::from(format!(
-            "assets/noise/sphere/exp/sphere_coshemi_binomial3x3_exp0101_product_{i}.png",
-        ))
-    });
-    let noise2 = load_noise2_textures(|i| PathBuf::from(format!("assets/noise2/{i}.png",)));
 
     /*let world = {
         let a = 6000.0;
@@ -252,7 +144,7 @@ fn main() {
     let radiance_buf = DEVICE.create_buffer::<Vec4<f32>>((app.size()[0] * app.size()[1]) as usize);
     let radiance_depth_buf = DEVICE.create_buffer::<f32>((app.size()[0] * app.size()[1]) as usize);
     // let cache = HashCache::new(16.0, 100000.0, 4, 1 << 18, 6);
-    let cache = HashCache::new(10.0, 100000.0, 4, 1 << 18, 4);
+    let cache = HashCache::new(10.0, 1000.0, 4, 1 << 18, 4);
     let cache_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.weights.len() / 4);
     let cache_base_radiance = DEVICE.create_buffer::<Vec3<f32>>(cache.base_probes as usize * 32);
 
@@ -870,7 +762,7 @@ fn main() {
 
             let depth = depth_buf.read(pixel);
             if depth == 0.0 {
-                app.set_pixel(pixel.cast_i32(), sunlight_radiance(ray_dir));
+                app.set_pixel(pixel.cast_i32(), Vec3::splat_expr(0.1_f32));
                 return;
             }
             let normal = SphericalEncoder::decode(normal_buf.read(pixel));
