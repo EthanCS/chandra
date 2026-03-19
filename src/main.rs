@@ -71,6 +71,7 @@ const NODE_LIFETIME: u32 = 10;
 const INCREASED_BASE_RESOLUTION: bool = false;
 const MERGE_NEAREST: bool = false;
 const DEBUG_SPLATS: u32 = 0b1;
+const USE_PLANAR_WEIGHTS: bool = true;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -88,6 +89,34 @@ struct Ray {
     dir: Vec3<f32>,
     start: Vec3<f32>,
     base_probe: Probe,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Value, Default)]
+#[repr(C)]
+struct AveragePosNormal {
+    position_count: Vec4<f32>,
+    total_normal: Vec3<f32>,
+}
+impl AveragePosNormalExpr {
+    #[tracked]
+    fn position(&self) -> Expr<Vec3<f32>> {
+        self.position_count.xyz() / self.position_count.w
+    }
+    #[tracked]
+    fn normal(&self) -> Expr<Vec3<f32>> {
+        self.total_normal / self.position_count.w
+    }
+}
+impl AveragePosNormalAtomicRef {
+    fn add_sample(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) {
+        self.position_count.x.fetch_add(pos.x);
+        self.position_count.y.fetch_add(pos.y);
+        self.position_count.z.fetch_add(pos.z);
+        self.position_count.w.fetch_add(1.0);
+        self.total_normal.x.fetch_add(normal.x);
+        self.total_normal.y.fetch_add(normal.y);
+        self.total_normal.z.fetch_add(normal.z);
+    }
 }
 
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
@@ -163,6 +192,11 @@ fn main() {
     let ray_direction_offsets =
         DEVICE.create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0);
     let base_ray_offsets = DEVICE.create_buffer_from_fn::<u32>(cache.base_probes as usize, |_| 0);
+
+    let average_base_probe_pos_normal = DEVICE
+        .create_buffer_from_fn::<AveragePosNormal>(cache.base_probes as usize, |_| {
+            Default::default()
+        });
 
     let cache_memory = cache.weighted_fluence.size_bytes()
         + cache.weights.size_bytes()
@@ -479,6 +513,10 @@ fn main() {
             return;
         }
 
+        average_base_probe_pos_normal
+            .atomic_ref(node.index)
+            .add_sample(world_pos, normal);
+
         let offset = ray_direction_offsets.read(node.index);
 
         let offset_index = offset + base_ray_offsets.atomic_ref(node.index).fetch_add(1);
@@ -617,6 +655,11 @@ fn main() {
                 * blend_radius;
             let probe_pos = cache.dequantize(probe);
 
+            let avg_pos_normal = average_base_probe_pos_normal.read(node.index);
+            let avg_pos = avg_pos_normal.position();
+            // Perhaps unnormalized could have some value? It shows the variance.
+            let avg_normal = avg_pos_normal.normal().normalize();
+
             /*if dispatch_id().y < 8 {
                 let i = dispatch_id().y;
 
@@ -668,10 +711,20 @@ fn main() {
                     }
                     let world_pos = view.pos + ray_dir * depth;
                     let normal = SphericalEncoder::decode(normal_buf.read(pixel));
-                    let weight = keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
-                        .reduce_prod()
-                        * (1 << (2 * probe.position.w)).cast_f32().recip()
-                        * get_quality_weight(node);
+                    let trilinear_weight =
+                        keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
+                            .reduce_prod();
+                    let planar_weight = if USE_PLANAR_WEIGHTS {
+                        keter::max(
+                            0.4 - (avg_pos - world_pos).dot(avg_normal).abs() / spacing,
+                            0.0,
+                        )
+                    } else {
+                        1.0.expr()
+                    };
+
+                    let weight = trilinear_weight * planar_weight * get_quality_weight(node);
+                    // * (1 << (2 * probe.position.w)).cast_f32().recip()
                     if weight == 0.0 {
                         continue;
                     }
@@ -743,6 +796,33 @@ fn main() {
                                 dest.y.fetch_add(deposit_radiance.y);
                                 dest.z.fetch_add(deposit_radiance.z);
                                 dest.w.fetch_add(deposit_radiance.w);
+                            }
+                        }
+                    }
+                } else if draw_mode == 3 || draw_mode == 4 {
+                    let depth = (avg_pos - view.pos).dot(avg_normal) / ray_dir.dot(avg_normal);
+                    let intersect_pos = view.pos + ray_dir * depth;
+                    if depth > 0.0 && ((intersect_pos - probe_pos).abs() < spacing).all() {
+                        if draw_mode == 4 {
+                            // depth prepass
+                            radiance_depth_buf
+                                .atomic_ref(pixel.y * app.size()[0] + pixel.x)
+                                .fetch_min(depth);
+                        } else if draw_mode == 3 {
+                            let actual_depth =
+                                radiance_depth_buf.read(pixel.y * app.size()[0] + pixel.x);
+                            if depth == actual_depth {
+                                let radiance =
+                                    inferno((intersect_pos - avg_pos).length() / (2.0 * spacing));
+                                if radiance.is_finite().all() {
+                                    let deposit_radiance = radiance.extend(1.0);
+                                    let dest =
+                                        radiance_buf.atomic_ref(pixel.y * app.size()[0] + pixel.x);
+                                    dest.x.fetch_add(deposit_radiance.x);
+                                    dest.y.fetch_add(deposit_radiance.y);
+                                    dest.z.fetch_add(deposit_radiance.z);
+                                    dest.w.fetch_add(deposit_radiance.w);
+                                }
                             }
                         }
                     }
@@ -915,6 +995,7 @@ fn main() {
     let mut splat_mode = 0;
     let mut num_probes = vec![0; cache.num_cascades as usize];
     let mut max_probes = vec![0; cache.num_cascades as usize];
+    let mut blend_radius = 0.5;
 
     let mut profiler = Profiler::new();
 
@@ -954,6 +1035,11 @@ fn main() {
         if rt.key_pressed(KeyCode::KeyB) {
             splat_mode = (splat_mode + 1) % 4;
         }
+        if rt.key_pressed(KeyCode::BracketRight) {
+            blend_radius += 0.01;
+            if blend_radius > 1.0 {
+                blend_radius = 0.5;
+            }
         }
         let mut timings = vec![];
         let mut commands = vec![];
@@ -1079,6 +1165,8 @@ fn main() {
                 dispatch0_async(
                     track!(|| {
                         base_ray_offsets.write(dispatch_id().x, 0_u32);
+                        average_base_probe_pos_normal
+                            .write(dispatch_id().x, AveragePosNormal::default());
                     }),
                     [base_ray_offsets.len() as u32, 1, 1],
                 )
@@ -1236,7 +1324,11 @@ fn main() {
                     rt.dispatch_size(),
                     &camera.view(),
                     &rt.tick,
-                    &radiance_flags,
+                    &if splat_mode == 2 || splat_mode == 3 {
+                        DEBUG_SPLATS
+                    } else {
+                        0
+                    },
                     &mode,
                     &cascade,
                     &rt.cursor_position.map(|x| x as u32),
