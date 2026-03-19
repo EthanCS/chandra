@@ -70,6 +70,7 @@ const MAX_RAYS: u32 = 1 << 22;
 const NODE_LIFETIME: u32 = 10;
 const INCREASED_BASE_RESOLUTION: bool = false;
 const MERGE_NEAREST: bool = false;
+const DEBUG_SPLATS: u32 = 0b1;
 
 fn sunlight_dir() -> Vec3<f32> {
     let dir = glam::Vec3::new(0.1, 0.5, 1.0);
@@ -578,7 +579,7 @@ fn main() {
         }),
     );
 
-    let compute_screen_kernel = DEVICE.create_kernel::<fn(View, f32, u32, u32)>(&track!(
+    let splat_radiance_kernel = DEVICE.create_kernel::<fn(View, f32, u32, u32)>(&track!(
         |view, blend_radius, cascade, draw_mode| {
             set_block_size([1, 32, 1]);
             let node = cache.get_occupied(cascade, dispatch_id().x);
@@ -709,16 +710,16 @@ fn main() {
                     dest.y.fetch_add(deposit_radiance.y);
                     dest.z.fetch_add(deposit_radiance.z);
                     dest.w.fetch_add(deposit_radiance.w);
-                } else {
+                } else if draw_mode == 1 || draw_mode == 2 {
                     let (time, intersected) =
                         intersect_sphere(view.pos - probe_pos, ray_dir, spacing);
                     if !intersected {
                         continue;
                     }
                     let depth = time.x;
-                    let intersect_pos = view.pos + ray_dir * depth - probe_pos;
+                    let intersect_pos = view.pos + ray_dir * depth;
 
-                    let intersect_dir = intersect_pos.normalize();
+                    let intersect_dir = (intersect_pos - probe_pos).normalize();
                     let index = encoder.dir_to_linear(intersect_dir) - block_id().y * 32;
                     if index >= 32 {
                         continue;
@@ -759,7 +760,7 @@ fn main() {
             enable_fast_math: false,
             ..Default::default()
         },
-        &track!(|view, tick, _flags, mode, cascade, cursor_pixel| {
+        &track!(|view, tick, flags, mode, cascade, cursor_pixel| {
             set_block_size([8, 8, 1]);
 
             let pixel = dispatch_id().xy();
@@ -789,8 +790,18 @@ fn main() {
 
             let color = if mode == 0 {
                 let r = radiance_buf.read(pixel.y * app.size()[0] + pixel.x);
-                let result = r.xyz() / r.w;
-                result + sunlight
+                let result = r.xyz() / keter::max(r.w, f32::EPSILON);
+
+                if flags & DEBUG_SPLATS == 0 {
+                    result + sunlight
+                } else {
+                    let radiance_depth = radiance_depth_buf.read(pixel.y * app.size()[0] + pixel.x);
+                    if radiance_depth > depth - 0.001 {
+                        pcg3df(probe.position.xyz()) * 0.5 + result * 0.5 + sunlight
+                    } else {
+                        result + sunlight
+                    }
+                }
             } else if mode == 1 {
                 if cache.contains(probe) {
                     let target_probe = cache.decode(cache.encode(probe), cascade);
@@ -901,7 +912,7 @@ fn main() {
     let mut cascade = 0;
     let mut radiance_flags = TERMINATE_DEPOSIT;
     let mut c0_len_mode = 0;
-    let mut blend_radius_mode = 0;
+    let mut splat_mode = 0;
     let mut num_probes = vec![0; cache.num_cascades as usize];
     let mut max_probes = vec![0; cache.num_cascades as usize];
 
@@ -941,7 +952,8 @@ fn main() {
             radiance_flags ^= TERMINATE_DEPOSIT;
         }
         if rt.key_pressed(KeyCode::KeyB) {
-            blend_radius_mode = (blend_radius_mode + 1) % 3;
+            splat_mode = (splat_mode + 1) % 4;
+        }
         }
         let mut timings = vec![];
         let mut commands = vec![];
@@ -1163,7 +1175,7 @@ fn main() {
             dispatch0_async(
                 track!(|| {
                     radiance_buf.write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
-                    radiance_depth_buf.write(dispatch_id().x, 100000.0_f32);
+                    radiance_depth_buf.write(dispatch_id().x, f32::INFINITY);
                 }),
                 [radiance_buf.len() as u32, 1, 1],
             )
@@ -1173,37 +1185,48 @@ fn main() {
         // println!("Num probes: {num_probes:?}");
 
         if mode == 0 {
-            let blend_radius = match blend_radius_mode {
+            let blend_radius = match splat_mode {
                 0 => 1.0,
-                1 => 0.5,
+                1 => blend_radius,
                 2 => 0.4,
+                3 => 0.51,
                 _ => unreachable!(),
             };
-            let draw_circle = blend_radius_mode == 2;
+            let depth_prepass = splat_mode == 2 || splat_mode == 3;
             let dispatch_size = 32 << (cascade.saturating_sub(1) * 2);
-            if draw_circle {
+            if depth_prepass {
                 commands.push(
-                    compute_screen_kernel
+                    splat_radiance_kernel
                         .dispatch_async(
                             [max_probes[cascade as usize], dispatch_size, 1],
                             &camera.view(),
                             &blend_radius,
                             &cascade,
-                            &2,
+                            &match splat_mode {
+                                2 => 2,
+                                3 => 4,
+                                _ => unreachable!(),
+                            },
                         )
-                        .debug("Compute Screen (Circle Depth)"),
+                        .debug("Draw Splats (Depth Prepass)"),
                 );
             }
             commands.push(
-                compute_screen_kernel
+                splat_radiance_kernel
                     .dispatch_async(
                         [max_probes[cascade as usize], dispatch_size, 1],
                         &camera.view(),
                         &blend_radius,
                         &cascade,
-                        &if draw_circle { 1 } else { 0 },
+                        &match splat_mode {
+                            0 => 0,
+                            1 => 0,
+                            2 => 1,
+                            3 => 3,
+                            _ => unreachable!(),
+                        },
                     )
-                    .debug("Compute Screen"),
+                    .debug("Draw Splats"),
             );
         }
 
