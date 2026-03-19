@@ -655,7 +655,11 @@ fn main() {
                 * blend_radius;
             let probe_pos = cache.dequantize(probe);
 
-            let avg_pos_normal = average_base_probe_pos_normal.read(node.index);
+            let avg_pos_normal = if cascade == 0 {
+                average_base_probe_pos_normal.read(node.index)
+            } else {
+                AveragePosNormal::default().expr()
+            };
             let avg_pos = avg_pos_normal.position();
             // Perhaps unnormalized could have some value? It shows the variance.
             let avg_normal = avg_pos_normal.normal().normalize();
@@ -714,7 +718,7 @@ fn main() {
                     let trilinear_weight =
                         keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
                             .reduce_prod();
-                    let planar_weight = if USE_PLANAR_WEIGHTS {
+                    let planar_weight = if USE_PLANAR_WEIGHTS && cascade == 0 {
                         keter::max(
                             0.4 - (avg_pos - world_pos).dot(avg_normal).abs() / spacing,
                             0.0,
@@ -748,6 +752,9 @@ fn main() {
                             let radiance = radiance_data.read(j);
                             if radiance.is_finite().all() {
                                 *total_radiance += weight * radiance.extend(1.0);
+                            } else {
+                                *total_radiance.w = 0.0;
+                                break;
                             }
                         }
                     } // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?
@@ -876,7 +883,7 @@ fn main() {
                     result + sunlight
                 } else {
                     let radiance_depth = radiance_depth_buf.read(pixel.y * app.size()[0] + pixel.x);
-                    if radiance_depth > depth - 0.001 {
+                    if radiance_depth > depth + 0.1 {
                         pcg3df(probe.position.xyz()) * 0.5 + result * 0.5 + sunlight
                     } else {
                         result + sunlight
