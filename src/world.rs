@@ -307,6 +307,7 @@ impl VoxelWorld {
         ray_start: Expr<Vec3<f32>>,
         ray_dir: Expr<Vec3<f32>>,
     ) -> Expr<CommittedHit> {
+        // should change to fit with other api
         self.accel
             .traverse(
                 Ray::new_expr(

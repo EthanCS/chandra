@@ -1,17 +1,14 @@
 #![allow(unused_parens)]
 
 use keter::graph::NodeConfigs;
-use keter::lang::types::AtomicRef;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use yesod::camera::View;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
-use yesod::utils::{decode_morton2_16, encode_morton2_16, next_float_down_pos_2};
+use yesod::utils::{FetchAddVector, decode_morton2_16, encode_morton2_16, next_float_down_pos_2};
 
 use crate::table::{HashTable, INVALID_KEY, Key};
 use crate::utils::{corner_to_index, index_to_corner};
-
-mod ext;
 
 // Should be enough assuming LODs actually do their job.
 #[cfg(feature = "small-key")]
@@ -84,10 +81,7 @@ impl RadianceElementExpr {
 impl RadianceElementAtomicRef {
     #[tracked]
     pub fn deposit(&self, fluence: Expr<Fluence>) {
-        self.weighted_fluence.x.fetch_add(fluence.x);
-        self.weighted_fluence.y.fetch_add(fluence.y);
-        self.weighted_fluence.z.fetch_add(fluence.z);
-        self.weighted_fluence.w.fetch_add(fluence.w);
+        self.weighted_fluence.fetch_add(fluence);
         self.weight.fetch_add(1.0);
     }
 }
@@ -315,8 +309,11 @@ impl HashCache {
             * INDEX_SCALING.y
             * (1 << (cascade * 2))
     }
-    pub fn num_data_per_cascade(&self) -> u32 {
+    pub fn total_directions_per_cascade(&self) -> u32 {
         self.base_probes * self.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y
+    }
+    pub fn total_directions(&self) -> u32 {
+        self.total_directions_per_cascade() * self.num_cascades
     }
     pub fn projection(&self) -> Expr<Projection> {
         self.projection.read()
@@ -368,10 +365,7 @@ impl HashCache {
     #[tracked]
     pub fn deposit(&self, offset: Expr<u32>, fluence: Expr<Fluence>) {
         let fl = self.weighted_fluence.atomic_ref(offset);
-        fl.x.fetch_add(fluence.x);
-        fl.y.fetch_add(fluence.y);
-        fl.z.fetch_add(fluence.z);
-        fl.w.fetch_add(fluence.w);
+        fl.fetch_add(fluence);
         self.weights.atomic_ref(offset).fetch_add(1.0);
     }
 
@@ -452,7 +446,7 @@ impl HashCache {
         let data_offset = if index == u32::MAX {
             0_u32.expr()
         } else {
-            probe.cascade * self.num_data_per_cascade()
+            probe.cascade * self.total_directions_per_cascade()
                 + (index - self.get_index_offset(probe.cascade)) * encoder.linear_size()
         };
         LoadedNode::from_comps_expr(LoadedNodeComps {
@@ -485,5 +479,14 @@ impl HashCache {
         } else {
             self.load_index(probe, index)
         }
+    }
+
+    #[tracked]
+    pub fn contains(&self, probe: Expr<Probe>) -> Expr<bool> {
+        self.table.contains(self.encode(probe), probe.cascade)
+    }
+    #[tracked]
+    pub fn cost(&self, probe: Expr<Probe>) -> Expr<u32> {
+        self.table.cost(self.encode(probe), probe.cascade)
     }
 }
