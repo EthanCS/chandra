@@ -3,7 +3,6 @@ use std::sync::Arc;
 use keter::lang::functions::{
     sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits, warp_read_lane_at,
 };
-use keter::rtx::SurfaceHit;
 use parking_lot::Mutex;
 
 use super::*;
@@ -254,16 +253,10 @@ impl RcData {
     }
 
     #[tracked]
-    pub fn deposit_split(
-        &self,
-        core: &CoreData,
-        ray: Expr<Ray>,
-        hit: Expr<SurfaceHit>,
-        c0_len: Expr<f32>,
-    ) {
+    pub fn deposit_split(&self, core: &CoreData, ray: Expr<Ray>, c0_len: Expr<f32>) {
         let world_pos = ray.start;
-
         let bounce_ray = ray.dir;
+        let hit = ray.hit;
 
         let probe = ray.base_probe;
 
@@ -301,6 +294,8 @@ impl RcData {
         if self.terminate_deposit {
             // TODO: If we invert transmittance then the lower-deposits are just count increments.
             // note: since lifetime is deposited, short rays can cause higher-cascades to vanish
+
+            // NOTE: Perf here is very inconsistent; the second part seems much more expensive.
             for level in 0.expr()..hit_level {
                 deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
             }
@@ -420,7 +415,7 @@ impl RcData {
             }))
         })
         .dispatch_async(core.screen_dispatch_size())
-        .debug("Init Probes Cascade 0: Set Lifetime")
+        .debug("Init Probes Cascade 0: Lifetime")
     }
     pub fn set_lifetime(&self, cascade: u32) -> NodeConfigs<'static> {
         dispatch1_async(
@@ -440,6 +435,6 @@ impl RcData {
             [self.cache.max_probes_at_cascade(cascade - 1), 1, 1],
             cascade - 1,
         )
-        .debug(format!("Init Probes Cascade {cascade}: Set Lifetime"))
+        .debug(format!("Init Probes Cascade {cascade}: Lifetime"))
     }
 }

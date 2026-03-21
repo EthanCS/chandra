@@ -25,6 +25,7 @@ pub struct Ray {
     pub dir: Vec3<f32>,
     pub start: Vec3<f32>,
     pub base_probe: Probe,
+    pub hit: SurfaceHit,
 }
 
 impl TraceData {
@@ -52,8 +53,8 @@ impl TraceData {
 
                 let node = rc.cache.get(probe);
 
-                // TODO: This shouldn't happen!
                 if node.invalid() {
+                    device_println!("Should be impossible!");
                     return;
                 }
 
@@ -158,13 +159,16 @@ impl TraceData {
                 );
                 let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
-                let ray = Ray::from_comps_expr(RayComps {
-                    dir: bounce_ray,
-                    start: offset_ray(world_pos, normal),
-                    base_probe: probe,
-                });
                 let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
+
                 if ray_index < self.traced_rays.len_expr_u32() {
+                    let start = offset_ray(world_pos, normal);
+                    let ray = Ray::from_comps_expr(RayComps {
+                        dir: bounce_ray,
+                        start,
+                        base_probe: probe,
+                        hit: core.world.trace(start, bounce_ray),
+                    });
                     self.traced_rays.write(ray_index, ray);
                 }
             }),
@@ -182,30 +186,17 @@ impl TraceData {
         c0_len: f32,
     ) -> NodeConfigs<'static> {
         memo(rc.terminate_deposit, || {
-            DEVICE.create_kernel_with_options::<fn(f32)>(
-                KernelBuildOptions {
-                    name: Some("compute_radiance_kernel".into()),
-                    enable_debug_info: true,
-                    enable_optimization: true,
-                    enable_cache: true,
-                    enable_fast_math: false,
-                    ..Default::default()
-                },
-                &track!(|c0_len| {
-                    set_block_size([64, 1, 1]);
+            DEVICE.create_kernel::<fn(f32)>(&track!(|c0_len| {
+                set_block_size([64, 1, 1]);
 
-                    if dispatch_id().x >= self.next_traced_ray.read() {
-                        return;
-                    }
+                if dispatch_id().x >= self.next_traced_ray.read() {
+                    return;
+                }
 
-                    let ray = self.traced_rays.read(dispatch_id().x);
-                    // TODO: Replace end with infinity.
-                    let hit =
-                        core.world
-                            .trace_segment(ray.start, ray.dir, Vec2::expr(0.0, 100000.0));
-                    rc.deposit_split(core, ray, hit, c0_len)
-                }),
-            )
+                let ray = self.traced_rays.read(dispatch_id().x);
+
+                rc.deposit_split(core, ray, c0_len)
+            }))
         })
         .dispatch_async([self.traced_rays.len() as u32, 1, 1], &c0_len)
         .debug("Compute Radiance")

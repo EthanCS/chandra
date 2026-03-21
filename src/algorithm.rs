@@ -62,11 +62,7 @@ impl CoreData {
         if weight > 0.0 {
             *radiance += self
                 .world
-                .trace_segment(
-                    offset_ray(pos, normal),
-                    self.sunlight_dir.expr(),
-                    Vec2::expr(0.0, 100000.0),
-                )
+                .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
                 .valid()
                 .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32))
                 * weight;

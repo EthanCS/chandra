@@ -32,36 +32,22 @@ BUGS:
 Split into two caches. Also measure ray divergence and use that to stochastically reduce ray count.
 */
 
-use std::sync::Arc;
-
 use chandra::algorithm::rc::RcData;
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
 use chandra::algorithm::{CommandList, CoreData};
-use chandra::cache::{
-    DirectionIndexer, DirectionIndexerComps, Fluence, HashCache, LoadedNode, Probe, Radiance,
-};
-use chandra::table;
+use chandra::cache::{DirectionIndexer, DirectionIndexerComps};
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
-use keter::bindless::{BINDLESS, Tex2dHandle};
 use keter::graph::profile::Profiler;
-use keter::lang::functions::{
-    block_id, sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits,
-    warp_read_lane_at,
-};
-use keter::lang::types::shared::Shared;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
-use keter::rtx::SurfaceHit;
 use keter_testbed::{App, KeyCode};
-use parking_lot::Mutex;
 use yesod::camera::{Camera, View};
 use yesod::color::{inferno, plasma};
-use yesod::direction::{DirectionEncoder, SphericalEncoder, project_line};
+use yesod::direction::project_line;
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2};
-use yesod::shapes::intersect_sphere;
 use yesod::utils::{dispatch0_async, offset_ray};
 use yesod::{device_println, host};
 
@@ -226,9 +212,7 @@ fn main() {
                 let bounce_ray = project_line((r2(tick) + pcg3df(pixel.extend(968)).xy()).fract());
                 let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
-                let bounce_hit =
-                    core.world
-                        .trace_segment(ray_start_pos, bounce_ray, Vec2::expr(0.0, 10000.0));
+                let bounce_hit = core.world.trace(ray_start_pos, bounce_ray);
                 let radiance = core
                     .get_fluence(ray_start_pos, bounce_ray, bounce_hit)
                     .xyz();
@@ -335,9 +319,6 @@ fn main() {
 
         if rt.key_down(KeyCode::Backslash) {
             println!("Resetting cache");
-
-            // TODO: ???
-            let mut commands = CommandList::default();
 
             rc.reset_table(&mut commands, true);
         }
@@ -516,13 +497,14 @@ fn main() {
         if profiler.time() > 1000.0 {
             profiler.print(
                 &[
-                    "Compute GBuffer",
+                    "Compute G-Buffer",
                     "Init Probes",
-                    "Decay Cache",
+                    "Build Freelists",
+                    "Compute Ray Count",
+                    "Compute Ray Offset",
+                    "Compute Rays",
                     "Compute Radiance",
                     "Merge",
-                    "Add Primary Cache",
-                    "Compute Screen",
                     "Draw",
                 ],
                 true,

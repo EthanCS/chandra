@@ -1,3 +1,4 @@
+use std::f32;
 use std::fmt::Debug;
 use std::mem::forget;
 use std::path::Path;
@@ -125,7 +126,7 @@ impl TriangleWorld {
 
     #[tracked]
     pub fn trace(&self, ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>) -> Expr<SurfaceHit> {
-        self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, 100000.0))
+        self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, f32::INFINITY))
     }
 
     #[tracked]
@@ -307,7 +308,7 @@ impl VoxelWorld {
         ray_start: Expr<Vec3<f32>>,
         ray_dir: Expr<Vec3<f32>>,
     ) -> Expr<CommittedHit> {
-        // should change to fit with other api
+        // TODO: should change to fit with other api
         self.accel
             .traverse(
                 Ray::new_expr(

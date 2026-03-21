@@ -198,13 +198,6 @@ impl SplatData {
                             if weight == 0.0 {
                                 continue;
                             }
-                            // let (factor, cascade) = rc.cache.projection().interpolation_factor_lod(world_pos);
-                            // let factor = if cascade == probe.position.w {
-                            //     factor
-                            // } else {
-                            //     1.0 - factor
-                            // };
-                            // let weight = weight * factor;
 
                             let total_radiance = Vec4::splat(0.0_f32).var();
                             for j in 0_u32.expr()

@@ -1,5 +1,5 @@
 use glam::UVec3;
-use keter::lang::types::vector::{Vec2, Vec3};
+use keter::lang::types::vector::Vec3;
 use keter::prelude::*;
 
 #[tracked]
