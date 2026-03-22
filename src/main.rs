@@ -33,6 +33,7 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 */
 
 use chandra::algorithm::rc::RcData;
+use chandra::algorithm::restir::RisData;
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
 use chandra::algorithm::{CommandList, CoreData};
@@ -99,6 +100,7 @@ fn main() {
     let mut rc = RcData::new(Default::default());
     let trace = TraceData::new(&rc, 1 << 22);
     let splat = SplatData::new(&core, &rc, false);
+    let ris = RisData::new(&core);
 
     let num_cascades = rc.num_cascades();
     let last_cascade = rc.last_cascade();
@@ -248,6 +250,8 @@ fn main() {
                 } else {
                     Vec3::splat_expr(0.0)
                 }
+            } else if mode == 8 {
+                ris.output.read(pixel) + emission
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
@@ -286,9 +290,9 @@ fn main() {
             println!("Camera: {camera:?}");
         }
         if rt.key_pressed(KeyCode::KeyM) {
-            mode = (mode + 1) % 8;
+            mode = (mode + 1) % 9;
             println!("Drawing mode {mode}");
-            let tonemap = matches!(mode, 0 | 4);
+            let tonemap = matches!(mode, 0 | 3 | 4 | 8);
             rt.tonemap(tonemap);
         }
         if rt.key_pressed(KeyCode::KeyL) {
@@ -311,6 +315,14 @@ fn main() {
                 blend_radius = 0.5;
             }
         }
+
+        let c0_len = match c0_len_mode {
+            0 => 4.0,
+            1 => 12.0,
+            2 => 9999.0,
+            _ => unreachable!(),
+        };
+
         let mut commands = CommandList::default();
 
         if rt.tick == 0 {
@@ -346,38 +358,7 @@ fn main() {
 
             rc.reset_table(&mut commands, false);
 
-            // Reset ray counts
-            commands.push(
-                dispatch0_async(
-                    track!(|| {
-                        trace.ray_count.write(dispatch_id().x, 0_u32);
-                        // ray_direction_offsets.write(dispatch_id().x, 0_u32);
-                    }),
-                    [trace.ray_count.len() as u32, 1, 1],
-                )
-                .debug("Reset Node Ray Count"),
-            );
-            commands.push(
-                dispatch0_async(
-                    track!(|| {
-                        trace.base_ray_index.write(dispatch_id().x, 0_u32);
-                        // average_base_probe_pos_normal
-                        //     .write(dispatch_id().x, AveragePosNormal::default());
-                    }),
-                    [trace.base_ray_index.len() as u32, 1, 1],
-                )
-                .debug("Reset Base Ray Offsets"),
-            );
-            commands.push(
-                dispatch0_async(
-                    track!(|| {
-                        trace.next_traced_ray.write(0_u32);
-                        trace.next_max_cascade_ray_direction.write(0_u32);
-                    }),
-                    [1, 1, 1],
-                )
-                .debug("Reset Next Traced Ray"),
-            );
+            commands += trace.reset();
 
             commands += trace.compute_ray_count_base(&core, &rc);
 
@@ -388,12 +369,7 @@ fn main() {
                 commands += trace.compute_ray_offset(&rc, c);
             }
             commands += trace.compute_rays(&core, &rc, rt.tick);
-            let c0_len = match c0_len_mode {
-                0 => 4.0,
-                1 => 12.0,
-                2 => 9999.0,
-                _ => unreachable!(),
-            };
+
             commands += trace.compute_radiance(&core, &rc, c0_len);
 
             for c in (0..num_cascades).rev() {
@@ -412,20 +388,10 @@ fn main() {
                 )
                 .debug("Reset Accumulation"),
             );
+            commands += ris.reset();
         }
 
-        commands.push(
-            dispatch0_async(
-                track!(|| {
-                    splat
-                        .radiance
-                        .write(dispatch_id().x, Vec4::splat_expr(0.0_f32));
-                    splat.depth.write(dispatch_id().x, f32::INFINITY);
-                }),
-                [splat.radiance.len() as u32, 1, 1],
-            )
-            .debug("Reset Radiance Buffer"),
-        );
+        commands += splat.reset();
 
         if mode == 0 {
             let blend_radius = match splat_mode {
@@ -471,6 +437,9 @@ fn main() {
                     )
                     .debug("Draw Splats"),
             );
+        }
+        if mode == 8 && !rt.key_down(KeyCode::KeyR) {
+            commands += ris.update(&core, rt.tick);
         }
 
         commands.push(

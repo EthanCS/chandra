@@ -285,4 +285,15 @@ impl SplatData {
             }),
         )
     }
+
+    pub fn reset(&self) -> NodeConfigs<'static> {
+        dispatch0_async(
+            track!(|| {
+                self.radiance.write(dispatch_id().x, Vec4::splat(0.0_f32));
+                self.depth.write(dispatch_id().x, f32::INFINITY);
+            }),
+            [self.radiance.len() as u32, 1, 1],
+        )
+        .debug("Reset Radiance Buffer")
+    }
 }

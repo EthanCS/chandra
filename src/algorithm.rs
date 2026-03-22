@@ -134,6 +134,7 @@ impl CoreData {
 }
 
 pub mod rc;
+pub mod restir;
 pub mod splat;
 pub mod trace;
 

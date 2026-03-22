@@ -201,4 +201,31 @@ impl TraceData {
         .dispatch_async([self.traced_rays.len() as u32, 1, 1], &c0_len)
         .debug("Compute Radiance")
     }
+    pub fn reset(&self) -> NodeConfigs<'static> {
+        (
+            dispatch0_async(
+                track!(|| {
+                    self.ray_count.write(dispatch_id().x, 0_u32);
+                }),
+                [self.ray_count.len() as u32, 1, 1],
+            )
+            .debug("Reset Node Ray Count"),
+            dispatch0_async(
+                track!(|| {
+                    self.base_ray_index.write(dispatch_id().x, 0_u32);
+                }),
+                [self.base_ray_index.len() as u32, 1, 1],
+            )
+            .debug("Reset Base Ray Offsets"),
+            dispatch0_async(
+                track!(|| {
+                    self.next_traced_ray.write(0_u32);
+                    self.next_max_cascade_ray_direction.write(0_u32);
+                }),
+                [1, 1, 1],
+            )
+            .debug("Reset Next Traced Ray"),
+        )
+            .chain()
+    }
 }
