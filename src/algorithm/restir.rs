@@ -1,3 +1,5 @@
+use std::f32::consts::TAU;
+
 use yesod::color::luma;
 use yesod::rand::pcg3df;
 use yesod::shapes::intersect_sphere;
@@ -152,7 +154,8 @@ impl RisData {
                     pixel,
                     sample.emission
                         * weighted_sample.contribution
-                        * keter::max(dir.dot(normal), 0.0),
+                        * keter::max(dir.dot(normal), 0.0)
+                        * TAU,
                 );
             }),
             core.screen_dispatch_size(),

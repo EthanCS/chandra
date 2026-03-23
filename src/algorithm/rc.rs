@@ -18,6 +18,7 @@ pub struct RcData {
     pub probe_lifetime: Buffer<u32>,
     // Settings
     pub quality_decay: f32,
+    pub min_direction_weight: f32,
     pub max_lifetime: u32,
     pub merge_nearest: bool,
     pub increased_base_resolution: bool,
@@ -48,6 +49,7 @@ pub struct RcSettings {
     pub base_probes: u32,
     pub num_cascades: u32,
     pub quality_decay: f32,
+    pub min_direction_weight: f32,
     pub max_lifetime: u32,
     pub merge_nearest: bool,
     pub increased_base_resolution: bool,
@@ -61,7 +63,8 @@ impl Default for RcSettings {
             base_angular_resolution: 4,
             base_probes: 1 << 18,
             num_cascades: 4,
-            quality_decay: 1.0,
+            quality_decay: 0.99,
+            min_direction_weight: 2.0,
             max_lifetime: 10,
             merge_nearest: false,
             increased_base_resolution: false,
@@ -91,6 +94,7 @@ impl RcData {
             max_probes: vec![0; cache.num_cascades as usize],
             cache,
             quality_decay: settings.quality_decay,
+            min_direction_weight: settings.min_direction_weight,
             max_lifetime: settings.max_lifetime,
             merge_nearest: settings.merge_nearest,
             increased_base_resolution: settings.increased_base_resolution,
@@ -154,7 +158,12 @@ impl RcData {
             self.cache.directions_per_probe(cascade),
             1,
         ];
-        let key = (self.merge_nearest, self.increased_base_resolution);
+        let key = (
+            self.merge_nearest,
+            self.increased_base_resolution,
+            self.quality_decay,
+            self.min_direction_weight,
+        );
         if cascade == self.last_cascade() {
             memo(key, || {
                 DEVICE.create_kernel::<fn()>(&|| self.merge_cache_raw(MergeLevel::Last))
@@ -228,7 +237,18 @@ impl RcData {
         let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
 
         let weight = self.cache.weights.read(data_index);
-        let fluence = self.cache.weighted_fluence.read(data_index) / weight;
+        let weighted_fluence = self.cache.weighted_fluence.read(data_index);
+        let fluence = weighted_fluence / weight;
+
+        // decay cache
+        if self.quality_decay < 1.0 && weight > self.min_direction_weight {
+            self.cache
+                .weighted_fluence
+                .write(data_index, weighted_fluence * self.quality_decay);
+            self.cache
+                .weights
+                .write(data_index, weight * self.quality_decay);
+        }
 
         let radiance = if weight < 0.0001 {
             Vec4::splat_expr(0.0)
