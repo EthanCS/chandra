@@ -2,8 +2,6 @@
 
 /*
 TODOS:
-[X] Add more lights, fancier primary ray stuff?
-[ ] Optimize, switch to u64 everywhere
 [ ] Better hashmap impl without dropping things? Bias towards primary rays first.
 [ ] Some sorta anderson acceleration to make the infinite bounce convergence less obvious?
 
@@ -12,8 +10,6 @@ TODOS:
 [ ] Ray counting / quality metrics.
 [ ] Test how much memory saved if each probe element is sparse?
 
-[X] Test completely normal RC implementation for performance
-[ ] Compress probe lists. Then can use bigger hashmap.
   - Could use a freelist to avoid duplication, or just double everything.
 [ ] Need to fix LODs. How??
   [ ] Write every ray to two LODs and have perfect blending.
@@ -32,7 +28,7 @@ BUGS:
 Split into two caches. Also measure ray divergence and use that to stochastically reduce ray count.
 */
 
-use chandra::algorithm::rc::RcData;
+use chandra::algorithm::rc::{RcData, RcSettings};
 use chandra::algorithm::restir::RisData;
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
@@ -59,7 +55,7 @@ const DEBUG_SPLATS: u32 = 0b1;
 // nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
     let app = App::new("Sunfall", [1920, 1080])
-        .scale(2)
+        .scale(1)
         .agx()
         .resize()
         .init();
@@ -93,17 +89,25 @@ fn main() {
         "assets/sponza.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
+    // let world = VoxelWorld::load("assets/sponza.vox");
 
     let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
 
     let core = CoreData::new(world, app.size(), sunlight_dir.into());
-    let mut rc = RcData::new(Default::default());
-    let trace = TraceData::new(&rc, 1 << 22);
-    let splat = SplatData::new(&core, &rc, false);
+    let mut rc = RcData::new(RcSettings {
+        base_grid_size: 15.0,
+        base_radius: 1200.0,
+        increased_base_resolution: true,
+        ..Default::default()
+    });
+    let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
+    let splat = SplatData::new(&core, &rc, true);
     let ris = RisData::new(&core);
 
+    #[cfg(feature = "denoise")]
+    let mut denoiser = chandra::denoise::Denoiser::new(&core);
+
     let num_cascades = rc.num_cascades();
-    let last_cascade = rc.last_cascade();
 
     let cache_memory = rc.cache.weighted_fluence.size_bytes()
         + rc.cache.weights.size_bytes()
@@ -161,7 +165,8 @@ fn main() {
                     }
                 }
             } else if mode == 1 {
-                if rc.cache.contains(probe) {
+                trace.raw_radiance.as_ref().unwrap().read(pixel) + emission
+                /*if rc.cache.contains(probe) {
                     let target_probe = rc.cache.decode(rc.cache.encode(probe), cascade);
                     if (target_probe.position != probe.position).any()
                         || (rc.cache.quantize(world_pos, lod, cascade + 1).position
@@ -175,16 +180,20 @@ fn main() {
                     }
                 } else {
                     Vec3::splat_expr(0.0)
-                }
-            } else if mode == 2 && cascade < last_cascade {
-                let num_next = 0_f32.var();
+                }*/
+            } else if mode == 2 {
+                let output = inferno(yesod::color::reinhard(core.read_depth(pixel) / 1000.0));
+                #[cfg(feature = "denoise")]
+                let output = denoiser.output.read(pixel_index) + emission;
+                output
+                /*let num_next = 0_f32.var();
                 for i in 0..8u32 {
                     let (next_probe, weight) = probe.next_bilinear(i);
 
                     let next = rc.cache.get(next_probe);
                     *num_next += weight * next.loaded().select(1.0_f32.expr(), 0.0_f32.expr());
                 }
-                inferno(**num_next)
+                inferno(**num_next)*/
             } else if mode == 3 {
                 let node = rc.cache.get(probe);
                 if node.loaded() {
@@ -233,7 +242,7 @@ fn main() {
                 }
                 // inferno(1.0 - reinhard((rc.cache.dequantize(probe) - world_pos).length()))
             } else if mode == 6 {
-                let hit = core.world.trace(view.pos, ray_dir);
+                let hit = core.hit.read(pixel_index);
                 if (cursor_pixel == pixel).all() {
                     let inst = hit.inst;
                     device_println!("Hit at {}", host!(inst));
@@ -292,7 +301,7 @@ fn main() {
         if rt.key_pressed(KeyCode::KeyM) {
             mode = (mode + 1) % 9;
             println!("Drawing mode {mode}");
-            let tonemap = matches!(mode, 0 | 3 | 4 | 8);
+            let tonemap = matches!(mode, 0 | 1 | 2 | 3 | 4 | 8);
             rt.tonemap(tonemap);
         }
         if rt.key_pressed(KeyCode::KeyL) {
@@ -375,6 +384,9 @@ fn main() {
             for c in (0..num_cascades).rev() {
                 commands += rc.merge_cache(c);
             }
+
+            commands += splat.reset_apn();
+            commands += splat.compute_average_pos_normal(&core, &rc);
         }
 
         if camera_updated {
@@ -440,6 +452,7 @@ fn main() {
         }
         if mode == 8 && !rt.key_down(KeyCode::KeyR) {
             commands += ris.update(&core, rt.tick);
+            commands += ris.copy_back();
         }
 
         commands.push(
@@ -487,6 +500,12 @@ fn main() {
                     .map(|n| rc.cache.max_probes_at_cascade(n))
                     .collect::<Vec<_>>()
             );
+        }
+
+        #[cfg(feature = "denoise")]
+        if rt.key_pressed(KeyCode::KeyI) {
+            println!("Denoising!");
+            denoiser.denoise(&core, trace.raw_radiance.as_ref().unwrap());
         }
 
         flush_printer();

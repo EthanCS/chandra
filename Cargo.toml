@@ -5,7 +5,13 @@ edition = "2024"
 default-run = "chandra"
 
 [features]
+default = []
 small-key = []
+# set
+# $env.OIDN_DIR = "/home/keter/Documents/oidn-2.3.3.x86_64.linux/"
+# $env.LD_LIBRARY_PATH = "/home/keter/Documents/oidn-2.3.3.x86_64.linux/lib/"
+denoise = ["dep:oidn"]
+voxel = []
 
 [dependencies]
 dot_vox = "5.1.1"
@@ -22,6 +28,7 @@ image = "0.25.8"
 rand = "0.9.2"
 histo = "1.0.0"
 parking_lot = "0.12.5"
+oidn = { version = "2.3.3", optional = true }
 
 [profile.dev.package."*"]
 opt-level = 3

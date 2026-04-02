@@ -50,6 +50,16 @@ impl SplatData {
             use_planar_weights,
         }
     }
+    pub fn reset_apn(&self) -> NodeConfigs<'static> {
+        dispatch0_async(
+            track!(|| {
+                self.average_pos_normal
+                    .write(dispatch_id().x, AveragePosNormal::default());
+            }),
+            [self.average_pos_normal.len() as u32, 1, 1],
+        )
+        .debug("Reset Average Position and Normal")
+    }
     // TODO: Apply to more cascades.
     pub fn compute_average_pos_normal(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0_async(

@@ -67,6 +67,25 @@ impl ReserviorVar {
             *self.sample_target_pdf = sample_target_pdf;
         }
     }
+    #[tracked]
+    fn combine(&self, other: &Expr<Reservior>, rand: Expr<f32>) {
+        let sample = other.finish();
+        self.update(
+            sample.sample,
+            other.sample_target_pdf,
+            sample.contribution,
+            other.total_samples,
+            rand,
+        );
+    }
+    #[tracked]
+    fn clamp_samples(&self, max: Expr<f32>) {
+        if self.total_samples > max {
+            let scale = max / self.total_samples;
+            *self.total_samples = max;
+            *self.weight_sum *= scale;
+        }
+    }
 }
 impl ReserviorExpr {
     #[tracked]
@@ -80,7 +99,12 @@ impl ReserviorExpr {
 
 pub struct RisData {
     pub reserviors: Buffer<Reservior>,
+    pub next_reserviors: Buffer<Reservior>,
     pub output: Tex2d<Vec3<f32>>,
+    // pub search_radius: f32,
+    // pub max_depth_change: f32,
+    // pub max_normal_change: f32,
+    // pub num_merge_samples: u32,
 }
 
 // const HEMI_INTEGRAL: f32 = TAU;
@@ -90,12 +114,18 @@ impl RisData {
         Self {
             reserviors: DEVICE
                 .create_buffer_from_fn(core.num_pixels() as usize, |_| Reservior::default()),
+            next_reserviors: DEVICE
+                .create_buffer_from_fn(core.num_pixels() as usize, |_| Reservior::default()),
             output: DEVICE.create_tex2d::<Vec3<f32>>(
                 PixelStorage::Float4,
                 core.screen_size().x,
                 core.screen_size().y,
                 1,
             ),
+            // search_radius: 30.0,
+            // max_depth_change: 0.1,
+            // max_normal_change: 0.5,
+            // num_merge_samples: 5,
         }
     }
     pub fn reset(&self) -> NodeConfigs<'static> {
@@ -114,7 +144,7 @@ impl RisData {
                 let pos = core.get_world_pos(pixel);
 
                 let normal = core.read_normal(pixel);
-                let rand = pcg3df(pixel.extend(tick));
+                let rand = pcg3df(pixel.extend(tick * 2));
                 let sample_dir = SphericalEncoder::decode(rand.xy());
                 let sample_dir = sample_dir * sample_dir.dot(normal).signum();
                 let pos = offset_ray(pos, normal);
@@ -124,15 +154,15 @@ impl RisData {
                 // p^(x) = p(x) * f(x)
                 // Also there's no cos factor here currently; hopefully shouldn't be a problem.
 
-                let sample = if hit.valid() {
-                    let hit_pos = pos + sample_dir * hit.committed_ray_t;
-                    let emission = core.get_emission(hit_pos, hit);
-                    Sample::from_comps_expr(SampleComps { hit_pos, emission })
-                } else {
+                let sample = if hit.miss() {
                     // use a fake skybox to avoid special casing
                     let t = intersect_sphere(pos, sample_dir, 1e5.expr()).0.y;
                     let hit_pos = pos + sample_dir * t;
                     let emission = Vec3::splat_expr(0.0);
+                    Sample::from_comps_expr(SampleComps { hit_pos, emission })
+                } else {
+                    let hit_pos = pos + sample_dir * hit.committed_ray_t;
+                    let emission = core.get_emission(hit_pos, hit);
                     Sample::from_comps_expr(SampleComps { hit_pos, emission })
                 };
 
@@ -142,7 +172,10 @@ impl RisData {
 
                 let reservior = self.reserviors.read(pixel_index).var();
                 reservior.update(sample, sample_target_pdf, 1.0.expr(), 1.0.expr(), rand.z);
-                self.reserviors.write(pixel_index, reservior);
+
+                reservior.clamp_samples(100.0.expr());
+
+                self.next_reserviors.write(pixel_index, reservior);
 
                 let weighted_sample = reservior.finish();
 
@@ -162,5 +195,10 @@ impl RisData {
             tick,
         )
         .debug("Update RIS")
+    }
+    pub fn copy_back(&self) -> NodeConfigs<'static> {
+        self.next_reserviors
+            .copy_to_buffer_async(&self.reserviors)
+            .debug("Copy RIS Reserviors Back")
     }
 }

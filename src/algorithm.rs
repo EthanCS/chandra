@@ -5,26 +5,33 @@ use keter::graph::NodeConfigs;
 use keter::lang::types::shared::Shared;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
-use keter::rtx::SurfaceHit;
 use yesod::camera::View;
 use yesod::device_println;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::utils::{dispatch0_async, dispatch1_async, memo, offset_ray};
 
 use crate::cache::{Fluence, Probe, Radiance};
-use crate::world::TriangleWorld;
+
+#[cfg(not(feature = "voxel"))]
+type World = crate::world::TriangleWorld;
+#[cfg(not(feature = "voxel"))]
+type Hit = keter::rtx::SurfaceHit;
+#[cfg(feature = "voxel")]
+type World = crate::world::VoxelWorld;
+#[cfg(feature = "voxel")]
+type Hit = keter::rtx::CommittedHit;
 
 pub struct CoreData {
-    pub world: TriangleWorld,
+    pub world: World,
     pub view: Singleton<View>,
     pub depth: Tex2dHandle<f32>,
     pub normal: Tex2d<Vec2<f32>>,
-    pub hit: Buffer<SurfaceHit>,
+    pub hit: Buffer<Hit>,
 
     pub sunlight_dir: Vec3<f32>,
 }
 impl CoreData {
-    pub fn new(world: TriangleWorld, [width, height]: [u32; 2], sunlight_dir: Vec3<f32>) -> Self {
+    pub fn new(world: World, [width, height]: [u32; 2], sunlight_dir: Vec3<f32>) -> Self {
         let depth = DEVICE.create_tex2d::<f32>(PixelStorage::Float1, width, height, 1);
         let depth = BINDLESS.push_tex2d(
             depth,
@@ -40,7 +47,7 @@ impl CoreData {
             view: Singleton::new_uninit(),
             depth,
             normal: DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, width, height, 1),
-            hit: DEVICE.create_buffer::<SurfaceHit>(width as usize * height as usize),
+            hit: DEVICE.create_buffer::<Hit>(width as usize * height as usize),
             sunlight_dir,
         }
     }
@@ -54,7 +61,7 @@ impl CoreData {
         self.normal.width() * self.normal.height()
     }
     #[tracked]
-    pub fn get_emission(&self, pos: Expr<Vec3<f32>>, hit: Expr<SurfaceHit>) -> Expr<Radiance> {
+    pub fn get_emission(&self, pos: Expr<Vec3<f32>>, hit: Expr<Hit>) -> Expr<Radiance> {
         let normal = self.world.get_normal_flat(hit);
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
@@ -63,13 +70,13 @@ impl CoreData {
             *radiance += self
                 .world
                 .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
-                .valid()
-                .select(Vec3::splat_expr(0.0_f32), Vec3::splat_expr(10.0_f32))
+                .miss()
+                .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
                 * weight;
         }
-        if hit.inst == 1 {
-            *radiance += Vec3::expr(10.0, 0.0, 0.0);
-        }
+        // if hit.inst == 1 {
+        //     *radiance += Vec3::expr(10.0, 0.0, 0.0);
+        // }
         **radiance
     }
     #[tracked]
@@ -77,9 +84,9 @@ impl CoreData {
         &self,
         start: Expr<Vec3<f32>>,
         dir: Expr<Vec3<f32>>,
-        hit: Expr<SurfaceHit>,
+        hit: Expr<Hit>,
     ) -> Expr<Fluence> {
-        if hit.valid() {
+        if !hit.miss() {
             self.get_emission(start + dir * hit.committed_ray_t, hit)
                 .extend(0.0)
         } else {
@@ -118,7 +125,7 @@ impl CoreData {
                 let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
 
                 let hit = self.world.trace(view.pos, ray_dir);
-                if !hit.valid() {
+                if hit.miss() {
                     self.depth.write(pixel, 0.0);
                     return;
                 }

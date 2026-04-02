@@ -16,6 +16,7 @@ pub struct TraceData {
     pub base_ray_index: Buffer<u32>,
     pub traced_rays: Buffer<Ray>,
     pub next_traced_ray: Singleton<u32>,
+    pub raw_radiance: Option<Tex2d<Vec3<f32>>>,
 }
 
 #[repr(C)]
@@ -25,11 +26,11 @@ pub struct Ray {
     pub dir: Vec3<f32>,
     pub start: Vec3<f32>,
     pub base_probe: Probe,
-    pub hit: SurfaceHit,
+    pub hit: Hit,
 }
 
 impl TraceData {
-    pub fn new(rc: &RcData, max_rays: usize) -> Self {
+    pub fn new(core: &CoreData, rc: &RcData, max_rays: usize, debug_raw_radiance: bool) -> Self {
         Self {
             ray_count: DEVICE.create_buffer_from_fn::<u32>(rc.cache.total_probes() as usize, |_| 0),
             next_max_cascade_ray_direction: Singleton::new(0),
@@ -39,6 +40,15 @@ impl TraceData {
                 .create_buffer_from_fn::<u32>(rc.cache.base_probes as usize, |_| 0),
             traced_rays: DEVICE.create_buffer::<Ray>(max_rays),
             next_traced_ray: Singleton::new(0),
+            // used for debug
+            raw_radiance: debug_raw_radiance.then(|| {
+                DEVICE.create_tex2d::<Vec3<f32>>(
+                    PixelStorage::Float4,
+                    core.screen_size().x,
+                    core.screen_size().y,
+                    1,
+                )
+            }),
         }
     }
     pub fn compute_ray_count_base(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
@@ -170,6 +180,11 @@ impl TraceData {
                         hit: core.world.trace(start, bounce_ray),
                     });
                     self.traced_rays.write(ray_index, ray);
+
+                    if let Some(raw_radiance) = &self.raw_radiance {
+                        let radiance = core.get_fluence(start, bounce_ray, ray.hit).xyz();
+                        raw_radiance.write(pixel, radiance);
+                    }
                 }
             }),
             core.screen_dispatch_size(),

@@ -280,7 +280,9 @@ impl RcData {
 
         let probe = ray.base_probe;
 
-        let (hit_level, fluence) = if hit.valid() {
+        let (hit_level, fluence) = if hit.miss() {
+            (self.num_cascades().expr() - 1, Vec4::splat_expr(0.0))
+        } else {
             let cascade = keter::max(
                 (hit.committed_ray_t
                     / (c0_len
@@ -295,8 +297,6 @@ impl RcData {
                 keter::min(cascade, self.num_cascades().expr() - 1),
                 core.get_fluence(world_pos, bounce_ray, hit),
             )
-        } else {
-            (self.num_cascades().expr() - 1, Vec4::splat_expr(0.0))
         };
 
         let deposit = |cascade, fluence| {

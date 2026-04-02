@@ -165,6 +165,10 @@ pub struct VoxelWorld {
 }
 
 impl VoxelWorld {
+    pub fn load(path: &str) -> Self {
+        let data = dot_vox::load(path).unwrap();
+        Self::new(data)
+    }
     pub fn new(data: DotVoxData) -> Self {
         // let bindless = DEVICE.create_bindless_array(data.models.len());
 
@@ -303,19 +307,20 @@ impl VoxelWorld {
     }
 
     #[tracked]
-    pub fn trace(
+    pub fn trace_segment(
         &self,
         ray_start: Expr<Vec3<f32>>,
         ray_dir: Expr<Vec3<f32>>,
+        interval: Expr<Vec2<f32>>,
     ) -> Expr<CommittedHit> {
         // TODO: should change to fit with other api
         self.accel
             .traverse(
                 Ray::new_expr(
                     Expr::<[f32; 3]>::from(ray_start),
-                    0.0,
+                    interval.x,
                     Expr::<[f32; 3]>::from(ray_dir),
-                    10000.0,
+                    interval.y,
                 ),
                 AccelTraceOptions {
                     mask: 0xFF.expr(),
@@ -339,10 +344,10 @@ impl VoxelWorld {
                         Vec3::splat_expr(0.0001),
                         Vec3::splat_expr(BRICK_SIZE as f32 - 0.0001),
                     ),
-                    |pos, last_t, next_t| {
+                    |pos, last_t, _next_t| {
                         if mask.read(pos.cast_u32()) {
                             // TODO: Commit the actual position instead of this stupid hack
-                            candidate.commit((last_t + next_t) / 2.0);
+                            candidate.commit(last_t); // (last_t + next_t) / 2.0);
                             true.expr()
                         } else {
                             false.expr()
@@ -351,6 +356,28 @@ impl VoxelWorld {
                 );
             })
             .trace()
+    }
+
+    #[tracked]
+    pub fn trace(
+        &self,
+        ray_start: Expr<Vec3<f32>>,
+        ray_dir: Expr<Vec3<f32>>,
+    ) -> Expr<CommittedHit> {
+        self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, f32::INFINITY))
+    }
+
+    #[tracked]
+    pub fn get_normal(&self, ray_dir: Expr<Vec3<f32>>, pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+        let nearest = pos.round();
+        let diff = (pos - nearest).abs();
+        let mask = diff <= keter::min(diff.yzx(), diff.zxy());
+        mask.select(Vec3::splat_expr(-1.0), Vec3::splat_expr(0.0)) * ray_dir.signum()
+    }
+
+    #[tracked]
+    pub fn get_voxel(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<i32>> {
+        (pos - 0.5 * normal).floor().cast_i32()
     }
 
     #[tracked]
@@ -380,9 +407,8 @@ impl VoxelWorld {
         let brick = self.model_brick_offsets.read(model.index) + hit.prim;
         let pos =
             ray_start + ray_dir * hit.committed_ray_t - self.brick_positions.read(brick).cast_f32();
+        let pos = self.get_voxel(pos, self.get_normal(ray_dir, pos));
         let pos = pos
-            .floor()
-            .cast_i32()
             .clamp(Vec3::splat(0), Vec3::splat(BRICK_SIZE as i32 - 1))
             .cast_u32();
 
