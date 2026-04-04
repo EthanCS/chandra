@@ -29,7 +29,7 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 */
 
 use chandra::algorithm::rc::{RcData, RcSettings};
-use chandra::algorithm::restir::RisData;
+use chandra::algorithm::ris::RisData;
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
 use chandra::algorithm::{CommandList, CoreData};
