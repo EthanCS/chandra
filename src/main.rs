@@ -55,7 +55,7 @@ const DEBUG_SPLATS: u32 = 0b1;
 // nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
     let app = App::new("Chandra", [1920, 1080])
-        .scale(2)
+        .scale(1)
         .agx()
         .resize()
         .init();
@@ -98,11 +98,10 @@ fn main() {
     let mut rc = RcData::new(RcConfig {
         increased_base_resolution: true,
         use_quality_weight: false,
-        physical_bilinear_weights: false,
         max_lifetime: 1,
         num_cascades: 6,
-        base_radius: 1000.0,
-        base_grid_size: 4.0,
+        // base_radius: 1000.0,
+        // base_grid_size: 4.0,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
@@ -289,6 +288,7 @@ fn main() {
     let mut c0_len_mode = 0;
     let mut splat_mode = 0;
     let mut blend_radius = 0.5;
+    let mut normal_rc = false;
 
     let mut profiler = Profiler::new();
 
@@ -329,6 +329,9 @@ fn main() {
                 blend_radius = 0.5;
             }
         }
+        if rt.key_pressed(KeyCode::KeyN) {
+            normal_rc = !normal_rc;
+        }
 
         // spacing between end of rays shoudl be equal to spatial spacing.
         let inv_arc_size = rc.base_angular_resolution as f32 / PI;
@@ -336,7 +339,7 @@ fn main() {
             0 => inv_arc_size,
             1 => 4.0,
             2 => 12.0,
-            2 => 9999.0,
+            3 => 9999.0,
             _ => unreachable!(),
         };
 
@@ -377,11 +380,11 @@ fn main() {
 
             commands += rc.compute_average_pos_normal(&core);
 
-            for c in 0..num_cascades {
-                commands += rc.trace_deposit(&core, c0_len, c, 2);
-            }
-
-            if false {
+            if normal_rc {
+                for c in 0..num_cascades {
+                    commands += rc.trace_deposit(&core, c0_len, c, 1, c == 0);
+                }
+            } else {
                 commands += trace.reset();
 
                 commands += trace.compute_ray_count_base(&core, &rc);

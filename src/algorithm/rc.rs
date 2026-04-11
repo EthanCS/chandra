@@ -84,7 +84,6 @@ pub struct RcConfig {
     pub merge_nearest: bool,
     pub increased_base_resolution: bool,
     pub terminate_deposit: bool,
-    pub physical_bilinear_weights: bool,
 }
 impl Default for RcConfig {
     fn default() -> Self {
@@ -102,7 +101,6 @@ impl Default for RcConfig {
             merge_nearest: false,
             increased_base_resolution: false,
             terminate_deposit: true,
-            physical_bilinear_weights: false,
         }
     }
 }
@@ -234,10 +232,6 @@ impl RcData {
         let next_offsets = Shared::<u32>::new(8);
         let next_weights = Shared::<f32>::new(8);
 
-        let physical_pos = self
-            .physical_bilinear_weights
-            .then(|| self.average_pos_normal.read(node.index).position());
-
         if !matches!(merge_level, MergeLevel::Last) {
             if thread_id().y < if self.merge_nearest { 1 } else { 8 } {
                 let i = thread_id().y;
@@ -249,13 +243,6 @@ impl RcData {
 
                 let next = self.cache.get(next_probe);
                 if next.loaded() {
-                    let weight = if self.physical_bilinear_weights {
-                        let next_physical_pos = self.average_pos_normal.read(next.index).position();
-                        (next_physical_pos - physical_pos.unwrap()).length().recip()
-                    } else {
-                        weight
-                    };
-
                     let index = warp_prefix_count_bits(true.expr());
 
                     next_offsets.write(index, next.data_offset);
@@ -326,6 +313,7 @@ impl RcData {
         c0_len: f32,
         cascade: u32,
         multiplicity: u32,
+        use_average_position: bool,
     ) -> NodeConfigs<'static> {
         memo((), || {
             DEVICE.create_kernel_async::<fn(f32, u32)>(&|c0_len, cascade| {
@@ -335,8 +323,8 @@ impl RcData {
                 if node.invalid() {
                     return;
                 }
-                let apn = self.average_pos_normal.read(node.index);
-                let world_pos = if true {
+                let world_pos = if use_average_position {
+                    let apn = self.average_pos_normal.read(node.index);
                     offset_ray(apn.position(), apn.normal())
                 } else {
                     self.cache.dequantize(node.probe)
