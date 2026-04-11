@@ -5,6 +5,7 @@ use keter::bindless::Tex3dHandle;
 use keter::lang::types::vector::Mat3;
 use yesod::direction::OctahedralEncoder;
 use yesod::rand::pcg3df;
+use yesod::shapes::intersect_aabb;
 use yesod::utils::{cross_matrix, outer_product_3, spherical_fibonacci};
 
 use super::*;
@@ -83,6 +84,7 @@ const _: fn() = || {
 
 pub struct DdgiData {
     pub ray_data: Buffer<Ray>,
+    pub probe_offsets: Tex3d<Vec3<f32>>,
     pub irradiance: Tex3dHandle<Radiance>,
     pub distance: Tex3dHandle<Vec2<f32>>,
     config: DdgiConfig,
@@ -97,6 +99,13 @@ impl DdgiData {
     pub fn new(config: DdgiConfig) -> Self {
         let ray_data =
             DEVICE.create_buffer::<Ray>((config.num_probes() * config.rays_per_probe) as usize);
+        let probe_offsets = DEVICE.create_tex3d::<Vec3<f32>>(
+            PixelStorage::Float4,
+            config.probe_dims.x,
+            config.probe_dims.y,
+            config.probe_dims.z,
+            1,
+        );
         let irradiance_size = config.irradiance_resolution + 2;
         let distance_size = config.distance_resolution + 2;
         let irradiance = DEVICE.create_tex3d::<Radiance>(
@@ -131,17 +140,14 @@ impl DdgiData {
         Self {
             config,
             ray_data,
+            probe_offsets,
             irradiance,
             distance,
         }
     }
     #[tracked]
     fn world_to_probe(&self, world_pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
-        let pos = (world_pos - self.origin) / self.spacing;
-        pos.clamp(
-            Vec3::splat_expr(0.0),
-            self.probe_dims.expr().cast_f32() - 1.001,
-        )
+        (world_pos - self.origin) / self.spacing
     }
     #[tracked]
     fn probe_to_world(&self, probe_pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
@@ -169,6 +175,7 @@ impl DdgiData {
             .sample((offset + uv.extend(0.5)) / self.irradiance.size().expr().cast_f32())
             .xyz()
     }
+    // https://github.com/NVIDIAGameWorks/RTXGI-DDGI/blob/f33e496ca31b3f0eec1c4e2cbaa8bb620e337fa6/rtxgi-sdk/shaders/ddgi/Irradiance.hlsl#L25
     #[tracked]
     pub fn query_irradiance(
         &self,
@@ -182,49 +189,58 @@ impl DdgiData {
         let bias = normal * normal_bias + camera_dir * camera_bias;
         let biased_pos = pos + bias;
         let probe_pos = self.world_to_probe(biased_pos);
+        let is_oob = (probe_pos <= 0.0).any()
+            || (probe_pos >= self.probe_dims.expr().cast_f32() - 1.001).any();
         let base_probe = probe_pos.floor().cast_u32();
         let alpha = probe_pos.fract();
 
         let total_irradiance = Vec4::splat(0.0f32).var();
 
-        for i in 0_u32..8_u32 {
-            let adj_probe_offset = index_to_corner(i);
-            let adj_probe = base_probe + adj_probe_offset;
-            let adj_probe_pos = self.probe_to_world(adj_probe.cast_f32());
+        if is_oob {
+            *total_irradiance = Vec4::new(1.0, 0.0, 0.0, 1.0);
+        } else {
+            for i in 0_u32..8_u32 {
+                let adj_probe_offset = index_to_corner(i);
+                let adj_probe = base_probe + adj_probe_offset;
+                let adj_probe_pos =
+                    self.probe_to_world(adj_probe.cast_f32()) + self.probe_offsets.read(adj_probe);
 
-            let pos_to_adj = (adj_probe_pos - pos).normalize();
-            let biased_pos_to_adj = (adj_probe_pos - biased_pos).normalize();
-            let dist_to_adj = (adj_probe_pos - biased_pos).length();
+                let pos_to_adj = (adj_probe_pos - pos).normalize();
+                let biased_pos_to_adj = (adj_probe_pos - biased_pos).normalize();
+                let dist_to_adj = (adj_probe_pos - biased_pos).length();
 
-            let weight = 1.0_f32.var();
+                let weight = 1.0_f32.var();
 
-            let trilinear = keter::max(0.001, (adj_probe_offset == 1).select(alpha, 1.0 - alpha));
-            let trilinear_weight = trilinear.reduce_prod();
-            let wrap_shading = 0.5 + 0.5 * camera_dir.dot(pos_to_adj);
-            *weight *= wrap_shading.sqr() + 0.2;
+                let trilinear =
+                    keter::max(0.001, (adj_probe_offset == 1).select(alpha, 1.0 - alpha));
+                let trilinear_weight = trilinear.reduce_prod();
+                let wrap_shading = 0.5 + 0.5 * camera_dir.dot(pos_to_adj);
+                *weight *= wrap_shading.sqr() + 0.2;
 
-            let distance =
-                self.sample_distance(adj_probe, OctahedralEncoder::encode(-biased_pos_to_adj));
+                let distance =
+                    self.sample_distance(adj_probe, OctahedralEncoder::encode(-biased_pos_to_adj));
 
-            let variance = (distance.y - distance.x.sqr()).abs();
-            if dist_to_adj > distance.x {
-                let v = dist_to_adj - distance.x;
-                let chebyshev_weight = variance / (variance + v.sqr());
-                let chebyshev_weight = chebyshev_weight.cube();
-                *weight *= chebyshev_weight;
+                let variance = (distance.y - distance.x.sqr()).abs();
+                if dist_to_adj > distance.x {
+                    let v = dist_to_adj - distance.x;
+                    let chebyshev_weight = variance / (variance + v.sqr());
+                    let chebyshev_weight = chebyshev_weight.cube();
+                    *weight *= chebyshev_weight;
+                }
+                *weight = keter::max(0.000001, weight);
+
+                let crush_threshold = 0.2f32;
+                if weight < crush_threshold {
+                    *weight *= weight.sqr() / crush_threshold.powi(2);
+                }
+
+                *weight *= trilinear_weight;
+
+                let irradiance =
+                    self.sample_irradiance(adj_probe, OctahedralEncoder::encode(normal));
+
+                *total_irradiance += irradiance.sqrt().extend(1.0) * weight;
             }
-            *weight = keter::max(0.000001, weight);
-
-            let crush_threshold = 0.2f32;
-            if weight < crush_threshold {
-                *weight *= weight.sqr() / crush_threshold.powi(2);
-            }
-
-            *weight *= trilinear_weight;
-
-            let irradiance = self.sample_irradiance(adj_probe, OctahedralEncoder::encode(normal));
-
-            *total_irradiance += irradiance.sqrt().extend(1.0) * weight;
         }
         let irradiance = total_irradiance.xyz() / total_irradiance.w;
         irradiance.sqr()
@@ -237,8 +253,11 @@ impl DdgiData {
                 let rand = pcg3df(Vec3::expr(probe_index, tick, 173));
                 let rot = random_rotation(rand);
                 let dir = rot * spherical_fibonacci(ray_index, self.rays_per_probe.expr());
-                let origin =
-                    self.probe_to_world(from_linear_expr(probe_index, self.probe_dims).cast_f32());
+                let origin = self
+                    .probe_to_world(from_linear_expr(probe_index, self.probe_dims).cast_f32())
+                    + self
+                        .probe_offsets
+                        .read(from_linear_expr(probe_index, self.probe_dims));
                 let hit = core.world.trace(origin, dir);
                 let encoded_dir = OctahedralEncoder::encode(dir);
                 let ray = if hit.miss() {
@@ -330,9 +349,10 @@ impl DdgiData {
                         .ray_data
                         .read(probe_index * self.rays_per_probe + ray_index);
                     let weight = direction.dot(OctahedralEncoder::decode(ray.dir));
+                    let ray_distance = keter::min(ray.distance, self.spacing.expr().length() * 1.5);
                     if weight > 0.0 {
                         let weight = weight.sqr();
-                        *distance += Vec3::expr(ray.distance, ray.distance.sqr(), 1.0) * weight;
+                        *distance += Vec3::expr(ray_distance, ray_distance.sqr(), 1.0) * weight;
                     }
                 }
                 let distance = distance.xy() / distance.z;
@@ -436,5 +456,74 @@ impl DdgiData {
             self.irradiance
                 .write(texture_offset + write_pos.extend(0), value);
         }
+    }
+    #[tracked]
+    pub fn adjust_probe_offsets(&self) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                let backface_count = 0_u32.var();
+                let closest_backface_dir = Vec3::splat(0.0_f32).var();
+                let closest_backface_dist = f32::INFINITY.var();
+                let closest_frontface_dir = Vec3::splat(0.0_f32).var();
+                let closest_frontface_dist = f32::INFINITY.var();
+                let furthest_frontface_dir = Vec3::splat(0.0_f32).var();
+                let furthest_frontface_dist = 0.0_f32.var();
+                for ray_index in 0..self.rays_per_probe {
+                    let ray = self
+                        .ray_data
+                        .read(dispatch_id().x * self.rays_per_probe + ray_index);
+                    let dir = OctahedralEncoder::decode(ray.dir);
+                    if ray.hit_backface {
+                        *backface_count += 1;
+                        let distance = ray.distance / 0.2;
+                        if distance < closest_backface_dist {
+                            *closest_backface_dist = distance;
+                            *closest_backface_dir = dir;
+                        }
+                    } else {
+                        if ray.distance < closest_frontface_dist {
+                            *closest_frontface_dist = ray.distance;
+                            *closest_frontface_dir = dir;
+                        }
+                        if ray.distance > furthest_frontface_dist {
+                            *furthest_frontface_dist = ray.distance;
+                            *furthest_frontface_dir = dir;
+                        }
+                    }
+                }
+
+                let offset_limit = 0.4 * self.spacing;
+
+                let current_offset = self
+                    .probe_offsets
+                    .read(from_linear_expr(dispatch_id().x, self.probe_dims));
+                let next_offset = if backface_count > self.rays_per_probe / 4 {
+                    let hit_t = intersect_aabb(
+                        current_offset,
+                        closest_backface_dir.recip(),
+                        -offset_limit.expr(),
+                        offset_limit.expr(),
+                    )
+                    .y;
+                    current_offset
+                        + closest_backface_dir * keter::min(hit_t, 2.0 * closest_backface_dist)
+                } else if furthest_frontface_dir.dot(closest_frontface_dir) < 0.5 {
+                    let furthest_direction =
+                        keter::min(furthest_frontface_dist, 0.2 * self.min_spacing())
+                            * furthest_frontface_dir;
+                    current_offset + furthest_direction
+                } else {
+                    current_offset
+                };
+                if (next_offset.abs() < offset_limit).all() {
+                    self.probe_offsets.write(
+                        from_linear_expr(dispatch_id().x, self.probe_dims),
+                        next_offset,
+                    );
+                }
+            }),
+            [self.num_probes(), 1, 1],
+        )
+        .debug("DDGI Adjust Probe Offsets")
     }
 }

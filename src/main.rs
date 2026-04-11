@@ -30,7 +30,6 @@ use std::f32::consts::PI;
 
 use chandra::algorithm::ddgi::{DdgiConfig, DdgiData};
 use chandra::algorithm::rc::{RcConfig, RcData};
-use chandra::algorithm::ris::RisData;
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
 use chandra::algorithm::{CommandList, CoreData};
@@ -108,12 +107,10 @@ fn main() {
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
     let splat = SplatData::new(&core, false, 1.0);
     // let ris = RisData::new(&core);
-    let a = glam::Vec3::new(-618.6081, 1263.9519, -2.506125);
-    let b = glam::Vec3::new(505.3295, -1370.4766, 825.4145);
-    let min = a.min(b);
-    let max = a.max(b);
+    let min = glam::Vec3::new(-700.0, -1300.0, -10.0);
+    let max = glam::Vec3::new(700.0, 1300.0, 900.0);
     let size = max - min;
-    let spacing = size / glam::Vec3::new(32.0, 32.0, 16.0);
+    let spacing = size / (glam::UVec3::from(DdgiConfig::default().probe_dims).as_vec3() - 1.0);
     let spacing = spacing.max_element();
     // Hit at 21, position
     //  Hit at 193, position [505.3295, -1370.4766, 825.4145]
@@ -497,6 +494,9 @@ fn main() {
             commands += ddgi.splat_irradiance();
             commands += ddgi.splat_distance();
             commands += ddgi.copy_borders();
+            if rt.key_pressed(KeyCode::KeyT) {
+                commands += ddgi.adjust_probe_offsets();
+            }
         }
 
         commands.push(

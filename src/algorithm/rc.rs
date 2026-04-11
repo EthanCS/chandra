@@ -278,6 +278,7 @@ impl RcData {
         let fluence = weighted_fluence / weight;
 
         // decay cache
+        // TODO: Should this be here  or somewhere else?
         if self.quality_decay < 1.0 && weight > self.min_direction_weight {
             self.cache
                 .weighted_fluence
