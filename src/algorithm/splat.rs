@@ -4,82 +4,24 @@ use yesod::shapes::intersect_sphere;
 use yesod::utils::FetchAddVector;
 
 use super::*;
-use crate::algorithm::rc::RcData;
+use crate::algorithm::rc::{AveragePosNormal, RcData};
 use crate::cache::{DirectionIndexer, DirectionIndexerComps};
 
 pub struct SplatData {
     pub radiance: Buffer<Vec4<f32>>,
     // debug only
     pub depth: Buffer<f32>,
-    // for base probes only, currently
-    pub average_pos_normal: Buffer<AveragePosNormal>,
     // settings
     pub use_planar_weights: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Value, Default)]
-#[repr(C)]
-pub struct AveragePosNormal {
-    position_count: Vec4<f32>,
-    total_normal: Vec3<f32>,
-}
-impl AveragePosNormalExpr {
-    #[tracked]
-    pub fn position(&self) -> Expr<Vec3<f32>> {
-        self.position_count.xyz() / self.position_count.w
-    }
-    #[tracked]
-    pub fn normal(&self) -> Expr<Vec3<f32>> {
-        self.total_normal / self.position_count.w
-    }
-}
-impl AveragePosNormalAtomicRef {
-    pub fn add_sample(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) {
-        self.position_count.fetch_add(pos.extend(1.0));
-        self.total_normal.fetch_add(normal);
-    }
-}
-
 impl SplatData {
-    pub fn new(core: &CoreData, rc: &RcData, use_planar_weights: bool) -> Self {
+    pub fn new(core: &CoreData, use_planar_weights: bool) -> Self {
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
-            average_pos_normal: DEVICE
-                .create_buffer_from_fn(rc.cache.base_probes as usize, |_| Default::default()),
             use_planar_weights,
         }
-    }
-    pub fn reset_apn(&self) -> NodeConfigs<'static> {
-        dispatch0_async(
-            track!(|| {
-                self.average_pos_normal
-                    .write(dispatch_id().x, AveragePosNormal::default());
-            }),
-            [self.average_pos_normal.len() as u32, 1, 1],
-        )
-        .debug("Reset Average Position and Normal")
-    }
-    // TODO: Apply to more cascades.
-    pub fn compute_average_pos_normal(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
-        dispatch0_async(
-            track!(|| {
-                set_block_size([8, 8, 1]);
-                let pixel = dispatch_id().xy();
-                let world_pos = core.get_world_pos(pixel);
-                let normal = core.read_normal(pixel);
-
-                let lod = rc.cache.estimate_lod(world_pos);
-                let probe = rc.cache.quantize(world_pos, lod, 0.expr());
-                let node = rc.cache.get(probe);
-
-                self.average_pos_normal
-                    .atomic_ref(node.index)
-                    .add_sample(world_pos, normal);
-            }),
-            core.screen_dispatch_size(),
-        )
-        .debug("Compute Average Position and Normal")
     }
     pub fn splat_radiance_raw(
         &self,
@@ -128,11 +70,7 @@ impl SplatData {
                         * blend_radius;
                     let probe_pos = rc.cache.dequantize(probe);
 
-                    let avg_pos_normal = if self.use_planar_weights && cascade == 0 {
-                        self.average_pos_normal.read(node.index)
-                    } else {
-                        AveragePosNormal::default().expr()
-                    };
+                    let avg_pos_normal = rc.average_pos_normal.read(node.index);
                     let avg_pos = avg_pos_normal.position();
                     // Perhaps unnormalized could have some value? It shows the variance.
                     let avg_normal = avg_pos_normal.normal().normalize();
@@ -239,15 +177,16 @@ impl SplatData {
                             let dest = self.radiance.atomic_ref(pixel_index);
                             dest.fetch_add(deposit_radiance);
                         } else if draw_mode == 1 || draw_mode == 2 {
+                            // TODO: What about negative interesctions?
                             let (time, intersected) =
-                                intersect_sphere(view.pos - probe_pos, ray_dir, spacing);
+                                intersect_sphere(view.pos - avg_pos, ray_dir, spacing);
                             if !intersected {
                                 continue;
                             }
                             let depth = time.x;
                             let intersect_pos = view.pos + ray_dir * depth;
 
-                            let intersect_dir = (intersect_pos - probe_pos).normalize();
+                            let intersect_dir = (intersect_pos - avg_pos).normalize();
                             let index = encoder.dir_to_linear(intersect_dir) - block_id().y * 32;
                             if index >= 32 {
                                 continue;
@@ -297,7 +236,7 @@ impl SplatData {
     }
 
     pub fn reset(&self) -> NodeConfigs<'static> {
-        dispatch0_async(
+        dispatch0(
             track!(|| {
                 self.radiance.write(dispatch_id().x, Vec4::splat(0.0_f32));
                 self.depth.write(dispatch_id().x, f32::INFINITY);

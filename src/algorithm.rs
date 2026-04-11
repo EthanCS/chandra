@@ -8,7 +8,7 @@ use keter::prelude::*;
 use yesod::camera::View;
 use yesod::device_println;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
-use yesod::utils::{dispatch0_async, dispatch1_async, memo, offset_ray};
+use yesod::utils::{dispatch0, dispatch1, memo, offset_ray};
 
 use crate::cache::{Fluence, Probe, Radiance};
 
@@ -66,17 +66,19 @@ impl CoreData {
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
-        if weight > 0.0 {
-            *radiance += self
-                .world
-                .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
-                .miss()
-                .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
-                * weight;
-        }
-        // if hit.inst == 1 {
-        //     *radiance += Vec3::expr(10.0, 0.0, 0.0);
+        // if weight > 0.0 {
+        //     *radiance += self
+        //         .world
+        //         .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
+        //         .miss()
+        //         .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
+        //         * weight;
         // }
+        if hit.inst == 1
+        /*292*/ /*162*/
+        {
+            *radiance += Vec3::expr(100.0, 0.0, 0.0);
+        }
         **radiance
     }
     #[tracked]
@@ -117,7 +119,7 @@ impl CoreData {
         pixel.y * self.screen_size().x + pixel.x
     }
     pub fn compute_gbuffer(&self) -> NodeConfigs<'static> {
-        dispatch0_async(
+        dispatch0(
             track!(|| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();
@@ -140,6 +142,7 @@ impl CoreData {
     }
 }
 
+pub mod ddgi;
 pub mod rc;
 pub mod ris;
 pub mod splat;

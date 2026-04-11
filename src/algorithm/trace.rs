@@ -52,7 +52,7 @@ impl TraceData {
         }
     }
     pub fn compute_ray_count_base(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
-        dispatch0_async(
+        dispatch0(
             track!(|| {
                 set_block_size([8, 8, 1]);
                 let world_pos = core.get_world_pos(dispatch_id().xy());
@@ -77,7 +77,7 @@ impl TraceData {
         .debug("Compute Ray Count Cascade 0")
     }
     pub fn compute_ray_count(&self, rc: &RcData, cascade: u32) -> NodeConfigs<'static> {
-        dispatch1_async(
+        dispatch1(
             track!(|cascade| {
                 let node = rc.cache.get_occupied(cascade, dispatch_id().x);
                 if node.invalid() {
@@ -97,7 +97,7 @@ impl TraceData {
     }
     pub fn compute_ray_offset(&self, rc: &RcData, cascade: u32) -> NodeConfigs<'static> {
         if cascade == rc.last_cascade() {
-            dispatch0_async(
+            dispatch0(
                 track!(|| {
                     let node = rc.cache.get_occupied(cascade.expr(), dispatch_id().x);
                     if node.invalid() {
@@ -114,7 +114,7 @@ impl TraceData {
                 [rc.cache.max_probes_at_cascade(cascade), 1, 1],
             )
         } else {
-            dispatch1_async(
+            dispatch1(
                 track!(|cascade| {
                     let node = rc.cache.get_occupied(cascade, dispatch_id().x);
                     let lower_nodes = <[LoadedNode; 8]>::var_zeroed();
@@ -142,7 +142,7 @@ impl TraceData {
         .debug(format!("Compute Ray Offset Cascade {cascade}"))
     }
     pub fn compute_rays(&self, core: &CoreData, rc: &RcData, tick: u32) -> NodeConfigs<'static> {
-        dispatch1_async(
+        dispatch1(
             track!(|tick| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();
@@ -218,21 +218,21 @@ impl TraceData {
     }
     pub fn reset(&self) -> NodeConfigs<'static> {
         (
-            dispatch0_async(
+            dispatch0(
                 track!(|| {
                     self.ray_count.write(dispatch_id().x, 0_u32);
                 }),
                 [self.ray_count.len() as u32, 1, 1],
             )
             .debug("Reset Node Ray Count"),
-            dispatch0_async(
+            dispatch0(
                 track!(|| {
                     self.base_ray_index.write(dispatch_id().x, 0_u32);
                 }),
                 [self.base_ray_index.len() as u32, 1, 1],
             )
             .debug("Reset Base Ray Offsets"),
-            dispatch0_async(
+            dispatch0(
                 track!(|| {
                     self.next_traced_ray.write(0_u32);
                     self.next_max_cascade_ray_direction.write(0_u32);

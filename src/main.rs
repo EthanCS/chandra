@@ -1,5 +1,3 @@
-#![feature(array_windows)]
-
 /*
 TODOS:
 [ ] Better hashmap impl without dropping things? Bias towards primary rays first.
@@ -28,7 +26,9 @@ BUGS:
 Split into two caches. Also measure ray divergence and use that to stochastically reduce ray count.
 */
 
-use chandra::algorithm::rc::{RcData, RcSettings};
+use std::f32::consts::PI;
+
+use chandra::algorithm::rc::{RcConfig, RcData};
 use chandra::algorithm::ris::RisData;
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
@@ -45,7 +45,7 @@ use yesod::color::{inferno, plasma};
 use yesod::direction::project_line;
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2};
-use yesod::utils::{dispatch0_async, offset_ray};
+use yesod::utils::{dispatch0, offset_ray};
 use yesod::{device_println, host};
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
@@ -54,8 +54,8 @@ const DEBUG_SPLATS: u32 = 0b1;
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
-    let app = App::new("Sunfall", [1920, 1080])
-        .scale(1)
+    let app = App::new("Chandra", [1920, 1080])
+        .scale(2)
         .agx()
         .resize()
         .init();
@@ -91,17 +91,22 @@ fn main() {
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
 
+    // let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
     let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
 
     let core = CoreData::new(world, app.size(), sunlight_dir.into());
-    let mut rc = RcData::new(RcSettings {
-        base_grid_size: 15.0,
-        base_radius: 1200.0,
+    let mut rc = RcData::new(RcConfig {
         increased_base_resolution: true,
+        use_quality_weight: false,
+        physical_bilinear_weights: false,
+        max_lifetime: 1,
+        num_cascades: 6,
+        base_radius: 1000.0,
+        base_grid_size: 4.0,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
-    let splat = SplatData::new(&core, &rc, true);
+    let splat = SplatData::new(&core, false);
     let ris = RisData::new(&core);
 
     #[cfg(feature = "denoise")]
@@ -309,7 +314,7 @@ fn main() {
             println!("Level set {draw_cascade}");
         }
         if rt.key_pressed(KeyCode::KeyK) {
-            c0_len_mode = (c0_len_mode + 1) % 3;
+            c0_len_mode = (c0_len_mode + 1) % 4;
         }
         if rt.key_pressed(KeyCode::KeyO) {
             running = !running;
@@ -325,9 +330,12 @@ fn main() {
             }
         }
 
+        // spacing between end of rays shoudl be equal to spatial spacing.
+        let inv_arc_size = rc.base_angular_resolution as f32 / PI;
         let c0_len = match c0_len_mode {
-            0 => 4.0,
-            1 => 12.0,
+            0 => inv_arc_size,
+            1 => 4.0,
+            2 => 12.0,
             2 => 9999.0,
             _ => unreachable!(),
         };
@@ -367,31 +375,36 @@ fn main() {
 
             rc.reset_table(&mut commands, false);
 
-            commands += trace.reset();
+            commands += rc.compute_average_pos_normal(&core);
 
-            commands += trace.compute_ray_count_base(&core, &rc);
-
-            for c in 1..num_cascades {
-                commands += trace.compute_ray_count(&rc, c);
+            for c in 0..num_cascades {
+                commands += rc.trace_deposit(&core, c0_len, c, 2);
             }
-            for c in (0..num_cascades).rev() {
-                commands += trace.compute_ray_offset(&rc, c);
-            }
-            commands += trace.compute_rays(&core, &rc, rt.tick);
 
-            commands += trace.compute_radiance(&core, &rc, c0_len);
+            if false {
+                commands += trace.reset();
+
+                commands += trace.compute_ray_count_base(&core, &rc);
+
+                for c in 1..num_cascades {
+                    commands += trace.compute_ray_count(&rc, c);
+                }
+                for c in (0..num_cascades).rev() {
+                    commands += trace.compute_ray_offset(&rc, c);
+                }
+                commands += trace.compute_rays(&core, &rc, rt.tick);
+
+                commands += trace.compute_radiance(&core, &rc, c0_len);
+            }
 
             for c in (0..num_cascades).rev() {
                 commands += rc.merge_cache(c);
             }
-
-            commands += splat.reset_apn();
-            commands += splat.compute_average_pos_normal(&core, &rc);
         }
 
         if camera_updated {
             commands.push(
-                dispatch0_async(
+                dispatch0(
                     track!(|| {
                         let pixel = dispatch_id().xy();
                         accum_buf.write(pixel, Vec4::splat_expr(0.0_f32));
@@ -486,6 +499,7 @@ fn main() {
                     "Compute Ray Offset",
                     "Compute Rays",
                     "Compute Radiance",
+                    "Trace and Deposit",
                     "Merge",
                     "Draw",
                 ],

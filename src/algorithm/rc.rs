@@ -1,9 +1,11 @@
+use std::ops::Deref;
 use std::sync::Arc;
 
 use keter::lang::functions::{
     sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits, warp_read_lane_at,
 };
 use parking_lot::Mutex;
+use yesod::utils::FetchAddVector;
 
 use super::*;
 use crate::algorithm::trace::Ray;
@@ -16,17 +18,43 @@ pub struct RcData {
     pub base_radiance: Buffer<Radiance>,
     pub probe_quality: Buffer<f32>,
     pub probe_lifetime: Buffer<u32>,
-    // Settings
-    pub quality_decay: f32,
-    pub min_direction_weight: f32,
-    pub max_lifetime: u32,
-    pub merge_nearest: bool,
-    pub increased_base_resolution: bool,
-    pub terminate_deposit: bool,
+    // for base probes only, currently
+    pub average_pos_normal: Buffer<AveragePosNormal>,
     // created from build_freelists
     // not really used. might be worth handling.
     pub num_probes: Vec<u32>,
     pub max_probes: Vec<u32>,
+
+    pub config: RcConfig,
+}
+impl Deref for RcData {
+    type Target = RcConfig;
+    fn deref(&self) -> &Self::Target {
+        &self.config
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Value, Default)]
+#[repr(C)]
+pub struct AveragePosNormal {
+    position_count: Vec4<f32>,
+    total_normal: Vec3<f32>,
+}
+impl AveragePosNormalExpr {
+    #[tracked]
+    pub fn position(&self) -> Expr<Vec3<f32>> {
+        self.position_count.xyz() / self.position_count.w
+    }
+    #[tracked]
+    pub fn normal(&self) -> Expr<Vec3<f32>> {
+        self.total_normal / self.position_count.w
+    }
+}
+impl AveragePosNormalAtomicRef {
+    pub fn add_sample(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) {
+        self.position_count.fetch_add(pos.extend(1.0));
+        self.total_normal.fetch_add(normal);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,46 +70,52 @@ fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct RcSettings {
+pub struct RcConfig {
     pub base_grid_size: f32,
     pub base_radius: f32,
     pub base_angular_resolution: u32,
     pub base_probes: u32,
     pub num_cascades: u32,
+    pub length_scale: f32,
+    pub use_quality_weight: bool,
     pub quality_decay: f32,
     pub min_direction_weight: f32,
     pub max_lifetime: u32,
     pub merge_nearest: bool,
     pub increased_base_resolution: bool,
     pub terminate_deposit: bool,
+    pub physical_bilinear_weights: bool,
 }
-impl Default for RcSettings {
+impl Default for RcConfig {
     fn default() -> Self {
         Self {
             base_grid_size: 10.0,
             base_radius: 1000.0,
             base_angular_resolution: 4,
-            base_probes: 1 << 18,
+            base_probes: 1 << 19,
             num_cascades: 4,
+            length_scale: 4.0,
+            use_quality_weight: true,
             quality_decay: 0.99,
             min_direction_weight: 2.0,
             max_lifetime: 10,
             merge_nearest: false,
             increased_base_resolution: false,
             terminate_deposit: true,
+            physical_bilinear_weights: false,
         }
     }
 }
 
 impl RcData {
     #[allow(clippy::new_without_default)]
-    pub fn new(settings: RcSettings) -> Self {
+    pub fn new(config: RcConfig) -> Self {
         let cache = HashCache::new(
-            settings.base_grid_size,
-            settings.base_radius,
-            settings.base_angular_resolution,
-            settings.base_probes,
-            settings.num_cascades,
+            config.base_grid_size,
+            config.base_radius,
+            config.base_angular_resolution,
+            config.base_probes,
+            config.num_cascades,
         );
         Self {
             radiance: DEVICE.create_buffer::<Radiance>(cache.total_directions() as usize / 4),
@@ -90,15 +124,12 @@ impl RcData {
                 .create_buffer_from_fn::<f32>(cache.total_probes() as usize, |_| 0.0),
             probe_lifetime: DEVICE
                 .create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0),
+            average_pos_normal: DEVICE
+                .create_buffer_from_fn(cache.total_probes() as usize, |_| Default::default()),
             num_probes: vec![0; cache.num_cascades as usize],
             max_probes: vec![0; cache.num_cascades as usize],
             cache,
-            quality_decay: settings.quality_decay,
-            min_direction_weight: settings.min_direction_weight,
-            max_lifetime: settings.max_lifetime,
-            merge_nearest: settings.merge_nearest,
-            increased_base_resolution: settings.increased_base_resolution,
-            terminate_deposit: settings.terminate_deposit,
+            config,
         }
     }
     pub fn num_cascades(&self) -> u32 {
@@ -108,7 +139,11 @@ impl RcData {
         self.cache.num_cascades - 1
     }
     pub fn get_quality_weight(&self, node: Expr<LoadedNode>) -> Expr<f32> {
-        self.probe_quality.read(node.index)
+        if self.use_quality_weight {
+            self.probe_quality.read(node.index)
+        } else {
+            1.0_f32.expr()
+        }
         // let quality = node_quality.read(node.index);
         // let encoder = cache.get_encoder(node.probe.cascade);
         // let ratio = quality / encoder.linear_size().cast_f32();
@@ -199,6 +234,10 @@ impl RcData {
         let next_offsets = Shared::<u32>::new(8);
         let next_weights = Shared::<f32>::new(8);
 
+        let physical_pos = self
+            .physical_bilinear_weights
+            .then(|| self.average_pos_normal.read(node.index).position());
+
         if !matches!(merge_level, MergeLevel::Last) {
             if thread_id().y < if self.merge_nearest { 1 } else { 8 } {
                 let i = thread_id().y;
@@ -210,6 +249,13 @@ impl RcData {
 
                 let next = self.cache.get(next_probe);
                 if next.loaded() {
+                    let weight = if self.physical_bilinear_weights {
+                        let next_physical_pos = self.average_pos_normal.read(next.index).position();
+                        (next_physical_pos - physical_pos.unwrap()).length().recip()
+                    } else {
+                        weight
+                    };
+
                     let index = warp_prefix_count_bits(true.expr());
 
                     next_offsets.write(index, next.data_offset);
@@ -272,6 +318,79 @@ impl RcData {
         }
     }
 
+    // multiplicity: u32
+    #[tracked]
+    pub fn trace_deposit(
+        &self,
+        core: &CoreData,
+        c0_len: f32,
+        cascade: u32,
+        multiplicity: u32,
+    ) -> NodeConfigs<'static> {
+        memo((), || {
+            DEVICE.create_kernel_async::<fn(f32, u32)>(&|c0_len, cascade| {
+                set_block_size([1, 32, 1]);
+
+                let node = self.cache.get_occupied(cascade, dispatch_id().x);
+                if node.invalid() {
+                    return;
+                }
+                let apn = self.average_pos_normal.read(node.index);
+                let world_pos = if true {
+                    offset_ray(apn.position(), apn.normal())
+                } else {
+                    self.cache.dequantize(node.probe)
+                };
+
+                let dir = self
+                    .cache
+                    .get_encoder(cascade)
+                    .linear_to_grid(dispatch_id().y)
+                    .cast_f32();
+
+                let fluence = Vec4::splat(0.0_f32).var();
+
+                for i in 0..multiplicity * multiplicity {
+                    let offset = Vec2::expr(i % multiplicity, i / multiplicity).cast_f32() + 0.5;
+                    let dir = dir + offset / multiplicity as f32;
+                    let dir = self.cache.get_encoder(cascade).grid_to_dir_f32(dir);
+
+                    let start_len = c0_len
+                        * self.base_grid_size
+                        * (1_u32 << node.probe.position.w).cast_f32()
+                        * self.length_scale.expr().powi(cascade.cast_i32() - 1);
+                    let end_len = if cascade == self.last_cascade() {
+                        f32::INFINITY.expr()
+                    } else {
+                        start_len * self.length_scale
+                    };
+                    // shadowing issues...
+                    let start_len = if cascade == 0 { 0.0.expr() } else { start_len };
+
+                    let hit =
+                        core.world
+                            .trace_segment(world_pos, dir, Vec2::expr(start_len, end_len));
+                    *fluence += core.get_fluence(world_pos, dir, hit);
+                }
+
+                self.cache.deposit_once(
+                    node.data_offset + dispatch_id().y,
+                    fluence / (multiplicity * multiplicity) as f32,
+                );
+            })
+        })
+        .dispatch_async(
+            [
+                self.max_probes[cascade as usize],
+                self.cache.directions_per_probe(cascade),
+                1,
+            ],
+            &c0_len,
+            &cascade,
+        )
+        .debug(format!("Trace and Deposit Cascade {cascade}"))
+    }
+
     #[tracked]
     pub fn deposit_split(&self, core: &CoreData, ray: Expr<Ray>, c0_len: Expr<f32>) {
         let world_pos = ray.start;
@@ -285,10 +404,8 @@ impl RcData {
         } else {
             let cascade = keter::max(
                 (hit.committed_ray_t
-                    / (c0_len
-                        * self.cache.base_grid_size
-                        * (1_u32 << probe.position.w).cast_f32()))
-                .log2(),
+                    / (c0_len * self.base_grid_size * (1_u32 << probe.position.w).cast_f32()))
+                .log(self.length_scale),
                 0.0,
             )
             .ceil()
@@ -338,7 +455,7 @@ impl RcData {
         const ZEROS: [u32; 1024] = [0_u32; 1024];
 
         let table = &self.cache.table;
-        let clear_entries = dispatch0_async(
+        let clear_entries = dispatch0(
             track!(|| {
                 table
                     .entries
@@ -391,7 +508,7 @@ impl RcData {
     }
 
     pub fn init_probes_base(&self, core: &CoreData) -> NodeConfigs<'static> {
-        dispatch0_async(
+        dispatch0(
             || {
                 set_block_size([8, 8, 1]);
                 let world_pos = core.get_world_pos(dispatch_id().xy());
@@ -405,7 +522,7 @@ impl RcData {
         .debug("Init Probes Cascade 0")
     }
     pub fn init_probes(&self, cascade: u32) -> NodeConfigs<'static> {
-        dispatch1_async(
+        dispatch1(
             track!(|cascade| {
                 let index = dispatch_id().x + self.cache.get_index_offset(cascade);
                 let key = self.cache.table.data_key.read(index);
@@ -438,7 +555,7 @@ impl RcData {
         .debug("Init Probes Cascade 0: Lifetime")
     }
     pub fn set_lifetime(&self, cascade: u32) -> NodeConfigs<'static> {
-        dispatch1_async(
+        dispatch1(
             track!(|cascade| {
                 let index = dispatch_id().x + self.cache.get_index_offset(cascade);
                 let key = self.cache.table.data_key.read(index);
@@ -456,5 +573,41 @@ impl RcData {
             cascade - 1,
         )
         .debug(format!("Init Probes Cascade {cascade}: Lifetime"))
+    }
+    pub fn compute_average_pos_normal(&self, core: &CoreData) -> NodeConfigs<'static> {
+        (
+            dispatch0(
+                track!(|| {
+                    self.average_pos_normal
+                        .write(dispatch_id().x, AveragePosNormal::default());
+                }),
+                [self.average_pos_normal.len() as u32, 1, 1],
+            )
+            .debug("Reset Average Position and Normal"),
+            dispatch0(
+                track!(|| {
+                    set_block_size([8, 8, 1]);
+                    let pixel = dispatch_id().xy();
+                    let cascade = dispatch_id().z;
+                    let world_pos = core.get_world_pos(pixel);
+                    let normal = core.read_normal(pixel);
+
+                    let lod = self.cache.estimate_lod(world_pos);
+                    let probe = self.cache.quantize(world_pos, lod, cascade);
+                    let node = self.cache.get(probe);
+
+                    self.average_pos_normal
+                        .atomic_ref(node.index)
+                        .add_sample(world_pos, normal);
+                }),
+                [
+                    core.screen_size().x,
+                    core.screen_size().y,
+                    self.num_cascades(),
+                ],
+            )
+            .debug("Compute Average Position and Normal"),
+        )
+            .chain()
     }
 }

@@ -68,7 +68,7 @@ impl ReserviorVar {
         }
     }
     #[tracked]
-    fn combine(&self, other: &Expr<Reservior>, rand: Expr<f32>) {
+    fn _combine(&self, other: &Expr<Reservior>, rand: Expr<f32>) {
         let sample = other.finish();
         self.update(
             sample.sample,
@@ -129,14 +129,14 @@ impl RisData {
         }
     }
     pub fn reset(&self) -> NodeConfigs<'static> {
-        dispatch0_async(
+        dispatch0(
             track!(|| { self.reserviors.write(dispatch_id().x, Reservior::default()) }),
             [self.reserviors.len() as u32, 1, 1],
         )
         .debug("Reset RIS")
     }
     pub fn update(&self, core: &CoreData, tick: u32) -> NodeConfigs<'static> {
-        dispatch1_async(
+        dispatch1(
             track!(|tick| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();

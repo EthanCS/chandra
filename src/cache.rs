@@ -368,6 +368,11 @@ impl HashCache {
         fl.fetch_add(fluence);
         self.weights.atomic_ref(offset).fetch_add(1.0);
     }
+    #[tracked]
+    pub fn deposit_once(&self, offset: Expr<u32>, fluence: Expr<Fluence>) {
+        self.weighted_fluence.write(offset, fluence);
+        self.weights.write(offset, 1.0);
+    }
 
     #[tracked]
     pub fn quantize(
