@@ -37,11 +37,19 @@ impl Default for DdgiConfig {
     }
 }
 impl DdgiConfig {
-    pub fn probe_irradiance_size(&self) -> u32 {
-        self.irradiance_resolution + 2
+    pub fn probe_irradiance_size(&self) -> Vec3<u32> {
+        Vec3::new(
+            self.irradiance_resolution + 2,
+            self.irradiance_resolution + 2,
+            1,
+        )
     }
-    pub fn probe_distance_size(&self) -> u32 {
-        self.distance_resolution + 2
+    pub fn probe_distance_size(&self) -> Vec3<u32> {
+        Vec3::new(
+            self.distance_resolution + 2,
+            self.distance_resolution + 2,
+            1,
+        )
     }
     pub fn num_probes(&self) -> u32 {
         self.probe_dims.x * self.probe_dims.y * self.probe_dims.z
@@ -63,20 +71,20 @@ fn random_rotation(rand: Expr<Vec3<f32>>) -> Expr<Mat3> {
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Value)]
-struct Ray {
-    dir: Vec2<f32>,
-    distance: f32,
-    hit_backface: bool,
-    radiance: Radiance,
+pub struct Ray {
+    pub dir: Vec2<f32>,
+    pub distance: f32,
+    pub hit_backface: bool,
+    pub radiance: Radiance,
 }
 const _: fn() = || {
     let _ = std::mem::transmute::<Ray, [f32; 8]>;
 };
 
 pub struct DdgiData {
-    ray_data: Buffer<Ray>,
-    irradiance: Tex3dHandle<Radiance>,
-    distance: Tex3dHandle<Vec2<f32>>,
+    pub ray_data: Buffer<Ray>,
+    pub irradiance: Tex3dHandle<Radiance>,
+    pub distance: Tex3dHandle<Vec2<f32>>,
     config: DdgiConfig,
 }
 impl Deref for DdgiData {
@@ -89,8 +97,8 @@ impl DdgiData {
     pub fn new(config: DdgiConfig) -> Self {
         let ray_data =
             DEVICE.create_buffer::<Ray>((config.num_probes() * config.rays_per_probe) as usize);
-        let irradiance_size = config.probe_irradiance_size();
-        let distance_size = config.probe_distance_size();
+        let irradiance_size = config.irradiance_resolution + 2;
+        let distance_size = config.distance_resolution + 2;
         let irradiance = DEVICE.create_tex3d::<Radiance>(
             PixelStorage::Float4,
             config.probe_dims.x * irradiance_size,
@@ -119,6 +127,7 @@ impl DdgiData {
                 address: SamplerAddress::Edge,
             },
         );
+        BINDLESS.update();
         Self {
             config,
             ray_data,
@@ -144,7 +153,7 @@ impl DdgiData {
         let uv = dir * self.distance_resolution as f32 + 1.0;
         self.distance
             .var()
-            .sample((offset + uv.extend(0.5)) / (self.probe_distance_size() as f32))
+            .sample((offset + uv.extend(0.5)) / self.distance.size().expr().cast_f32())
             .xy()
     }
     #[tracked]
@@ -157,7 +166,7 @@ impl DdgiData {
         let uv = dir * self.irradiance_resolution as f32 + 1.0;
         self.irradiance
             .var()
-            .sample((offset + uv.extend(0.5)) / (self.probe_irradiance_size() as f32))
+            .sample((offset + uv.extend(0.5)) / self.irradiance.size().expr().cast_f32())
             .xyz()
     }
     #[tracked]
@@ -265,7 +274,7 @@ impl DdgiData {
             [self.num_probes(), self.rays_per_probe, 1],
             tick,
         )
-        .debug("Trace DDGI Rays")
+        .debug("DDGI Trace Rays")
     }
     pub fn splat_irradiance(&self) -> NodeConfigs<'static> {
         dispatch0(
@@ -300,7 +309,7 @@ impl DdgiData {
                 self.irradiance_resolution,
             ],
         )
-        .debug("Splat DDGI Irradiance")
+        .debug("DDGI Splat Irradiance")
     }
     pub fn splat_distance(&self) -> NodeConfigs<'static> {
         dispatch0(
@@ -336,7 +345,7 @@ impl DdgiData {
                 self.distance_resolution,
             ],
         )
-        .debug("Splat DDGI Distance")
+        .debug("DDGI Splat Distance")
     }
     pub fn copy_borders(&self) -> NodeConfigs<'static> {
         (
@@ -347,7 +356,7 @@ impl DdgiData {
                 }),
                 [self.num_probes(), self.irradiance_resolution, 4],
             )
-            .debug("Copy DDGI Irradiance Borders"),
+            .debug("DDGI Copy Irradiance Borders"),
             dispatch0(
                 track!(|| {
                     set_block_size([1, 16, 4]);
@@ -355,7 +364,7 @@ impl DdgiData {
                 }),
                 [self.num_probes(), self.distance_resolution, 4],
             )
-            .debug("Copy DDGI Distance Borders"),
+            .debug("DDGI Copy Distance Borders"),
             dispatch0(
                 track!(|| {
                     set_block_size([8, 4, 1]);
@@ -363,7 +372,7 @@ impl DdgiData {
                     let probe_pos = from_linear_expr(probe_index, self.probe_dims);
                     let corner = Vec2::expr(dispatch_id().y % 2, dispatch_id().y / 2);
                     // Irradiance
-                    let write_pos = corner * (self.probe_irradiance_size() - 1);
+                    let write_pos = corner * (self.irradiance_resolution + 1);
                     let read_pos = (1 - corner) * (self.irradiance_resolution) + 1;
                     let value = self
                         .irradiance
@@ -373,7 +382,7 @@ impl DdgiData {
                         value,
                     );
                     // Distance
-                    let write_pos = corner * (self.probe_distance_size() - 1);
+                    let write_pos = corner * (self.distance_resolution + 1);
                     let read_pos = (1 - corner) * (self.distance_resolution) + 1;
                     let value = self
                         .distance
@@ -385,7 +394,7 @@ impl DdgiData {
                 }),
                 [self.num_probes(), 4, 1],
             )
-            .debug("Copy Corners"),
+            .debug("DDGI Copy Corners"),
         )
             .into_node_configs()
     }
@@ -396,31 +405,25 @@ impl DdgiData {
         } else {
             self.probe_irradiance_size()
         };
+        let res = if is_distance {
+            self.distance_resolution
+        } else {
+            self.irradiance_resolution
+        };
 
         let probe_index = dispatch_id().x;
         let probe_pos = from_linear_expr(probe_index, self.probe_dims);
         let texture_offset = probe_pos * size;
 
         let write_index = dispatch_id().y + 1;
-        let read_index = size - write_index;
+        let read_index = res + 2 - write_index;
         let side = dispatch_id().z;
         let near = side % 2 == 0;
         let write_pos = Vec2::expr(
             write_index,
-            if near {
-                0_u32.expr()
-            } else {
-                (size - 1).expr()
-            },
+            if near { 0_u32.expr() } else { (res + 1).expr() },
         );
-        let read_pos = Vec2::expr(
-            read_index,
-            if near {
-                1_u32.expr()
-            } else {
-                (size - 2).expr()
-            },
-        );
+        let read_pos = Vec2::expr(read_index, if near { 1_u32.expr() } else { res.expr() });
         let horiz = side / 2 == 0;
         let write_pos = if horiz { write_pos } else { write_pos.yx() };
         let read_pos = if horiz { read_pos } else { read_pos.yx() };

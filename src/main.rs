@@ -42,7 +42,7 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
-use yesod::color::{inferno, plasma};
+use yesod::color::{inferno, plasma, reinhard};
 use yesod::direction::project_line;
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2};
@@ -107,8 +107,22 @@ fn main() {
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
     let splat = SplatData::new(&core, false, 1.0);
-    let ris = RisData::new(&core);
-    // let ddgi = DdgiData::new(DdgiConfig::default());
+    // let ris = RisData::new(&core);
+    let a = glam::Vec3::new(-618.6081, 1263.9519, -2.506125);
+    let b = glam::Vec3::new(505.3295, -1370.4766, 825.4145);
+    let min = a.min(b);
+    let max = a.max(b);
+    let size = max - min;
+    let spacing = size / glam::Vec3::new(32.0, 32.0, 16.0);
+    let spacing = spacing.max_element();
+    // Hit at 21, position
+    //  Hit at 193, position [505.3295, -1370.4766, 825.4145]
+
+    let ddgi = DdgiData::new(DdgiConfig {
+        spacing: Vec3::splat(spacing),
+        origin: min.into(),
+        ..Default::default()
+    });
 
     #[cfg(feature = "denoise")]
     let mut denoiser = chandra::denoise::Denoiser::new(&core);
@@ -250,7 +264,7 @@ fn main() {
                 let hit = core.hit.read(pixel_index);
                 if (cursor_pixel == pixel).all() {
                     let inst = hit.inst;
-                    device_println!("Hit at {}", host!(inst));
+                    device_println!("Hit at {}, position {:?}", host!(inst), host!(world_pos));
                 }
                 pcg3df(Vec3::expr(hit.inst, 37, 926))
             } else if mode == 7 {
@@ -265,7 +279,18 @@ fn main() {
                     Vec3::splat_expr(0.0)
                 }
             } else if mode == 8 {
-                ris.output.read(pixel) + emission
+                /*let z = pixel.x / ddgi.irradiance.width()
+                    + (pixel.y / ddgi.irradiance.height())
+                        * (app.width() / ddgi.irradiance.width());
+                inferno(reinhard(
+                    ddgi.distance
+                        .read(
+                            (pixel % Vec2::expr(ddgi.irradiance.width(), ddgi.irradiance.height()))
+                                .extend(z),
+                        )
+                        .x,
+                ))*/
+                ddgi.query_irradiance(world_pos, normal, -ray_dir) + emission
             } else {
                 Vec3::expr(1.0, 0.0, 0.0)
             };
@@ -417,7 +442,7 @@ fn main() {
                 )
                 .debug("Reset Accumulation"),
             );
-            commands += ris.reset();
+            // commands += ris.reset();
         }
 
         commands += splat.reset();
@@ -468,8 +493,10 @@ fn main() {
             );
         }
         if mode == 8 && !rt.key_down(KeyCode::KeyR) {
-            commands += ris.update(&core, rt.tick);
-            commands += ris.copy_back();
+            commands += ddgi.trace_rays(&core, rt.tick);
+            commands += ddgi.splat_irradiance();
+            commands += ddgi.splat_distance();
+            commands += ddgi.copy_borders();
         }
 
         commands.push(
@@ -504,6 +531,7 @@ fn main() {
                     "Compute Rays",
                     "Compute Radiance",
                     "Trace and Deposit",
+                    "DDGI",
                     "Merge",
                     "Draw",
                 ],
