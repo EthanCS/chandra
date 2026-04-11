@@ -84,6 +84,7 @@ pub struct RcConfig {
     pub merge_nearest: bool,
     pub increased_base_resolution: bool,
     pub terminate_deposit: bool,
+    pub interpolation_exponent: f32,
 }
 impl Default for RcConfig {
     fn default() -> Self {
@@ -101,6 +102,7 @@ impl Default for RcConfig {
             merge_nearest: false,
             increased_base_resolution: false,
             terminate_deposit: true,
+            interpolation_exponent: 1.0,
         }
     }
 }
@@ -261,13 +263,15 @@ impl RcData {
                 let radiance = self.radiance.read(next_offsets.read(i) / 4 + index);
                 // necessary?
                 if radiance.is_finite().all() {
-                    *total_radiance += next_weights.read(i) * radiance.extend(1.0);
+                    *total_radiance += next_weights.read(i)
+                        * radiance.powf(self.interpolation_exponent).extend(1.0);
                 }
             }
         }
         let data_index = node.data_offset + index;
 
         let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
+        let far = far.powf(self.interpolation_exponent.recip());
 
         let weight = self.cache.weights.read(data_index);
         let weighted_fluence = self.cache.weighted_fluence.read(data_index);

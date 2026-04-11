@@ -4,7 +4,7 @@ use yesod::shapes::intersect_sphere;
 use yesod::utils::FetchAddVector;
 
 use super::*;
-use crate::algorithm::rc::{AveragePosNormal, RcData};
+use crate::algorithm::rc::RcData;
 use crate::cache::{DirectionIndexer, DirectionIndexerComps};
 
 pub struct SplatData {
@@ -13,15 +13,23 @@ pub struct SplatData {
     pub depth: Buffer<f32>,
     // settings
     pub use_planar_weights: bool,
+    pub interpolation_exponent: f32,
 }
 
 impl SplatData {
-    pub fn new(core: &CoreData, use_planar_weights: bool) -> Self {
+    pub fn new(core: &CoreData, use_planar_weights: bool, interpolation_exponent: f32) -> Self {
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
             use_planar_weights,
+            interpolation_exponent,
         }
+    }
+    #[tracked]
+    pub fn get_radiance(&self, pixel_index: Expr<u32>) -> Expr<Vec3<f32>> {
+        let radiance = self.radiance.read(pixel_index);
+        let radiance = radiance.xyz() / radiance.w;
+        radiance.powf(self.interpolation_exponent.recip())
     }
     pub fn splat_radiance_raw(
         &self,
@@ -173,7 +181,9 @@ impl SplatData {
 
                             let total_radiance = total_radiance.xyz() / total_radiance.w;
                             // let total_radiance = pcg3df(probe.position.xyz());
-                            let deposit_radiance = total_radiance.extend(1.0) * weight;
+                            let deposit_radiance =
+                                total_radiance.powf(self.interpolation_exponent).extend(1.0)
+                                    * weight;
                             let dest = self.radiance.atomic_ref(pixel_index);
                             dest.fetch_add(deposit_radiance);
                         } else if draw_mode == 1 || draw_mode == 2 {
@@ -200,7 +210,8 @@ impl SplatData {
                                 if depth == actual_depth {
                                     let radiance = radiance_data.read(index);
                                     if radiance.is_finite().all() {
-                                        let deposit_radiance = radiance.extend(1.0);
+                                        let deposit_radiance =
+                                            radiance.powf(self.interpolation_exponent).extend(1.0);
                                         let dest = self.radiance.atomic_ref(pixel_index);
                                         dest.fetch_add(deposit_radiance);
                                     }
@@ -221,7 +232,9 @@ impl SplatData {
                                             (intersect_pos - avg_pos).length() / (2.0 * spacing),
                                         );
                                         if radiance.is_finite().all() {
-                                            let deposit_radiance = radiance.extend(1.0);
+                                            let deposit_radiance = radiance
+                                                .powf(self.interpolation_exponent)
+                                                .extend(1.0);
                                             let dest = self.radiance.atomic_ref(pixel_index);
                                             dest.fetch_add(deposit_radiance);
                                         }

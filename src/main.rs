@@ -28,6 +28,7 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 
 use std::f32::consts::PI;
 
+use chandra::algorithm::ddgi::{DdgiConfig, DdgiData};
 use chandra::algorithm::rc::{RcConfig, RcData};
 use chandra::algorithm::ris::RisData;
 use chandra::algorithm::splat::SplatData;
@@ -98,15 +99,16 @@ fn main() {
     let mut rc = RcData::new(RcConfig {
         increased_base_resolution: true,
         use_quality_weight: false,
-        max_lifetime: 1,
-        num_cascades: 6,
+        // max_lifetime: 1,
+        // num_cascades: 6,
         // base_radius: 1000.0,
         // base_grid_size: 4.0,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
-    let splat = SplatData::new(&core, false);
+    let splat = SplatData::new(&core, false, 1.0);
     let ris = RisData::new(&core);
+    // let ddgi = DdgiData::new(DdgiConfig::default());
 
     #[cfg(feature = "denoise")]
     let mut denoiser = chandra::denoise::Denoiser::new(&core);
@@ -155,8 +157,7 @@ fn main() {
             let emission = core.get_emission(world_pos, core.hit.read(pixel_index));
 
             let color = if mode == 0 {
-                let r = splat.radiance.read(pixel_index);
-                let result = r.xyz() / keter::max(r.w, f32::EPSILON);
+                let result = splat.get_radiance(pixel_index);
 
                 if flags & DEBUG_SPLATS == 0 {
                     result + emission
