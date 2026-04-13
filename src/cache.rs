@@ -342,7 +342,7 @@ impl HashCache {
     }
     #[tracked]
     pub fn estimate_lod(&self, pos: Expr<Vec3<f32>>) -> Expr<u32> {
-        let radius = (pos - self.projection().view_pos).length();
+        let radius = (pos - self.projection().view_pos).abs().reduce_max();
         keter::max((radius / self.base_radius).log2(), 0.0)
             .ceil()
             .cast_u32()

@@ -11,6 +11,46 @@ use super::*;
 use crate::algorithm::trace::Ray;
 use crate::cache::{Fluence, HashCache, LoadedNode, Radiance};
 
+#[derive(Debug, Clone, Copy)]
+pub struct RcConfig {
+    pub base_grid_size: f32,
+    pub base_radius: f32,
+    pub base_angular_resolution: u32,
+    pub base_probes: u32,
+    pub num_cascades: u32,
+    pub length_scale: f32,
+    pub use_quality_weight: bool,
+    pub quality_decay: f32,
+    pub min_direction_weight: f32,
+    pub max_lifetime: u32,
+    pub merge_nearest: bool,
+    pub increased_base_resolution: bool,
+    pub terminate_deposit: bool,
+    pub interpolation_exponent: f32,
+    pub cm1_len: f32,
+}
+impl Default for RcConfig {
+    fn default() -> Self {
+        Self {
+            base_grid_size: 10.0,
+            base_radius: 1000.0,
+            base_angular_resolution: 4,
+            base_probes: 1 << 19,
+            num_cascades: 4,
+            length_scale: 4.0,
+            use_quality_weight: true,
+            quality_decay: 0.99,
+            min_direction_weight: 2.0,
+            max_lifetime: 10,
+            merge_nearest: false,
+            increased_base_resolution: false,
+            terminate_deposit: true,
+            interpolation_exponent: 1.0,
+            cm1_len: 0.0,
+        }
+    }
+}
+
 pub struct RcData {
     pub cache: HashCache,
     pub radiance: Buffer<Radiance>,
@@ -67,44 +107,6 @@ pub enum MergeLevel {
 #[tracked]
 fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
     fluence.xyz() + radiance * fluence.w
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct RcConfig {
-    pub base_grid_size: f32,
-    pub base_radius: f32,
-    pub base_angular_resolution: u32,
-    pub base_probes: u32,
-    pub num_cascades: u32,
-    pub length_scale: f32,
-    pub use_quality_weight: bool,
-    pub quality_decay: f32,
-    pub min_direction_weight: f32,
-    pub max_lifetime: u32,
-    pub merge_nearest: bool,
-    pub increased_base_resolution: bool,
-    pub terminate_deposit: bool,
-    pub interpolation_exponent: f32,
-}
-impl Default for RcConfig {
-    fn default() -> Self {
-        Self {
-            base_grid_size: 10.0,
-            base_radius: 1000.0,
-            base_angular_resolution: 4,
-            base_probes: 1 << 19,
-            num_cascades: 4,
-            length_scale: 4.0,
-            use_quality_weight: true,
-            quality_decay: 0.99,
-            min_direction_weight: 2.0,
-            max_lifetime: 10,
-            merge_nearest: false,
-            increased_base_resolution: false,
-            terminate_deposit: true,
-            interpolation_exponent: 1.0,
-        }
-    }
 }
 
 impl RcData {

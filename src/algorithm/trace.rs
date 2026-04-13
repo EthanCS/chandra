@@ -177,7 +177,14 @@ impl TraceData {
                         dir: bounce_ray,
                         start,
                         base_probe: probe,
-                        hit: core.world.trace(start, bounce_ray),
+                        hit: core.world.trace_segment(
+                            start,
+                            bounce_ray,
+                            Vec2::expr(
+                                rc.cm1_len * rc.cache.base_grid_size * (1_u32 << lod).cast_f32(),
+                                f32::INFINITY,
+                            ),
+                        ),
                     });
                     self.traced_rays.write(ray_index, ray);
 

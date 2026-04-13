@@ -492,7 +492,7 @@ impl DdgiData {
                     }
                 }
 
-                let offset_limit = 0.4 * self.spacing;
+                let offset_limit = 0.5 * self.spacing;
 
                 let current_offset = self
                     .probe_offsets

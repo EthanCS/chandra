@@ -66,18 +66,18 @@ impl CoreData {
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
-        if weight > 0.0 {
+        /*if weight > 0.0 {
             *radiance += self
                 .world
                 .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
                 .miss()
                 .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
                 * weight;
-        }
-        if hit.inst == 1
+        }*/
+        if hit.inst == 292
         /*292*/ /*162*/
         {
-            *radiance += Vec3::expr(10.0, 0.0, 0.0);
+            *radiance += Vec3::expr(100.0, 100.0, 100.0);
         }
         **radiance
     }

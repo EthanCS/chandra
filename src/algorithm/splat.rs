@@ -11,6 +11,7 @@ pub struct SplatData {
     pub radiance: Buffer<Vec4<f32>>,
     // debug only
     pub depth: Buffer<f32>,
+    pub cm1_shadow_mask: Buffer<u32>,
     // settings
     pub use_planar_weights: bool,
     pub interpolation_exponent: f32,
@@ -21,6 +22,7 @@ impl SplatData {
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
+            cm1_shadow_mask: DEVICE.create_buffer::<u32>(core.num_pixels() as usize),
             use_planar_weights,
             interpolation_exponent,
         }
@@ -30,6 +32,66 @@ impl SplatData {
         let radiance = self.radiance.read(pixel_index);
         let radiance = radiance.xyz() / radiance.w;
         radiance.powf(self.interpolation_exponent.recip())
+    }
+    pub fn trace_cm1(
+        &self,
+        core: &CoreData,
+        rc: &RcData,
+        num_samples: u32,
+    ) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                set_block_size([8, 8, 1]);
+                let pixel = dispatch_id().xy();
+
+                let view = core.view.read();
+                let world_pos = core.get_world_pos(pixel);
+                let lod = rc.cache.estimate_lod(world_pos);
+
+                let c_1_len = rc.cm1_len * rc.cache.base_grid_size * (1_u32 << lod).cast_f32();
+
+                let shadow_mask = 0u32.var();
+                // TODO: Adjust for less base resolution.
+                let encoder = rc.cache.get_encoder(0.expr());
+
+                for i in 0_u32.expr()..encoder.linear_size() {
+                    // let offset = pcg3df(pixel.extend(i + tick * 32)).xy();
+                    let c_1_dir = encoder.linear_to_dir(i);
+                    let c_1_dir = c_1_dir * c_1_len;
+                    // raymarch in screenspace
+                    for j in 0_u32..num_samples {
+                        let sample_pos =
+                            world_pos + c_1_dir * ((j.cast_f32() + 0.5) / num_samples as f32);
+                        // does this add the 0.5 bias anyways?
+                        let screen_pos = view.project(sample_pos);
+                        let sample_depth = (sample_pos - view.pos).length();
+                        let object_depth =
+                            core.depth.var().sample((screen_pos) / view.screen_size).x;
+                        if object_depth != 0.0
+                            && object_depth < sample_depth
+                            && !(sample_depth > object_depth + c_1_len)
+                        {
+                            *shadow_mask |= 1 << i;
+                            break;
+                        }
+                    }
+                }
+                self.cm1_shadow_mask
+                    .write(core.pixel_to_linear(pixel), shadow_mask);
+            }),
+            core.screen_dispatch_size(),
+        )
+        .debug("Trace Cascade -1")
+    }
+    #[tracked]
+    fn get_encoder(&self, rc: &RcData, cascade: Expr<u32>) -> Expr<DirectionIndexer> {
+        DirectionIndexer::from_comps_expr(DirectionIndexerComps {
+            resolution: if rc.increased_base_resolution && cascade == 0 {
+                rc.cache.base_angular_resolution.expr()
+            } else {
+                (rc.cache.base_angular_resolution / 2) * (1 << cascade)
+            },
+        })
     }
     pub fn splat_radiance_raw(
         &self,
@@ -48,13 +110,7 @@ impl SplatData {
                     let view = core.view.read();
 
                     let probe = node.probe;
-                    let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
-                        resolution: if rc.increased_base_resolution && cascade == 0 {
-                            rc.cache.base_angular_resolution.expr()
-                        } else {
-                            (rc.cache.base_angular_resolution / 2) * (1 << cascade)
-                        },
-                    });
+                    let encoder = self.get_encoder(rc, cascade);
                     assert_eq!(rc.cache.base_angular_resolution, 4);
 
                     // let quality = node_quality.read(node.index);
@@ -155,18 +211,22 @@ impl SplatData {
                                 continue;
                             }
 
+                            let cm1_shadow_mask = if rc.cm1_len > 0.0 && cascade == 0 {
+                                self.cm1_shadow_mask.read(pixel_index)
+                            } else {
+                                0u32.expr()
+                            };
+
                             let total_radiance = Vec4::splat(0.0_f32).var();
-                            for j in 0_u32.expr()
-                                ..if cascade == 0 && !rc.increased_base_resolution {
-                                    8_u32.expr()
-                                } else {
-                                    32_u32.expr()
-                                }
-                            {
+                            for j in 0_u32.expr()..encoder.linear_size() {
                                 let dir = encoder.linear_to_dir(j + block_id().y * 32);
                                 let weight = dir.dot(normal);
                                 if weight > 0.0 {
-                                    let radiance = radiance_data.read(j);
+                                    let radiance = if cm1_shadow_mask & (1 << j) == 0 {
+                                        radiance_data.read(j)
+                                    } else {
+                                        Vec3::splat_expr(0f32)
+                                    };
                                     if radiance.is_finite().all() {
                                         *total_radiance += weight * radiance.extend(1.0);
                                     } else {

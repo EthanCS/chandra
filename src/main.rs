@@ -98,10 +98,15 @@ fn main() {
     let mut rc = RcData::new(RcConfig {
         increased_base_resolution: true,
         use_quality_weight: false,
-        // max_lifetime: 1,
-        // num_cascades: 6,
+        max_lifetime: 1,
+        num_cascades: 6,
         // base_radius: 1000.0,
         // base_grid_size: 4.0,
+        base_grid_size: 10.0,
+        base_radius: 999999.0, // 250.0,
+        cm1_len: 1.0,
+        // length_scale: 2.0,
+        terminate_deposit: false,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
@@ -337,7 +342,7 @@ fn main() {
             println!("Level set {draw_cascade}");
         }
         if rt.key_pressed(KeyCode::KeyK) {
-            c0_len_mode = (c0_len_mode + 1) % 4;
+            c0_len_mode = (c0_len_mode + 1) % 5;
         }
         if rt.key_pressed(KeyCode::KeyO) {
             running = !running;
@@ -363,6 +368,7 @@ fn main() {
             1 => 4.0,
             2 => 12.0,
             3 => 9999.0,
+            4 => 0.1,
             _ => unreachable!(),
         };
 
@@ -444,6 +450,8 @@ fn main() {
 
         commands += splat.reset();
 
+        commands += splat.trace_cm1(&core, &rc, 4);
+
         if mode == 0 {
             let blend_radius = match splat_mode {
                 0 => 1.0,
@@ -523,6 +531,7 @@ fn main() {
         if profiler.time() > 1000.0 {
             profiler.print(
                 &[
+                    "Trace Cascade -1",
                     "Compute G-Buffer",
                     "Init Probes",
                     "Build Freelists",
