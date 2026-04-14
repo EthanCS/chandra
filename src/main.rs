@@ -41,7 +41,7 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
-use yesod::color::{inferno, plasma, reinhard};
+use yesod::color::inferno;
 use yesod::direction::project_line;
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2};
@@ -104,7 +104,7 @@ fn main() {
         // base_grid_size: 4.0,
         // base_grid_size: 5.0,
         // base_angular_resolution: 2,
-        base_radius: 999999.0, // 250.0,
+        // base_radius: 999999.0, // 250.0,
         cm1_len: 1.0,
         // length_scale: 2.0,
         terminate_deposit: false,

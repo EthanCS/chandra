@@ -43,63 +43,6 @@ fn decode_position(pos: Expr<Key>) -> Expr<Vec4<u32>> {
     result
 }
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Value)]
-pub struct RadianceElement {
-    // actually pretty likely that the transmittance is 1 / the fluence is empty.
-    pub weighted_fluence: Vec4<f32>, // xyz: unnormalized fluence, w: transmittance (multiplied by weight)
-    pub weight: f32,                 // weight
-}
-impl Default for RadianceElement {
-    fn default() -> Self {
-        Self {
-            weighted_fluence: Vec4::splat(0.0),
-            weight: 0.0,
-        }
-    }
-}
-impl RadianceElementExpr {
-    // pub fn radiance(&self) -> Expr<Radiance> {
-    //     self.radiance_weight.xyz()
-    // }
-    #[tracked]
-    pub fn fluence(&self) -> Expr<Fluence> {
-        self.weighted_fluence / self.weight
-    }
-
-    #[tracked]
-    pub fn merge(&self, far: Expr<Radiance>) -> Expr<Vec4<f32>> {
-        // (self.weighted_fluence.xyz() + self.weighted_fluence.w * far).extend(self.weight)
-        if self.weight < 0.0001 {
-            Vec4::splat_expr(0.0)
-        } else {
-            let fluence = self.fluence();
-            (fluence.xyz() + fluence.w * far).extend(1.0)
-        }
-    }
-}
-impl RadianceElementAtomicRef {
-    #[tracked]
-    pub fn deposit(&self, fluence: Expr<Fluence>) {
-        self.weighted_fluence.fetch_add(fluence);
-        self.weight.fetch_add(1.0);
-    }
-}
-impl RadianceElementVar {
-    #[tracked]
-    pub fn deposit(&self, fluence: Expr<Fluence>) {
-        *self.weighted_fluence += fluence;
-        *self.weight += 1.0;
-    }
-    #[tracked]
-    pub fn decay(&self, factor: Expr<f32>, min_count: Expr<f32>) {
-        if self.weight > min_count {
-            *self.weighted_fluence *= factor;
-            *self.weight *= factor;
-        }
-    }
-}
-
 pub type Encoder = SphericalEncoder;
 pub const INDEX_SCALING: Vec2<u32> = Vec2::new(2, 1);
 
@@ -356,20 +299,6 @@ impl HashCache {
             .ceil()
             .cast_u32()
     }
-    /*
-    #[tracked]
-    pub fn read_element(&self, node: Expr<LoadedNode>, index: Expr<u32>) -> Expr<RadianceElement> {
-        self.data.read(node.data_offset + index)
-    }
-    #[tracked]
-    pub fn atomic_element(
-        &self,
-        node: Expr<LoadedNode>,
-        index: Expr<u32>,
-    ) -> AtomicRef<RadianceElement> {
-        self.data.atomic_ref(node.data_offset + index)
-    }
-     */
 
     #[tracked]
     pub fn deposit(&self, offset: Expr<u32>, fluence: Expr<Fluence>) {
