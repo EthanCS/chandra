@@ -8,7 +8,7 @@ use parking_lot::Mutex;
 use yesod::utils::FetchAddVector;
 
 use super::*;
-use crate::cache::{Fluence, HashCache, LoadedNode, Radiance};
+use crate::cache::{Fluence, HashCache, LoadedNode, ProbeComps, Radiance};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RcConfig {
@@ -61,7 +61,7 @@ pub struct RcData {
     pub probe_quality: Buffer<f32>,
     pub probe_lifetime: Buffer<u32>,
     // for base probes only, currently
-    pub average_pos_normal: Buffer<AveragePosNormal>,
+    pub average_position: Buffer<AveragePosition>,
     // created from build_freelists
     // not really used. might be worth handling.
     pub num_probes: Vec<u32>,
@@ -78,24 +78,18 @@ impl Deref for RcData {
 
 #[derive(Debug, Clone, Copy, PartialEq, Value, Default)]
 #[repr(C)]
-pub struct AveragePosNormal {
+pub struct AveragePosition {
     position_count: Vec4<f32>,
-    total_normal: Vec3<f32>,
 }
-impl AveragePosNormalExpr {
+impl AveragePositionExpr {
     #[tracked]
     pub fn position(&self) -> Expr<Vec3<f32>> {
         self.position_count.xyz() / self.position_count.w
     }
-    #[tracked]
-    pub fn normal(&self) -> Expr<Vec3<f32>> {
-        self.total_normal / self.position_count.w
-    }
 }
-impl AveragePosNormalAtomicRef {
-    pub fn add_sample(&self, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) {
+impl AveragePositionAtomicRef {
+    pub fn add_sample(&self, pos: Expr<Vec3<f32>>) {
         self.position_count.fetch_add(pos.extend(1.0));
-        self.total_normal.fetch_add(normal);
     }
 }
 
@@ -121,7 +115,7 @@ const _: fn() = || {
  */
 
 #[tracked]
-fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
+pub fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
     fluence.xyz() + radiance * fluence.w
 }
 
@@ -142,7 +136,7 @@ impl RcData {
                 .create_buffer_from_fn::<f32>(cache.total_probes() as usize, |_| 0.0),
             probe_lifetime: DEVICE
                 .create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0),
-            average_pos_normal: DEVICE
+            average_position: DEVICE
                 .create_buffer_from_fn(cache.total_probes() as usize, |_| Default::default()),
             num_probes: vec![0; cache.num_cascades as usize],
             max_probes: vec![0; cache.num_cascades as usize],
@@ -255,7 +249,7 @@ impl RcData {
                 let (next_probe, weight) = if self.merge_nearest {
                     (probe.next_nearest(), 1.0.expr())
                 } else {
-                    probe.next_bilinear(i)
+                    probe.next_trilinear(i)
                 };
 
                 let next = self.cache.get(next_probe);
@@ -344,8 +338,8 @@ impl RcData {
                     return;
                 }
                 let world_pos = if use_average_position {
-                    let apn = self.average_pos_normal.read(node.index);
-                    offset_ray(apn.position(), apn.normal())
+                    // need c-1 to prevent intersection on flat surfaces
+                    self.average_position.read(node.index).position()
                 } else {
                     self.cache.dequantize(node.probe)
                 };
@@ -403,6 +397,7 @@ impl RcData {
     }
 
     // TODO: add parent indexes and then turn this back into loop form. Also need to get rid of atomics.
+    // Check why level > 4 results in major perf loss: perhaps overlaps? draw weights on circles and check that.
     #[tracked]
     pub fn deposit_split(&self, rays: BufferView<Ray>) -> NodeConfigs<'static> {
         dispatch0(
@@ -565,14 +560,14 @@ impl RcData {
         )
         .debug(format!("Init Probes Cascade {cascade}: Lifetime"))
     }
-    pub fn compute_average_pos_normal(&self, core: &CoreData) -> NodeConfigs<'static> {
+    pub fn compute_average_position(&self, core: &CoreData) -> NodeConfigs<'static> {
         (
             dispatch0(
                 track!(|| {
-                    self.average_pos_normal
-                        .write(dispatch_id().x, AveragePosNormal::default());
+                    self.average_position
+                        .write(dispatch_id().x, AveragePosition::default());
                 }),
-                [self.average_pos_normal.len() as u32, 1, 1],
+                [self.average_position.len() as u32, 1, 1],
             )
             .debug("Reset Average Position and Normal"),
             dispatch0(
@@ -581,15 +576,14 @@ impl RcData {
                     let pixel = dispatch_id().xy();
                     let cascade = dispatch_id().z;
                     let world_pos = core.get_world_pos(pixel);
-                    let normal = core.read_normal(pixel);
 
                     let lod = self.cache.estimate_lod(world_pos);
                     let probe = self.cache.quantize(world_pos, lod, cascade);
                     let node = self.cache.get(probe);
 
-                    self.average_pos_normal
+                    self.average_position
                         .atomic_ref(node.index)
-                        .add_sample(world_pos, normal);
+                        .add_sample(world_pos);
                 }),
                 [
                     core.screen_size().x,
@@ -600,5 +594,42 @@ impl RcData {
             .debug("Compute Average Position and Normal"),
         )
             .chain()
+    }
+
+    #[tracked]
+    pub fn sample(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        cascade: Expr<u32>,
+        dir: Expr<Vec3<f32>>,
+    ) -> Expr<Radiance> {
+        let lod = self.cache.estimate_lod(pos);
+        let interp_probes = self.cache.quantize_trilinear(pos, lod, cascade); // do nearest for simplicity
+
+        let encoder = self.cache.get_encoder(cascade - 1);
+        let interp_dirs = encoder.dir_to_grid_bilinear(dir);
+
+        let radiance_weight = Vec4::splat(0.0_f32).var();
+
+        for j in 0u32..8 {
+            let (probe, probe_weight) = interp_probes.get(j);
+            let probe = Probe::from_comps_expr(ProbeComps {
+                position: probe.extend(lod),
+                cascade,
+            });
+            let node = self.cache.get(probe);
+            if !node.invalid() {
+                // TODO: There are a lot of radiance values which are still NAN'y.
+                for i in 0u32..4 {
+                    let (dir, weight) = interp_dirs.get(i);
+                    let offset = node.data_offset / 4 + encoder.grid_to_linear(dir);
+                    let radiance = self.radiance.read(offset);
+                    if radiance.is_finite().all() {
+                        *radiance_weight += radiance.extend(1.0) * weight * probe_weight;
+                    }
+                }
+            }
+        }
+        radiance_weight.xyz() / radiance_weight.w
     }
 }

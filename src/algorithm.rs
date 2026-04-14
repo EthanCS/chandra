@@ -89,7 +89,7 @@ impl CoreData {
         hit: Expr<Hit>,
     ) -> Expr<Radiance> {
         if hit.miss() {
-            Vec3::splat_expr(0.1_f32)
+            Vec3::splat_expr(0.0_f32)
         } else {
             self.get_emission(start + dir * hit.committed_ray_t, hit)
         }

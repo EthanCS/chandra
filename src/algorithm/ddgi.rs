@@ -191,7 +191,7 @@ impl DdgiData {
         let probe_pos = self.world_to_probe(biased_pos);
         let is_oob = (probe_pos <= 0.0).any()
             || (probe_pos >= self.probe_dims.expr().cast_f32() - 1.001).any();
-        let base_probe = probe_pos.floor().cast_u32();
+        let base_probe = probe_pos.cast_u32();
         let alpha = probe_pos.fract();
 
         let total_irradiance = Vec4::splat(0.0f32).var();

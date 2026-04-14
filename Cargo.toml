@@ -6,7 +6,6 @@ default-run = "chandra"
 
 [features]
 default = []
-small-key = []
 # set
 # $env.OIDN_DIR = "/home/keter/Documents/oidn-2.3.3.x86_64.linux/"
 # $env.LD_LIBRARY_PATH = "/home/keter/Documents/oidn-2.3.3.x86_64.linux/lib/"

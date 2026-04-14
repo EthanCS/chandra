@@ -1,5 +1,6 @@
 use keter::lang::functions::{block_id, sync_block, thread_id};
 use yesod::color::inferno;
+use yesod::host;
 use yesod::shapes::intersect_sphere;
 use yesod::utils::FetchAddVector;
 
@@ -13,24 +14,22 @@ pub struct SplatData {
     pub depth: Buffer<f32>,
     pub cm1_shadow_mask: Buffer<u32>,
     // settings
-    pub use_planar_weights: bool,
     pub interpolation_exponent: f32,
 }
 
 impl SplatData {
-    pub fn new(core: &CoreData, use_planar_weights: bool, interpolation_exponent: f32) -> Self {
+    pub fn new(core: &CoreData, interpolation_exponent: f32) -> Self {
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
             cm1_shadow_mask: DEVICE.create_buffer::<u32>(core.num_pixels() as usize),
-            use_planar_weights,
             interpolation_exponent,
         }
     }
     #[tracked]
     pub fn get_radiance(&self, pixel_index: Expr<u32>) -> Expr<Vec3<f32>> {
         let radiance = self.radiance.read(pixel_index);
-        let radiance = radiance.xyz() / radiance.w;
+        let radiance = radiance.xyz() / keter::max(radiance.w, 0.00001);
         radiance.powf(self.interpolation_exponent.recip())
     }
     pub fn trace_cm1(
@@ -98,7 +97,7 @@ impl SplatData {
         rc: &RcData,
     ) -> &'static Kernel<fn(f32, u32, u32)> {
         memo(
-            (self.use_planar_weights, rc.increased_base_resolution),
+            rc.increased_base_resolution,
             track!(|| {
                 DEVICE.create_kernel::<fn(f32, u32, u32)>(&|blend_radius, cascade, draw_mode| {
                     set_block_size([1, 32, 1]);
@@ -115,6 +114,7 @@ impl SplatData {
                     // let quality = node_quality.read(node.index);
 
                     // 8 if !INCREASED_BASE_RESOLUTION
+
                     let radiance_data = Shared::<Vec3<f32>>::new(32);
                     if rc.increased_base_resolution && cascade == 0 {
                         let v = rc.base_radiance.read(node.data_offset + dispatch_id().y);
@@ -129,12 +129,6 @@ impl SplatData {
                     let screen_max = Vec2::splat(0.0_f32).var();
 
                     let spacing = rc.cache.probe_spacing(probe) * blend_radius;
-                    let probe_pos = rc.cache.dequantize(probe);
-
-                    let avg_pos_normal = rc.average_pos_normal.read(node.index);
-                    let avg_pos = avg_pos_normal.position();
-                    // Perhaps unnormalized could have some value? It shows the variance.
-                    let avg_normal = avg_pos_normal.normal().normalize();
 
                     /*if dispatch_id().y < 8 {
                         let i = dispatch_id().y;
@@ -153,9 +147,15 @@ impl SplatData {
                         screen_max = warp_active_max(screen_pos);
                     }*/
 
+                    let pos = if draw_mode == 0 {
+                        rc.cache.dequantize(probe)
+                    } else {
+                        rc.average_position.read(node.index).position()
+                    };
+
                     // TODO: May go schizo if the probe is behind the camera...
                     for i in 0..8 {
-                        let coord = probe_pos
+                        let coord = pos
                             + spacing
                                 * (Vec3::<bool>::expr((i & 1) != 0, (i & 2) != 0, (i & 4) != 0)
                                     .select(Vec3::splat_expr(-1.0_f32), Vec3::splat_expr(1.0_f32)));
@@ -167,7 +167,7 @@ impl SplatData {
                         *screen_min = keter::min(**screen_min, screen_pos);
                         *screen_max = keter::max(**screen_max, screen_pos);
                     }
-                    let screen_min = keter::max(0.0_f32, **screen_min).floor().cast_u32();
+                    let screen_min = keter::max(0.0_f32, **screen_min).cast_u32();
                     let screen_max = keter::min(core.screen_size().expr().cast_f32(), **screen_max)
                         .ceil()
                         .cast_u32();
@@ -190,19 +190,9 @@ impl SplatData {
                             let world_pos = view.pos + ray_dir * depth;
                             let normal = core.read_normal(pixel);
                             let trilinear_weight =
-                                keter::max(1.0 - (world_pos - probe_pos).abs() / spacing, 0.0)
+                                keter::max(1.0 - (world_pos - pos).abs() / spacing, 0.0)
                                     .reduce_prod();
-                            let planar_weight = if self.use_planar_weights && cascade == 0 {
-                                keter::max(
-                                    0.4 - (avg_pos - world_pos).dot(avg_normal).abs() / spacing,
-                                    0.0,
-                                )
-                            } else {
-                                1.0.expr()
-                            };
-
-                            let weight =
-                                trilinear_weight * planar_weight * rc.get_quality_weight(node);
+                            let weight = trilinear_weight * rc.get_quality_weight(node);
                             // * (1 << (2 * probe.position.w)).cast_f32().recip()
                             if weight == 0.0 {
                                 continue;
@@ -246,14 +236,14 @@ impl SplatData {
                         } else if draw_mode == 1 || draw_mode == 2 {
                             // TODO: What about negative interesctions?
                             let (time, intersected) =
-                                intersect_sphere(view.pos - avg_pos, ray_dir, spacing);
+                                intersect_sphere(view.pos - pos, ray_dir, spacing);
                             if !intersected {
                                 continue;
                             }
                             let depth = time.x;
                             let intersect_pos = view.pos + ray_dir * depth;
 
-                            let intersect_dir = (intersect_pos - avg_pos).normalize();
+                            let intersect_dir = (intersect_pos - pos).normalize();
                             let index = encoder.dir_to_linear(intersect_dir) - block_id().y * 32;
                             if index >= 32 {
                                 continue;
@@ -265,37 +255,20 @@ impl SplatData {
                             } else if draw_mode == 1 {
                                 let actual_depth = self.depth.read(pixel_index);
                                 if depth == actual_depth {
-                                    let radiance = radiance_data.read(index);
-                                    if radiance.is_finite().all() {
-                                        let deposit_radiance =
-                                            radiance.powf(self.interpolation_exponent).extend(1.0);
-                                        let dest = self.radiance.atomic_ref(pixel_index);
-                                        dest.fetch_add(deposit_radiance);
-                                    }
-                                }
-                            }
-                        } else if draw_mode == 3 || draw_mode == 4 {
-                            let depth =
-                                (avg_pos - view.pos).dot(avg_normal) / ray_dir.dot(avg_normal);
-                            let intersect_pos = view.pos + ray_dir * depth;
-                            if depth > 0.0 && ((intersect_pos - probe_pos).abs() < spacing).all() {
-                                if draw_mode == 4 {
-                                    // depth prepass
-                                    self.depth.atomic_ref(pixel_index).fetch_min(depth);
-                                } else if draw_mode == 3 {
-                                    let actual_depth = self.depth.read(pixel_index);
-                                    if depth == actual_depth {
-                                        let radiance = inferno(
-                                            (intersect_pos - avg_pos).length() / (2.0 * spacing),
-                                        );
-                                        if radiance.is_finite().all() {
-                                            let deposit_radiance = radiance
-                                                .powf(self.interpolation_exponent)
-                                                .extend(1.0);
-                                            let dest = self.radiance.atomic_ref(pixel_index);
-                                            dest.fetch_add(deposit_radiance);
-                                        }
-                                    }
+                                    // let radiance = radiance_data.read(index);
+                                    let weight = rc.cache.weights.read(
+                                        node.data_offset
+                                            + rc.cache
+                                                .get_encoder(cascade)
+                                                .dir_to_linear(intersect_dir),
+                                    );
+                                    self.radiance
+                                        .write(pixel_index, inferno(weight / 10.0).extend(1.0));
+                                    // if radiance.is_finite().all() {
+                                    //     let deposit_radiance =
+                                    //         radiance.powf(self.interpolation_exponent).extend(1.0);
+                                    //     self.radiance.write(pixel_index, deposit_radiance);
+                                    // }
                                 }
                             }
                         }

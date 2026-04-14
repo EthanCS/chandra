@@ -4,7 +4,7 @@ use keter::prelude::*;
 
 #[tracked]
 pub fn index_to_corner(i: Expr<u32>) -> Expr<Vec3<u32>> {
-    Vec3::expr(i, i >> 1, i >> 2) & 1
+    Vec3::expr(i & 1, (i >> 1) & 1, i >> 2)
 }
 
 #[tracked]

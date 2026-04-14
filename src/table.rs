@@ -3,19 +3,10 @@ use keter::prelude::Value as _; // Shadowed for some reason
 use keter::prelude::*;
 use yesod::device_println;
 
-#[cfg(not(feature = "small-key"))]
 pub type Key = u64;
-#[cfg(feature = "small-key")]
-pub type Key = u32;
 
 pub const INVALID_KEY: Key = Key::MAX;
 
-#[cfg(feature = "small-key")]
-#[tracked]
-fn hash(key: Expr<Key>) -> Expr<u32> {
-    yesod::rand::pcg(key)
-}
-#[cfg(not(feature = "small-key"))]
 #[tracked]
 fn hash(key: Expr<Key>) -> Expr<u32> {
     yesod::rand::pcg3d(Vec3::expr((key >> 32).cast_u32(), key.cast_u32(), 937)).x

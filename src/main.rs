@@ -29,7 +29,7 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 use std::f32::consts::PI;
 
 use chandra::algorithm::ddgi::{DdgiConfig, DdgiData};
-use chandra::algorithm::rc::{RcConfig, RcData};
+use chandra::algorithm::rc::{RcConfig, RcData, over};
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
 use chandra::algorithm::{CommandList, CoreData};
@@ -50,6 +50,11 @@ use yesod::{device_println, host};
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const DEBUG_SPLATS: u32 = 0b1;
+
+#[tracked]
+fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+    dir - normal * (2.0_f32 * dir.dot(normal))
+}
 
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
@@ -99,7 +104,8 @@ fn main() {
         increased_base_resolution: true,
         use_quality_weight: false,
         max_lifetime: 1,
-        num_cascades: 6,
+        num_cascades: 4,
+        quality_decay: 1.0,
         // base_radius: 1000.0,
         // base_grid_size: 4.0,
         // base_grid_size: 5.0,
@@ -111,7 +117,7 @@ fn main() {
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
-    let splat = SplatData::new(&core, false, 1.0);
+    let splat = SplatData::new(&core, 1.0);
     // let ris = RisData::new(&core);
     let min = glam::Vec3::new(-700.0, -1300.0, -10.0);
     let max = glam::Vec3::new(700.0, 1300.0, 900.0);
@@ -176,14 +182,21 @@ fn main() {
             let color = if mode == 0 {
                 let result = splat.get_radiance(pixel_index);
 
+                let specular_dir = reflect(ray_dir, normal);
+                let specular_radiance = rc.sample(world_pos, 2.expr(), specular_dir).var();
+                for i in (0..2).rev() {
+                    let fluence = rc.cache.sample(world_pos, i.expr(), specular_dir);
+                    *specular_radiance = over(fluence, **specular_radiance);
+                }
+
                 if flags & DEBUG_SPLATS == 0 {
-                    result + emission
+                    result + emission + specular_radiance
                 } else {
                     let radiance_depth = splat.depth.read(pixel_index);
                     if radiance_depth > depth + 0.1 {
-                        pcg3df(probe.position.xyz()) * 0.5 + result * 0.5 + emission
+                        pcg3df(probe.position.xyz()) * 0.1 + result * 0.9
                     } else {
-                        result + emission
+                        result
                     }
                 }
             } else if mode == 1 {
@@ -356,7 +369,7 @@ fn main() {
             println!("Running: {running}");
         }
         if rt.key_pressed(KeyCode::KeyB) {
-            splat_mode = (splat_mode + 1) % 4;
+            splat_mode = (splat_mode + 1) % 3;
         }
         if rt.key_pressed(KeyCode::BracketRight) {
             blend_radius += 0.01;
@@ -414,7 +427,7 @@ fn main() {
 
             rc.reset_table(&mut commands, false);
 
-            commands += rc.compute_average_pos_normal(&core);
+            commands += rc.compute_average_position(&core);
 
             if normal_rc {
                 for c in 0..num_cascades {
@@ -467,7 +480,7 @@ fn main() {
                 3 => 0.51,
                 _ => unreachable!(),
             };
-            let depth_prepass = splat_mode == 2 || splat_mode == 3;
+            let depth_prepass = splat_mode == 2;
             let dispatch_size = 32 << (draw_cascade.saturating_sub(1) * 2);
             if depth_prepass {
                 commands.push(
@@ -479,7 +492,6 @@ fn main() {
                             &draw_cascade,
                             &match splat_mode {
                                 2 => 2,
-                                3 => 4,
                                 _ => unreachable!(),
                             },
                         )
@@ -497,7 +509,6 @@ fn main() {
                             0 => 0,
                             1 => 0,
                             2 => 1,
-                            3 => 3,
                             _ => unreachable!(),
                         },
                     )
@@ -520,11 +531,7 @@ fn main() {
                     rt.dispatch_size(),
                     &camera.view(),
                     &rt.tick,
-                    &if splat_mode == 2 || splat_mode == 3 {
-                        DEBUG_SPLATS
-                    } else {
-                        0
-                    },
+                    &if splat_mode == 2 { DEBUG_SPLATS } else { 0 },
                     &mode,
                     &draw_cascade,
                     &rt.cursor_position.map(|x| x as u32),

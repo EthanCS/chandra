@@ -5,26 +5,22 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use yesod::camera::View;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
+use yesod::interpolate::{Bilinear, Trilinear, TrilinearComps};
 use yesod::utils::{FetchAddVector, decode_morton2_16, encode_morton2_16, next_float_down_pos_2};
 
 use crate::table::{HashTable, INVALID_KEY, Key};
 use crate::utils::{corner_to_index, index_to_corner};
 
-// Should be enough assuming LODs actually do their job.
-#[cfg(feature = "small-key")]
-const NUM_BITS: Key = 8;
-#[cfg(not(feature = "small-key"))]
 const NUM_BITS: Key = 18;
 const MASK: Key = (1 << NUM_BITS) - 1;
 
-const OFFSET: u32 = 1 << 31;
+const OFFSET: u32 = 1 << 17;
 
 pub type Radiance = Vec3<f32>;
 pub type Fluence = Vec4<f32>;
 
 #[tracked]
 fn encode_position(cell: Expr<Vec4<u32>>) -> Expr<Key> {
-    #[cfg(not(feature = "small-key"))]
     let cell = cell.cast_u64();
     let cell = cell & MASK;
     cell.w << (NUM_BITS * 3) | (cell.z << (NUM_BITS * 2)) | (cell.y << NUM_BITS) | cell.x
@@ -38,7 +34,6 @@ fn decode_position(pos: Expr<Key>) -> Expr<Vec4<u32>> {
         (pos >> (NUM_BITS * 2)) & MASK,
         pos >> (NUM_BITS * 3),
     );
-    #[cfg(not(feature = "small-key"))]
     let result = result.cast_u32();
     result
 }
@@ -67,10 +62,13 @@ impl DirectionIndexerExpr {
         self.quantize(v)
     }
     #[tracked]
+    pub fn dir_to_grid_bilinear(&self, dir: Expr<Vec3<f32>>) -> Expr<Bilinear> {
+        let v = Encoder::encode(dir);
+        Bilinear::new(v * next_float_down_pos_2(self.grid_size().cast_f32()))
+    }
+    #[tracked]
     pub fn quantize(&self, encoded_dir: Expr<Vec2<f32>>) -> Expr<Vec2<u32>> {
-        (encoded_dir * next_float_down_pos_2(self.grid_size().cast_f32()))
-            .floor()
-            .cast_u32()
+        (encoded_dir * next_float_down_pos_2(self.grid_size().cast_f32())).cast_u32()
     }
     #[tracked]
     pub fn grid_to_linear(&self, index: Expr<Vec2<u32>>) -> Expr<u32> {
@@ -144,7 +142,7 @@ impl Probe {
 }
 impl ProbeExpr {
     #[tracked]
-    pub fn next_bilinear(&self, i: Expr<u32>) -> (Expr<Probe>, Expr<f32>) {
+    pub fn next_trilinear(&self, i: Expr<u32>) -> (Expr<Probe>, Expr<f32>) {
         let j = corner_to_index(!(self.position.xyz() | !1_u32));
         let base_probe = Probe::from_comps_expr(ProbeComps {
             position: (self.position.xyz() - 1).extend(self.position.w),
@@ -335,9 +333,24 @@ impl HashCache {
         .shift_up(cascade)
     }
     #[tracked]
+    pub fn quantize_trilinear(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        lod: Expr<u32>,
+        cascade: Expr<u32>,
+    ) -> Expr<Trilinear> {
+        let spacing = self.spacing(lod, cascade);
+        let base = self.quantize(pos - spacing / 2.0, lod, cascade);
+        let fract = (pos / spacing - 0.5).fract();
+        Trilinear::from_comps_expr(TrilinearComps {
+            base: base.position.xyz(),
+            fract,
+        })
+    }
+    #[tracked]
     pub fn dequantize(&self, probe: Expr<Probe>) -> Expr<Vec3<f32>> {
-        let probe = probe.shift_down(probe.cascade);
-        let local_pos = (probe.position.xyz() - OFFSET).cast_i32().cast_f32();
+        let base_probe = probe.shift_down(probe.cascade);
+        let local_pos = (base_probe.position.xyz() - OFFSET).cast_i32().cast_f32();
         let spacing = self.spacing(probe.position.w, 0);
         let offset = self.probe_spacing(probe) / 2.0;
         local_pos * spacing + offset
@@ -350,41 +363,10 @@ impl HashCache {
     pub fn spacing(&self, lod: Expr<u32>, cascade: impl AsExpr<Value = u32>) -> Expr<f32> {
         self.base_grid_size * (1_u32 << (cascade.as_expr() + lod)).cast_f32()
     }
-    #[cfg(not(feature = "small-key"))]
     #[tracked]
     pub fn decode(&self, encoded_pos: Expr<Key>, cascade: Expr<u32>) -> Expr<Probe> {
-        let pos = decode_position(encoded_pos);
-        let lod = pos.w;
-        let pos = pos.xyz();
-        let sign = pos >> (NUM_BITS - 1) as u32;
-        let sign_ext = sign * (u32::MAX - MASK as u32);
-        let pos = pos | sign_ext;
         Probe::from_comps_expr(ProbeComps {
-            position: (pos + OFFSET).extend(lod),
-            cascade,
-        })
-    }
-    #[cfg(feature = "small-key")]
-    #[tracked]
-    pub fn decode(&self, encoded_pos: Expr<Key>, cascade: Expr<u32>) -> Expr<Probe> {
-        let pos = decode_position(encoded_pos);
-        let view_pos = self.projection().view_pos;
-        let view_pos = self.quantize(view_pos, pos.w, cascade).position.xyz();
-        // let view_pos = (view_pos / self.spacing(pos.w, cascade))
-        //     .floor()
-        //     .cast_i32()
-        //     .cast_u32()
-        //     + OFFSET;
-        let diff = pos.xyz() - view_pos;
-        let diff = Vec3::expr(
-            diff.x.cast_u8().cast_i8().cast_i32(),
-            diff.y.cast_u8().cast_i8().cast_i32(),
-            diff.z.cast_u8().cast_i8().cast_i32(),
-        )
-        .cast_u32();
-
-        Probe::from_comps_expr(ProbeComps {
-            position: (view_pos + diff).extend(pos.w),
+            position: decode_position(encoded_pos),
             cascade,
         })
     }
@@ -440,5 +422,41 @@ impl HashCache {
     #[tracked]
     pub fn cost(&self, probe: Expr<Probe>) -> Expr<u32> {
         self.table.cost(self.encode(probe), probe.cascade)
+    }
+
+    #[tracked]
+    pub fn sample(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        cascade: Expr<u32>,
+        dir: Expr<Vec3<f32>>,
+    ) -> Expr<Fluence> {
+        let lod = self.estimate_lod(pos);
+        let interp_probes = self.quantize_trilinear(pos, lod, cascade); // do nearest for simplicity
+
+        let encoder = self.get_encoder(cascade);
+        let interp_dirs = encoder.dir_to_grid_bilinear(dir);
+
+        let fluence = Vec4::splat(0.0_f32).var();
+        let total_weight = 0.0_f32.var();
+
+        for j in 0u32..8 {
+            let (probe, probe_weight) = interp_probes.get(j);
+            let probe = Probe::from_comps_expr(ProbeComps {
+                position: probe.extend(lod),
+                cascade,
+            });
+            let node = self.get(probe);
+            if !node.invalid() {
+                for i in 0u32..4 {
+                    let (dir, weight) = interp_dirs.get(i);
+                    let offset = node.data_offset + encoder.grid_to_linear(dir);
+                    *fluence += self.weighted_fluence.read(offset) * weight * probe_weight;
+                    *total_weight += self.weights.read(offset) * weight * probe_weight;
+                }
+            }
+        }
+
+        fluence / total_weight
     }
 }
