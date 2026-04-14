@@ -1,8 +1,9 @@
 use yesod::direction::project_line;
 use yesod::rand::{pcg3df, r2};
+use yesod::utils::dispatch2;
 
 use super::*;
-use crate::algorithm::rc::RcData;
+use crate::algorithm::rc::{Ray, RayComps, RcData};
 use crate::cache::LoadedNode;
 
 pub struct TraceData {
@@ -17,16 +18,6 @@ pub struct TraceData {
     pub traced_rays: Buffer<Ray>,
     pub next_traced_ray: Singleton<u32>,
     pub raw_radiance: Option<Tex2d<Vec3<f32>>>,
-}
-
-#[repr(C)]
-#[derive(Value, Debug, Clone, Copy)]
-pub struct Ray {
-    // must be normalized
-    pub dir: Vec3<f32>,
-    pub start: Vec3<f32>,
-    pub base_probe: Probe,
-    pub hit: Hit,
 }
 
 impl TraceData {
@@ -141,9 +132,15 @@ impl TraceData {
         }
         .debug(format!("Compute Ray Offset Cascade {cascade}"))
     }
-    pub fn compute_rays(&self, core: &CoreData, rc: &RcData, tick: u32) -> NodeConfigs<'static> {
-        dispatch1(
-            track!(|tick| {
+    pub fn compute_rays(
+        &self,
+        core: &CoreData,
+        rc: &RcData,
+        tick: u32,
+        c0_len: f32,
+    ) -> NodeConfigs<'static> {
+        dispatch2(
+            track!(|tick, c0_len| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();
                 let world_pos = core.get_world_pos(pixel);
@@ -164,64 +161,57 @@ impl TraceData {
 
                 let offset_index = offset + self.base_ray_index.atomic_ref(node.index).fetch_add(1);
 
-                let bounce_ray = project_line(
+                let dir = project_line(
                     (r2(offset_index) + pcg3df(Vec3::expr(tick, 29, 968)).xy()).fract(),
                 );
-                let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
+                let dir = dir * dir.dot(normal).signum();
 
                 let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
 
                 if ray_index < self.traced_rays.len_expr_u32() {
                     let start = offset_ray(world_pos, normal);
-                    let ray = Ray::from_comps_expr(RayComps {
-                        dir: bounce_ray,
+                    let hit = core.world.trace_segment(
                         start,
+                        dir,
+                        Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0.expr()), f32::INFINITY),
+                    );
+
+                    let fluence = core.get_fluence(start, dir, hit);
+                    let radiance = fluence.xyz();
+
+                    let cascade = if hit.miss() {
+                        rc.last_cascade().expr()
+                    } else {
+                        let c0_len: Expr<f32> = c0_len;
+                        let cascade = keter::max(
+                            (hit.committed_ray_t / (c0_len * rc.cache.spacing(lod, 0.expr())))
+                                .log(rc.length_scale),
+                            0.0,
+                        )
+                        .ceil()
+                        .cast_u32();
+
+                        keter::min(cascade, rc.num_cascades - 1)
+                    };
+
+                    let ray = Ray::from_comps_expr(RayComps {
+                        radiance: fluence.xyz(),
                         base_probe: probe,
-                        hit: core.world.trace_segment(
-                            start,
-                            bounce_ray,
-                            Vec2::expr(
-                                rc.cm1_len * rc.cache.base_grid_size * (1_u32 << lod).cast_f32(),
-                                f32::INFINITY,
-                            ),
-                        ),
+                        cascade,
+                        dir: SphericalEncoder::encode(dir),
                     });
                     self.traced_rays.write(ray_index, ray);
 
                     if let Some(raw_radiance) = &self.raw_radiance {
-                        let radiance = core.get_fluence(start, bounce_ray, ray.hit).xyz();
                         raw_radiance.write(pixel, radiance);
                     }
                 }
             }),
             core.screen_dispatch_size(),
             tick,
+            c0_len,
         )
         .debug("Compute Rays")
-    }
-    // TODO: Can we remove the kernel options?
-    // Also refactor tracing to previous step.
-    pub fn compute_radiance(
-        &self,
-        core: &CoreData,
-        rc: &RcData,
-        c0_len: f32,
-    ) -> NodeConfigs<'static> {
-        memo(rc.terminate_deposit, || {
-            DEVICE.create_kernel::<fn(f32)>(&track!(|c0_len| {
-                set_block_size([64, 1, 1]);
-
-                if dispatch_id().x >= self.next_traced_ray.read() {
-                    return;
-                }
-
-                let ray = self.traced_rays.read(dispatch_id().x);
-
-                rc.deposit_split(core, ray, c0_len)
-            }))
-        })
-        .dispatch_async([self.traced_rays.len() as u32, 1, 1], &c0_len)
-        .debug("Compute Radiance")
     }
     pub fn reset(&self) -> NodeConfigs<'static> {
         (

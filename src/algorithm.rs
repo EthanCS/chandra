@@ -81,6 +81,7 @@ impl CoreData {
         }
         **radiance
     }
+    // TODO: Add ambient?
     #[tracked]
     pub fn get_fluence(
         &self,
@@ -88,11 +89,11 @@ impl CoreData {
         dir: Expr<Vec3<f32>>,
         hit: Expr<Hit>,
     ) -> Expr<Fluence> {
-        if !hit.miss() {
+        if hit.miss() {
+            Vec3::splat_expr(0.0_f32).extend(1.0)
+        } else {
             self.get_emission(start + dir * hit.committed_ray_t, hit)
                 .extend(0.0)
-        } else {
-            Vec3::splat_expr(0.0_f32).extend(1.0)
         }
     }
     #[tracked]

@@ -129,9 +129,7 @@ impl SplatData {
                     let screen_min = core.screen_size().expr().cast_f32().var();
                     let screen_max = Vec2::splat(0.0_f32).var();
 
-                    let spacing = rc.cache.base_grid_size
-                        * (1 << (probe.position.w + cascade)).cast_f32()
-                        * blend_radius;
+                    let spacing = rc.cache.probe_spacing(probe) * blend_radius;
                     let probe_pos = rc.cache.dequantize(probe);
 
                     let avg_pos_normal = rc.average_pos_normal.read(node.index);

@@ -8,7 +8,6 @@ use parking_lot::Mutex;
 use yesod::utils::FetchAddVector;
 
 use super::*;
-use crate::algorithm::trace::Ray;
 use crate::cache::{Fluence, HashCache, LoadedNode, Radiance};
 
 #[derive(Debug, Clone, Copy)]
@@ -104,6 +103,20 @@ pub enum MergeLevel {
     Middle(Expr<u32>),
 }
 
+#[repr(C)]
+#[derive(Value, Debug, Clone, Copy)]
+pub struct Ray {
+    pub radiance: Radiance,
+    pub base_probe: Probe,
+    pub cascade: u32,
+    pub dir: Vec2<f32>,
+}
+/*
+const _: fn() = || {
+    let _ = std::mem::transmute::<Ray, [f32; 12]>;
+};
+ */
+
 #[tracked]
 fn over(fluence: Expr<Fluence>, radiance: Expr<Radiance>) -> Expr<Radiance> {
     fluence.xyz() + radiance * fluence.w
@@ -133,9 +146,6 @@ impl RcData {
             cache,
             config,
         }
-    }
-    pub fn num_cascades(&self) -> u32 {
-        self.cache.num_cascades
     }
     pub fn last_cascade(&self) -> u32 {
         self.cache.num_cascades - 1
@@ -312,7 +322,7 @@ impl RcData {
         }
     }
 
-    // multiplicity: u32
+    // TODO: Add 90% shifting inwards and nearest bilinear fix.
     #[tracked]
     pub fn trace_deposit(
         &self,
@@ -351,8 +361,7 @@ impl RcData {
                     let dir = self.cache.get_encoder(cascade).grid_to_dir_f32(dir);
 
                     let start_len = c0_len
-                        * self.base_grid_size
-                        * (1_u32 << node.probe.position.w).cast_f32()
+                        * self.cache.spacing(node.probe.position.w, 0.expr())
                         * self.length_scale.expr().powi(cascade.cast_i32() - 1);
                     let end_len = if cascade == self.last_cascade() {
                         f32::INFINITY.expr()
@@ -386,64 +395,43 @@ impl RcData {
         .debug(format!("Trace and Deposit Cascade {cascade}"))
     }
 
+    // TODO: add parent indexes and then turn this back into loop form. Also need to get rid of atomics.
     #[tracked]
-    pub fn deposit_split(&self, core: &CoreData, ray: Expr<Ray>, c0_len: Expr<f32>) {
-        let world_pos = ray.start;
-        let bounce_ray = ray.dir;
-        let hit = ray.hit;
+    pub fn deposit_split(&self, rays: BufferView<Ray>) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                let ray = rays.read(dispatch_id().x);
+                let cascade = dispatch_id().y;
 
-        let probe = ray.base_probe;
+                let probe = ray.base_probe;
 
-        let (hit_level, fluence) = if hit.miss() {
-            (self.num_cascades().expr() - 1, Vec4::splat_expr(0.0))
-        } else {
-            let cascade = keter::max(
-                (hit.committed_ray_t
-                    / (c0_len * self.base_grid_size * (1_u32 << probe.position.w).cast_f32()))
-                .log(self.length_scale),
-                0.0,
-            )
-            .ceil()
-            .cast_u32();
-            (
-                keter::min(cascade, self.num_cascades().expr() - 1),
-                core.get_fluence(world_pos, bounce_ray, hit),
-            )
-        };
+                if self.terminate_deposit && cascade > ray.cascade {
+                    return;
+                }
 
-        let deposit = |cascade, fluence| {
-            let node = self.cache.get(probe.shift_level(cascade));
-            if node.loaded() {
+                let fluence = if cascade >= ray.cascade {
+                    ray.radiance.extend(0.0)
+                } else {
+                    Vec3::splat_expr(0.0_f32).extend(1.0)
+                };
+
+                let node = self.cache.get(probe.shift_level(cascade));
+
+                if !node.loaded() {
+                    device_println!("Impossible!");
+                    return;
+                }
+
                 let encoder = self.cache.get_encoder(cascade);
-                self.cache.deposit(
-                    node.data_offset + encoder.dir_to_linear(bounce_ray),
+                self.cache.deposit_unstable(
+                    node.data_offset + encoder.grid_to_linear(encoder.quantize(ray.dir)),
                     fluence,
                 );
                 self.probe_quality.atomic_ref(node.index).fetch_add(1.0);
-            } // Otherwise should be impossible
-        };
-
-        if self.terminate_deposit {
-            // TODO: If we invert transmittance then the lower-deposits are just count increments.
-            // note: since lifetime is deposited, short rays can cause higher-cascades to vanish
-
-            // NOTE: Perf here is very inconsistent; the second part seems much more expensive.
-            for level in 0.expr()..hit_level {
-                deposit(level, Vec3::splat_expr(0.0_f32).extend(1.0));
-            }
-            deposit(hit_level, fluence);
-        } else {
-            for level in 0..self.num_cascades() {
-                deposit(
-                    level,
-                    if level < hit_level {
-                        Vec3::splat_expr(0.0_f32).extend(1.0)
-                    } else {
-                        fluence
-                    },
-                );
-            }
-        }
+            }),
+            [rays.len() as u32, self.num_cascades, 1],
+        )
+        .debug("Deposit Split")
     }
 
     pub fn reset_table(&mut self, commands: &mut CommandList<'static>, total: bool) {
@@ -467,7 +455,7 @@ impl RcData {
                 .copy_to_buffer_async(&table.last_occupied_index),
             table
                 .total_occupied
-                .copy_from_async(&ZEROS[..self.num_cascades() as usize]),
+                .copy_from_async(&ZEROS[..self.num_cascades as usize]),
             clear_entries,
             self.build_freelists(total),
             table
@@ -477,8 +465,8 @@ impl RcData {
             .chain();
 
         // find probe counts
-        let total_occupied = Arc::new(Mutex::new(vec![0_u32; self.num_cascades() as usize]));
-        let last_occupied_index = Arc::new(Mutex::new(vec![0_u32; self.num_cascades() as usize]));
+        let total_occupied = Arc::new(Mutex::new(vec![0_u32; self.num_cascades as usize]));
+        let last_occupied_index = Arc::new(Mutex::new(vec![0_u32; self.num_cascades as usize]));
         *commands += self
             .cache
             .table
@@ -598,7 +586,7 @@ impl RcData {
                 [
                     core.screen_size().x,
                     core.screen_size().y,
-                    self.num_cascades(),
+                    self.num_cascades,
                 ],
             )
             .debug("Compute Average Position and Normal"),

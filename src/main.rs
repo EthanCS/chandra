@@ -104,7 +104,7 @@ fn main() {
         // base_grid_size: 4.0,
         base_grid_size: 10.0,
         base_radius: 999999.0, // 250.0,
-        cm1_len: 1.0,
+        // cm1_len: 1.0,
         // length_scale: 2.0,
         terminate_deposit: false,
         ..Default::default()
@@ -129,7 +129,7 @@ fn main() {
     #[cfg(feature = "denoise")]
     let mut denoiser = chandra::denoise::Denoiser::new(&core);
 
-    let num_cascades = rc.num_cascades();
+    let num_cascades = rc.num_cascades;
 
     let cache_memory = rc.cache.weighted_fluence.size_bytes()
         + rc.cache.weights.size_bytes()
@@ -338,7 +338,7 @@ fn main() {
             rt.tonemap(tonemap);
         }
         if rt.key_pressed(KeyCode::KeyL) {
-            draw_cascade = (draw_cascade + 1) % rc.num_cascades();
+            draw_cascade = (draw_cascade + 1) % rc.num_cascades;
             println!("Level set {draw_cascade}");
         }
         if rt.key_pressed(KeyCode::KeyK) {
@@ -411,7 +411,7 @@ fn main() {
 
             if normal_rc {
                 for c in 0..num_cascades {
-                    commands += rc.trace_deposit(&core, c0_len, c, 1, c == 0);
+                    commands += rc.trace_deposit(&core, c0_len, c, 2, true);
                 }
             } else {
                 commands += trace.reset();
@@ -424,9 +424,9 @@ fn main() {
                 for c in (0..num_cascades).rev() {
                     commands += trace.compute_ray_offset(&rc, c);
                 }
-                commands += trace.compute_rays(&core, &rc, rt.tick);
+                commands += trace.compute_rays(&core, &rc, rt.tick, c0_len);
 
-                commands += trace.compute_radiance(&core, &rc, c0_len);
+                commands += rc.deposit_split(trace.traced_rays.view(..));
             }
 
             for c in (0..num_cascades).rev() {
@@ -450,7 +450,7 @@ fn main() {
 
         commands += splat.reset();
 
-        commands += splat.trace_cm1(&core, &rc, 4);
+        // commands += splat.trace_cm1(&core, &rc, 4);
 
         if mode == 0 {
             let blend_radius = match splat_mode {
@@ -531,17 +531,17 @@ fn main() {
         if profiler.time() > 1000.0 {
             profiler.print(
                 &[
-                    "Trace Cascade -1",
                     "Compute G-Buffer",
                     "Init Probes",
                     "Build Freelists",
                     "Compute Ray Count",
                     "Compute Ray Offset",
                     "Compute Rays",
-                    "Compute Radiance",
+                    "Deposit Split",
                     "Trace and Deposit",
                     "DDGI",
                     "Merge",
+                    "Trace Cascade -1",
                     "Draw",
                 ],
                 true,

@@ -121,7 +121,11 @@ impl DirectionIndexerExpr {
     #[tracked]
     pub fn dir_to_grid(&self, dir: Expr<Vec3<f32>>) -> Expr<Vec2<u32>> {
         let v = Encoder::encode(dir);
-        (v * next_float_down_pos_2(self.grid_size().cast_f32()))
+        self.quantize(v)
+    }
+    #[tracked]
+    pub fn quantize(&self, encoded_dir: Expr<Vec2<f32>>) -> Expr<Vec2<u32>> {
+        (encoded_dir * next_float_down_pos_2(self.grid_size().cast_f32()))
             .floor()
             .cast_u32()
     }
@@ -372,6 +376,12 @@ impl HashCache {
     pub fn deposit_once(&self, offset: Expr<u32>, fluence: Expr<Fluence>) {
         self.weighted_fluence.write(offset, fluence);
         self.weights.write(offset, 1.0);
+    }
+    #[tracked]
+    pub fn deposit_unstable(&self, offset: Expr<u32>, fluence: Expr<Fluence>) {
+        self.weighted_fluence
+            .write(offset, self.weighted_fluence.read(offset) + fluence);
+        self.weights.write(offset, self.weights.read(offset) + 1.0);
     }
 
     #[tracked]
