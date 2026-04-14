@@ -191,7 +191,7 @@ fn main() {
                     let target_probe = rc.cache.decode(rc.cache.encode(probe), cascade);
                     if (target_probe.position != probe.position).any()
                         || (rc.cache.quantize(world_pos, lod, cascade + 1).position
-                            != probe.shift_level(1.expr()).position)
+                            != probe.next_nearest().position)
                             .any()
                     {
                         Vec3::splat_expr(1.0)

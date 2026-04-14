@@ -27,6 +27,8 @@ pub struct RcConfig {
     pub terminate_deposit: bool,
     pub interpolation_exponent: f32,
     pub cm1_len: f32,
+    // for trace_deposit
+    pub start_length_multiplier: f32,
 }
 impl Default for RcConfig {
     fn default() -> Self {
@@ -46,6 +48,7 @@ impl Default for RcConfig {
             terminate_deposit: true,
             interpolation_exponent: 1.0,
             cm1_len: 0.0,
+            start_length_multiplier: 0.9,
         }
     }
 }
@@ -361,7 +364,7 @@ impl RcData {
                     let dir = self.cache.get_encoder(cascade).grid_to_dir_f32(dir);
 
                     let start_len = c0_len
-                        * self.cache.spacing(node.probe.position.w, 0.expr())
+                        * self.cache.spacing(node.probe.position.w, 0)
                         * self.length_scale.expr().powi(cascade.cast_i32() - 1);
                     let end_len = if cascade == self.last_cascade() {
                         f32::INFINITY.expr()
@@ -369,7 +372,11 @@ impl RcData {
                         start_len * self.length_scale
                     };
                     // shadowing issues...
-                    let start_len = if cascade == 0 { 0.0.expr() } else { start_len };
+                    let start_len = if cascade == 0 {
+                        self.cm1_len.expr()
+                    } else {
+                        start_len * self.start_length_multiplier
+                    };
 
                     let hit =
                         core.world
@@ -415,7 +422,7 @@ impl RcData {
                     Vec3::splat_expr(0.0_f32).extend(1.0)
                 };
 
-                let node = self.cache.get(probe.shift_level(cascade));
+                let node = self.cache.get(probe.shift_up(cascade));
 
                 if !node.loaded() {
                     device_println!("Impossible!");

@@ -173,7 +173,7 @@ impl TraceData {
                     let hit = core.world.trace_segment(
                         start,
                         dir,
-                        Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0.expr()), f32::INFINITY),
+                        Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
                     );
 
                     let fluence = core.get_fluence(start, dir, hit);
@@ -184,7 +184,7 @@ impl TraceData {
                     } else {
                         let c0_len: Expr<f32> = c0_len;
                         let cascade = keter::max(
-                            (hit.committed_ray_t / (c0_len * rc.cache.spacing(lod, 0.expr())))
+                            (hit.committed_ray_t / (c0_len * rc.cache.spacing(lod, 0)))
                                 .log(rc.length_scale),
                             0.0,
                         )

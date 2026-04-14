@@ -202,10 +202,9 @@ impl Probe {
 impl ProbeExpr {
     #[tracked]
     pub fn next_bilinear(&self, i: Expr<u32>) -> (Expr<Probe>, Expr<f32>) {
-        let base_pos = self.position.xyz() & !1_u32;
-        let j = corner_to_index(self.position.xyz() & 1_u32);
+        let j = corner_to_index(!(self.position.xyz() | !1_u32));
         let base_probe = Probe::from_comps_expr(ProbeComps {
-            position: base_pos.extend(self.position.w),
+            position: (self.position.xyz() - 1).extend(self.position.w),
             cascade: self.cascade,
         })
         .next_nearest();
@@ -224,14 +223,13 @@ impl ProbeExpr {
     }
     #[tracked]
     pub fn next_nearest(&self) -> Expr<Probe> {
-        self.shift_level(1.expr())
+        self.shift_up(1.expr())
     }
     // All values that have `next_nearest` equal to this.
     #[tracked]
     pub fn last_nearest(&self, i: Expr<u32>) -> Expr<Probe> {
         let offset = index_to_corner(i);
-        let bias = OFFSET / 2;
-        let base = (self.position.xyz() - bias) << 1;
+        let base = self.position.xyz() << 1;
         let pos = base + offset;
         Probe::from_comps_expr(ProbeComps {
             position: pos.extend(self.position.w),
@@ -239,11 +237,18 @@ impl ProbeExpr {
         })
     }
     #[tracked]
-    pub fn shift_level(&self, delta: Expr<u32>) -> Expr<Probe> {
-        let bias = OFFSET - (OFFSET >> delta);
+    pub fn shift_up(&self, delta: Expr<u32>) -> Expr<Probe> {
         Probe::from_comps_expr(ProbeComps {
-            position: ((self.position.xyz() >> delta) + bias).extend(self.position.w),
+            position: (self.position.xyz() >> delta).extend(self.position.w),
             cascade: self.cascade + delta,
+        })
+    }
+    // gets the corner probe
+    #[tracked]
+    pub fn shift_down(&self, delta: Expr<u32>) -> Expr<Probe> {
+        Probe::from_comps_expr(ProbeComps {
+            position: (self.position.xyz() << delta).extend(self.position.w),
+            cascade: self.cascade - delta,
         })
     }
 }
@@ -391,27 +396,30 @@ impl HashCache {
         lod: Expr<u32>,
         cascade: Expr<u32>,
     ) -> Expr<Probe> {
-        let spacing = self.spacing(lod, cascade);
+        let spacing = self.spacing(lod, 0);
 
         let pos = (pos / spacing).floor().cast_i32();
         Probe::from_comps_expr(ProbeComps {
             position: (pos.cast_u32() + OFFSET).extend(lod),
-            cascade,
+            cascade: 0.expr(),
         })
+        .shift_up(cascade)
     }
     #[tracked]
     pub fn dequantize(&self, probe: Expr<Probe>) -> Expr<Vec3<f32>> {
-        let local_pos = (probe.position.xyz() - OFFSET).cast_i32().cast_f32() + 0.5;
-        let spacing = self.spacing(probe.position.w, probe.cascade);
-        local_pos * spacing
+        let probe = probe.shift_down(probe.cascade);
+        let local_pos = (probe.position.xyz() - OFFSET).cast_i32().cast_f32();
+        let spacing = self.spacing(probe.position.w, 0);
+        let offset = self.probe_spacing(probe) / 2.0;
+        local_pos * spacing + offset
     }
     #[tracked]
     pub fn probe_spacing(&self, probe: Expr<Probe>) -> Expr<f32> {
         self.spacing(probe.position.w, probe.cascade)
     }
     #[tracked]
-    pub fn spacing(&self, lod: Expr<u32>, cascade: Expr<u32>) -> Expr<f32> {
-        self.base_grid_size * (1_u32 << (cascade + lod)).cast_f32()
+    pub fn spacing(&self, lod: Expr<u32>, cascade: impl AsExpr<Value = u32>) -> Expr<f32> {
+        self.base_grid_size * (1_u32 << (cascade.as_expr() + lod)).cast_f32()
     }
     #[cfg(not(feature = "small-key"))]
     #[tracked]
