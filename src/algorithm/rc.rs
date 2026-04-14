@@ -408,35 +408,36 @@ impl RcData {
         dispatch0(
             track!(|| {
                 let ray = rays.read(dispatch_id().x);
-                let cascade = dispatch_id().y;
 
                 let probe = ray.base_probe;
 
-                if self.terminate_deposit && cascade > ray.cascade {
-                    return;
+                for cascade in 0..self.num_cascades {
+                    if self.terminate_deposit && cascade > ray.cascade {
+                        return;
+                    }
+
+                    let fluence = if cascade >= ray.cascade {
+                        ray.radiance.extend(0.0)
+                    } else {
+                        Vec3::splat_expr(0.0_f32).extend(1.0)
+                    };
+
+                    let node = self.cache.get(probe.shift_up(cascade));
+
+                    if !node.loaded() {
+                        // device_println!("Impossible!");
+                        return;
+                    }
+
+                    let encoder = self.cache.get_encoder(cascade);
+                    self.cache.deposit(
+                        node.data_offset + encoder.grid_to_linear(encoder.quantize(ray.dir)),
+                        fluence,
+                    );
+                    self.probe_quality.atomic_ref(node.index).fetch_add(1.0);
                 }
-
-                let fluence = if cascade >= ray.cascade {
-                    ray.radiance.extend(0.0)
-                } else {
-                    Vec3::splat_expr(0.0_f32).extend(1.0)
-                };
-
-                let node = self.cache.get(probe.shift_up(cascade));
-
-                if !node.loaded() {
-                    // device_println!("Impossible!");
-                    return;
-                }
-
-                let encoder = self.cache.get_encoder(cascade);
-                self.cache.deposit(
-                    node.data_offset + encoder.grid_to_linear(encoder.quantize(ray.dir)),
-                    fluence,
-                );
-                self.probe_quality.atomic_ref(node.index).fetch_add(1.0);
             }),
-            [rays.len() as u32, self.num_cascades, 1],
+            [rays.len() as u32, 1, 1],
         )
         .debug("Deposit Split")
     }
