@@ -52,7 +52,7 @@ impl SplatData {
 
                 let shadow_mask = 0u32.var();
                 // TODO: Adjust for less base resolution.
-                let encoder = rc.cache.get_encoder(0.expr());
+                let encoder = self.get_encoder(rc, 0.expr());
 
                 for i in 0_u32.expr()..encoder.linear_size() {
                     // let offset = pcg3df(pixel.extend(i + tick * 32)).xy();
@@ -65,10 +65,9 @@ impl SplatData {
                         // does this add the 0.5 bias anyways?
                         let screen_pos = view.project(sample_pos);
                         let sample_depth = (sample_pos - view.pos).length();
-                        let object_depth =
-                            core.depth.var().sample((screen_pos) / view.screen_size).x;
+                        let object_depth = core.depth.read(screen_pos.cast_u32());
                         if object_depth != 0.0
-                            && object_depth < sample_depth
+                            && object_depth < sample_depth * 0.9992
                             && !(sample_depth > object_depth + c_1_len)
                         {
                             *shadow_mask |= 1 << i;

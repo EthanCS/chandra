@@ -176,8 +176,7 @@ impl TraceData {
                         Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
                     );
 
-                    let fluence = core.get_fluence(start, dir, hit);
-                    let radiance = fluence.xyz();
+                    let radiance = core.get_radiance(start, dir, hit);
 
                     let cascade = if hit.miss() {
                         rc.last_cascade().expr()
@@ -195,7 +194,7 @@ impl TraceData {
                     };
 
                     let ray = Ray::from_comps_expr(RayComps {
-                        radiance: fluence.xyz(),
+                        radiance,
                         base_probe: probe,
                         cascade,
                         dir: SphericalEncoder::encode(dir),

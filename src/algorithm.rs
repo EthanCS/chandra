@@ -66,22 +66,34 @@ impl CoreData {
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
-        /*if weight > 0.0 {
+        if weight > 0.0 {
             *radiance += self
                 .world
                 .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
                 .miss()
                 .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
                 * weight;
-        }*/
-        if hit.inst == 292
+        }
+        if hit.inst == 1
         /*292*/ /*162*/
         {
-            *radiance += Vec3::expr(100.0, 100.0, 100.0);
+            *radiance += Vec3::expr(10.0, 0.0, 0.0);
         }
         **radiance
     }
-    // TODO: Add ambient?
+    #[tracked]
+    pub fn get_radiance(
+        &self,
+        start: Expr<Vec3<f32>>,
+        dir: Expr<Vec3<f32>>,
+        hit: Expr<Hit>,
+    ) -> Expr<Radiance> {
+        if hit.miss() {
+            Vec3::splat_expr(0.1_f32)
+        } else {
+            self.get_emission(start + dir * hit.committed_ray_t, hit)
+        }
+    }
     #[tracked]
     pub fn get_fluence(
         &self,

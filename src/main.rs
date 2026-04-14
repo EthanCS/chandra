@@ -102,9 +102,10 @@ fn main() {
         num_cascades: 6,
         // base_radius: 1000.0,
         // base_grid_size: 4.0,
-        base_grid_size: 10.0,
+        // base_grid_size: 5.0,
+        // base_angular_resolution: 2,
         base_radius: 999999.0, // 250.0,
-        // cm1_len: 1.0,
+        cm1_len: 1.0,
         // length_scale: 2.0,
         terminate_deposit: false,
         ..Default::default()
@@ -245,9 +246,7 @@ fn main() {
                 let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
                 let bounce_hit = core.world.trace(ray_start_pos, bounce_ray);
-                let radiance = core
-                    .get_fluence(ray_start_pos, bounce_ray, bounce_hit)
-                    .xyz();
+                let radiance = core.get_radiance(ray_start_pos, bounce_ray, bounce_hit);
                 let value = accum_buf.read(pixel) + radiance.extend(1.0) * bounce_ray.dot(normal);
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + emission
@@ -270,7 +269,7 @@ fn main() {
                 }
                 pcg3df(Vec3::expr(hit.inst, 37, 926))
             } else if mode == 7 {
-                let cost = rc.cache.cost(probe);
+                /*let cost = rc.cache.cost(probe);
                 if cost != u32::MAX {
                     if cost > 8 {
                         Vec3::expr(1.0, 1.0, 1.0)
@@ -279,7 +278,15 @@ fn main() {
                     }
                 } else {
                     Vec3::splat_expr(0.0)
-                }
+                }*/
+                Vec3::splat_expr(
+                    1.0 - splat
+                        .cm1_shadow_mask
+                        .read(pixel_index)
+                        .count_ones()
+                        .cast_f32()
+                        / 32.0,
+                )
             } else if mode == 8 {
                 /*let z = pixel.x / ddgi.irradiance.width()
                     + (pixel.y / ddgi.irradiance.height())
@@ -450,7 +457,7 @@ fn main() {
 
         commands += splat.reset();
 
-        // commands += splat.trace_cm1(&core, &rc, 4);
+        commands += splat.trace_cm1(&core, &rc, 4);
 
         if mode == 0 {
             let blend_radius = match splat_mode {

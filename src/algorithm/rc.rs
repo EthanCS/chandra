@@ -325,7 +325,7 @@ impl RcData {
         }
     }
 
-    // TODO: Add 90% shifting inwards and nearest bilinear fix.
+    // TODO: add nearest bilinear fix.
     #[tracked]
     pub fn trace_deposit(
         &self,
@@ -425,12 +425,12 @@ impl RcData {
                 let node = self.cache.get(probe.shift_up(cascade));
 
                 if !node.loaded() {
-                    device_println!("Impossible!");
+                    // device_println!("Impossible!");
                     return;
                 }
 
                 let encoder = self.cache.get_encoder(cascade);
-                self.cache.deposit_unstable(
+                self.cache.deposit(
                     node.data_offset + encoder.grid_to_linear(encoder.quantize(ray.dir)),
                     fluence,
                 );
