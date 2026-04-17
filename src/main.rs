@@ -104,14 +104,13 @@ fn main() {
         increased_base_resolution: true,
         use_quality_weight: false,
         max_lifetime: 1,
-        num_cascades: 4,
+        num_cascades: 5,
         quality_decay: 1.0,
-        // base_radius: 1000.0,
-        // base_grid_size: 4.0,
-        // base_grid_size: 5.0,
-        // base_angular_resolution: 2,
+        base_radius: 1200.0,
+        base_grid_size: 4.0,
+        base_angular_resolution: 2,
         // base_radius: 999999.0, // 250.0,
-        cm1_len: 1.0,
+        // cm1_len: 1.0,
         // length_scale: 2.0,
         terminate_deposit: false,
         ..Default::default()
@@ -119,7 +118,7 @@ fn main() {
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
     let splat = SplatData::new(&core, 1.0);
     // let ris = RisData::new(&core);
-    let min = glam::Vec3::new(-700.0, -1300.0, -10.0);
+    let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
     let max = glam::Vec3::new(700.0, 1300.0, 900.0);
     let size = max - min;
     let spacing = size / (glam::UVec3::from(DdgiConfig::default().probe_dims).as_vec3() - 1.0);
@@ -182,15 +181,15 @@ fn main() {
             let color = if mode == 0 {
                 let result = splat.get_radiance(pixel_index);
 
-                let specular_dir = reflect(ray_dir, normal);
-                let specular_radiance = rc.sample(world_pos, 2.expr(), specular_dir).var();
-                for i in (0..2).rev() {
+                /*let specular_dir = reflect(ray_dir, normal);
+                let specular_radiance = rc.sample(world_pos, 3.expr(), specular_dir).var();
+                for i in (0..3).rev() {
                     let fluence = rc.cache.sample(world_pos, i.expr(), specular_dir);
                     *specular_radiance = over(fluence, **specular_radiance);
-                }
+                }*/
 
                 if flags & DEBUG_SPLATS == 0 {
-                    result + emission + specular_radiance
+                    result + emission // + specular_radiance
                 } else {
                     let radiance_depth = splat.depth.read(pixel_index);
                     if radiance_depth > depth + 0.1 {
@@ -470,7 +469,9 @@ fn main() {
 
         commands += splat.reset();
 
-        commands += splat.trace_cm1(&core, &rc, 4);
+        if rc.cm1_len > 0.0 {
+            commands += splat.trace_cm1(&core, &rc, 4);
+        }
 
         if mode == 0 {
             let blend_radius = match splat_mode {
@@ -569,6 +570,9 @@ fn main() {
                     .map(|n| rc.cache.max_probes_at_cascade(n))
                     .collect::<Vec<_>>()
             );
+            if mode == 8 {
+                println!("Num used: {:?}", ddgi.calc_probes_used());
+            }
         }
 
         #[cfg(feature = "denoise")]

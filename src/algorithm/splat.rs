@@ -109,17 +109,19 @@ impl SplatData {
 
                     let probe = node.probe;
                     let encoder = self.get_encoder(rc, cascade);
-                    assert_eq!(rc.cache.base_angular_resolution, 4);
 
                     // let quality = node_quality.read(node.index);
 
                     // 8 if !INCREASED_BASE_RESOLUTION
 
                     let radiance_data = Shared::<Vec3<f32>>::new(32);
-                    if rc.increased_base_resolution && cascade == 0 {
+                    if rc.increased_base_resolution
+                        && cascade == 0
+                        && dispatch_id().y < encoder.linear_size()
+                    {
                         let v = rc.base_radiance.read(node.data_offset + dispatch_id().y);
                         radiance_data.write(thread_id().y, v);
-                    } else if cascade != 0 || dispatch_id().y < 8 {
+                    } else if cascade != 0 || dispatch_id().y < encoder.linear_size() {
                         let v = rc.radiance.read(node.data_offset / 4 + dispatch_id().y);
                         radiance_data.write(thread_id().y, v);
                     }

@@ -6,7 +6,7 @@ use keter::lang::types::vector::Mat3;
 use yesod::direction::OctahedralEncoder;
 use yesod::rand::pcg3df;
 use yesod::shapes::intersect_aabb;
-use yesod::utils::{cross_matrix, outer_product_3, spherical_fibonacci};
+use yesod::utils::{cross_matrix, dispatch0_blocking, outer_product_3, spherical_fibonacci};
 
 use super::*;
 use crate::utils::{from_linear_expr, index_to_corner};
@@ -87,6 +87,8 @@ pub struct DdgiData {
     pub probe_offsets: Tex3d<Vec3<f32>>,
     pub irradiance: Tex3dHandle<Radiance>,
     pub distance: Tex3dHandle<Vec2<f32>>,
+    pub probe_used: Tex3d<bool>,
+    pub num_probes_used: Singleton<u32>,
     config: DdgiConfig,
 }
 impl Deref for DdgiData {
@@ -137,12 +139,21 @@ impl DdgiData {
             },
         );
         BINDLESS.update();
+        let probe_used = DEVICE.create_tex3d::<bool>(
+            PixelStorage::Byte1,
+            config.probe_dims.x,
+            config.probe_dims.y,
+            config.probe_dims.z,
+            1,
+        );
         Self {
             config,
             ray_data,
             probe_offsets,
             irradiance,
             distance,
+            probe_used,
+            num_probes_used: Singleton::new(0),
         }
     }
     #[tracked]
@@ -202,6 +213,9 @@ impl DdgiData {
             for i in 0_u32..8_u32 {
                 let adj_probe_offset = index_to_corner(i);
                 let adj_probe = base_probe + adj_probe_offset;
+
+                self.probe_used.write(adj_probe, true);
+
                 let adj_probe_pos =
                     self.probe_to_world(adj_probe.cast_f32()) + self.probe_offsets.read(adj_probe);
 
@@ -273,7 +287,9 @@ impl DdgiData {
                     let radiance = if hit_backface {
                         Vec3::splat_expr(0.0)
                     } else {
-                        core.get_emission(origin + dir * hit.committed_ray_t, hit)
+                        let hit_pos = origin + dir * hit.committed_ray_t;
+                        core.get_emission(hit_pos, hit)
+                        // + self.query_irradiance(hit_pos, normal, -dir) * 0.3
                     };
                     let distance = if hit_backface {
                         0.2 * hit.committed_ray_t
@@ -526,4 +542,19 @@ impl DdgiData {
         )
         .debug("DDGI Adjust Probe Offsets")
     }
+    pub fn calc_probes_used(&self) -> u32 {
+        dispatch0_blocking(
+            track!(|| {
+                if self.probe_used.read(dispatch_id()) {
+                    self.num_probes_used.atomic().fetch_add(1);
+                }
+                self.probe_used.write(dispatch_id(), false);
+            }),
+            self.probe_dims.into(),
+        );
+        let res = self.num_probes_used.read_blocking();
+        self.num_probes_used.write_host(0).execute_blocking();
+        res
+    }
+    // 2046 probes used
 }
