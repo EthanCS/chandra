@@ -1,4 +1,4 @@
-use keter::lang::functions::{block_id, sync_block, thread_id};
+use keter::lang::functions::{block_id, sync_block, thread_id, warp_read_lane_at};
 use yesod::color::inferno;
 use yesod::host;
 use yesod::shapes::intersect_sphere;
@@ -6,7 +6,7 @@ use yesod::utils::FetchAddVector;
 
 use super::*;
 use crate::algorithm::rc::RcData;
-use crate::cache::{DirectionIndexer, DirectionIndexerComps};
+use crate::cache::{DirectionIndexer, DirectionIndexerComps, ProbeComps};
 
 pub struct SplatData {
     pub radiance: Buffer<Vec4<f32>>,
@@ -25,6 +25,95 @@ impl SplatData {
             cm1_shadow_mask: DEVICE.create_buffer::<u32>(core.num_pixels() as usize),
             interpolation_exponent,
         }
+    }
+    pub fn query_optimized(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                set_block_size([4, 1, 8]);
+                assert!(rc.increased_base_resolution);
+                assert_eq!(rc.base_angular_resolution, 2);
+
+                let pixel = dispatch_id().xy();
+                // assume there's no early-exit for now.
+                let world_pos = core.get_world_pos(pixel);
+                let lod = rc.cache.estimate_lod(world_pos);
+                let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
+
+                /*
+                let thread = thread_id().z;
+
+                let adj_offsets = Shared::<u32>::new(32);
+                let adj_weights = Shared::<f32>::new(32);
+                let pixel_offsets = Shared::<u32>::new(5);
+
+                let (probe, weight) = interp_probes.get(i);
+                let probe = Probe::from_comps_expr(ProbeComps {
+                    position: probe.extend(lod),
+                    cascade: 0.expr(),
+                });
+                let node = rc.cache.get(probe);
+                if node.loaded() {
+                    let index = warp_prefix_count_bits(true.expr());
+                    adj_offsets.write(index, node.data_offset);
+                    adj_weights.write(index, weight);
+                    if thread == 0 {
+                        pixel_offsets.write(thread_id().x, index);
+                    }
+                }
+                let n = warp_active_count_bits(next.loaded());
+                pixel_offsets.write(4, n);
+
+                let normal = core.read_normal(pixel);
+                let encoder = rc.cache.get_encoder(0.expr());
+
+                let dir = encoder.linear_to_dir(thread);
+                let weight = dir.dot(normal);
+
+                let valid_dirs = Shared::<u32>::new(32);
+                if weight > 0.0 {
+                    valid_dirs.write(index, dir);
+                }
+                */
+
+                let thread = thread_id().z;
+
+                let normal = core.read_normal(pixel);
+                let encoder = rc.cache.get_encoder(0.expr());
+
+                let dir = encoder.linear_to_dir(thread);
+                let total_weight = keter::max(dir.dot(normal), 0.0);
+
+                let result = Vec4::splat(0.0_f32).var();
+                for i in 0u32..8 {
+                    let (probe, weight) = interp_probes.get(i);
+                    let probe = Probe::from_comps_expr(ProbeComps {
+                        position: probe.extend(lod),
+                        cascade: 0.expr(),
+                    });
+                    let node = rc.cache.get(probe);
+                    if node.invalid() {
+                        continue;
+                    }
+                    let radiance = rc.base_radiance.read(node.data_offset + thread);
+                    if radiance.is_finite().all() {
+                        *result += weight * radiance.extend(1.0);
+                    }
+                }
+                *result *= total_weight;
+                for i in 0u32..3 {
+                    if thread % (1 << i) == 0 {
+                        *result +=
+                            warp_read_lane_at(**result, thread_id().x + 4 * (thread + (1 << i)));
+                    }
+                }
+                if thread == 0 {
+                    let pixel_index = core.pixel_to_linear(pixel);
+                    self.radiance.write(pixel_index, result);
+                }
+            }),
+            [core.screen_size().x, core.screen_size().y, 8],
+        )
+        .debug("Draw Splats (Optimized)")
     }
     #[tracked]
     pub fn get_radiance(&self, pixel_index: Expr<u32>) -> Expr<Vec3<f32>> {
@@ -218,9 +307,9 @@ impl SplatData {
                                     };
                                     if radiance.is_finite().all() {
                                         *total_radiance += weight * radiance.extend(1.0);
-                                    } else {
-                                        *total_radiance.w = 0.0;
-                                        break;
+                                        // } else {
+                                        //     *total_radiance.w = 0.0;
+                                        //     break;
                                     }
                                 }
                             } // TODO: Figure out the biasing properly? Just directly bias based on amount of missing data?

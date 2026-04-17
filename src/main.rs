@@ -107,8 +107,9 @@ fn main() {
         num_cascades: 5,
         quality_decay: 1.0,
         base_radius: 1200.0,
-        base_grid_size: 4.0,
+        base_grid_size: 7.0,
         base_angular_resolution: 2,
+        // cm1_len: 0.5,
         // base_radius: 999999.0, // 250.0,
         // cm1_len: 1.0,
         // length_scale: 2.0,
@@ -327,6 +328,9 @@ fn main() {
         yaw: 6.437008,
         pitch: 0.47492924,
         pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        // yaw: -2.8706567,
+        // pitch: 0.11235107,
+        // pos: glam::Vec3::new(5.8384686, 1069.1106, 244.21223),
         fov: 1.15,
     };
     let mut running = true;
@@ -382,10 +386,13 @@ fn main() {
 
         // spacing between end of rays shoudl be equal to spatial spacing.
         let inv_arc_size = rc.base_angular_resolution as f32 / PI;
+        let inv_arc_size_accurate =
+            ((2 * rc.base_angular_resolution * rc.base_angular_resolution) as f32 / (4.0 * PI))
+                .sqrt();
         let c0_len = match c0_len_mode {
-            0 => inv_arc_size,
-            1 => 4.0,
-            2 => 12.0,
+            0 => inv_arc_size_accurate,
+            1 => inv_arc_size,
+            2 => 4.0,
             3 => 9999.0,
             4 => 0.1,
             _ => unreachable!(),
@@ -474,7 +481,7 @@ fn main() {
         }
 
         if mode == 0 {
-            let blend_radius = match splat_mode {
+            /*let blend_radius = match splat_mode {
                 0 => 1.0,
                 1 => blend_radius,
                 2 => 0.4,
@@ -514,7 +521,8 @@ fn main() {
                         },
                     )
                     .debug("Draw Splats"),
-            );
+            );*/
+            commands += splat.query_optimized(&core, &rc);
         }
         if mode == 8 && !rt.key_down(KeyCode::KeyR) {
             commands += ddgi.trace_rays(&core, rt.tick);

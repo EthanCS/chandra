@@ -78,6 +78,8 @@ impl CoreData {
         /*292*/ /*162*/
         {
             *radiance += Vec3::expr(10.0, 0.0, 0.0);
+        } else if hit.inst == 9 {
+            *radiance += Vec3::expr(0.0, 7.0, 7.0);
         }
         **radiance
     }
@@ -121,6 +123,11 @@ impl CoreData {
     #[tracked]
     pub fn read_normal(&self, pixel: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
         SphericalEncoder::decode(self.normal.read(pixel))
+    }
+    #[tracked]
+    pub fn read_normal_smooth(&self, pixel: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
+        let hit = self.hit.read(self.pixel_to_linear(pixel));
+        self.world.get_normal(hit)
     }
     #[tracked]
     pub fn read_depth(&self, pixel: Expr<Vec2<u32>>) -> Expr<f32> {

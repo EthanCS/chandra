@@ -432,7 +432,7 @@ impl HashCache {
         dir: Expr<Vec3<f32>>,
     ) -> Expr<Fluence> {
         let lod = self.estimate_lod(pos);
-        let interp_probes = self.quantize_trilinear(pos, lod, cascade); // do nearest for simplicity
+        let interp_probes = self.quantize_trilinear(pos, lod, cascade);
 
         let encoder = self.get_encoder(cascade);
         let interp_dirs = encoder.dir_to_grid_bilinear(dir);
