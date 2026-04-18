@@ -481,10 +481,13 @@ fn main() {
         }
 
         if mode == 0 {
-            /*let blend_radius = match splat_mode {
-                0 => 1.0,
-                1 => blend_radius,
-                2 => 0.4,
+            if rc.base_angular_resolution == 2 && splat_mode == 0 {
+                commands += splat.query_optimized(&core, &rc);
+            } else {
+                let blend_radius = match splat_mode {
+                    0 => 1.0,
+                    1 => blend_radius,
+                    2 => 0.4,
                 3 => 0.51,
                 _ => unreachable!(),
             };
@@ -518,11 +521,11 @@ fn main() {
                             1 => 0,
                             2 => 1,
                             _ => unreachable!(),
-                        },
-                    )
-                    .debug("Draw Splats"),
-            );*/
-            commands += splat.query_optimized(&core, &rc);
+                            },
+                        )
+                        .debug("Draw Splats"),
+                );
+            }
         }
         if mode == 8 && !rt.key_down(KeyCode::KeyR) {
             commands += ddgi.trace_rays(&core, rt.tick);

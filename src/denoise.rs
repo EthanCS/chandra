@@ -1,6 +1,6 @@
-use keter::lang::types::vector::{Vec3, Vec4};
+use keter::lang::types::vector::Vec3;
 use keter::prelude::*;
-use yesod::utils::{dispatch0, dispatch1};
+use yesod::utils::once;
 
 use crate::algorithm::CoreData;
 
@@ -34,16 +34,15 @@ impl Denoiser {
         }
     }
     pub fn denoise(&mut self, core: &CoreData, input: &Tex2d<Vec3<f32>>) {
-        dispatch1(
-            |input| {
+        once(|| {
+            DEVICE.create_kernel_async::<fn(Tex2d<Vec3<f32>>)>(&|input| {
                 let pixel = dispatch_id().xy();
                 let index = core.pixel_to_linear(pixel);
                 self.input.write(index, input.read(pixel));
                 self.normal.write(index, core.read_normal(pixel));
-            },
-            core.screen_dispatch_size(),
-            input,
-        );
+            })
+        })
+        .dispatch(core.screen_dispatch_size(), input);
         let mut colors = self
             .input
             .copy_to_vec()
