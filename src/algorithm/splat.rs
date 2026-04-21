@@ -1,6 +1,5 @@
 use keter::lang::functions::{block_id, sync_block, thread_id, warp_read_lane_at};
 use yesod::color::inferno;
-use yesod::host;
 use yesod::shapes::intersect_sphere;
 use yesod::utils::FetchAddVector;
 
@@ -25,6 +24,22 @@ impl SplatData {
             cm1_shadow_mask: DEVICE.create_buffer::<u32>(core.num_pixels() as usize),
             interpolation_exponent,
         }
+    }
+    #[tracked]
+    fn get_lambertian_weight(
+        &self,
+        encoder: Expr<DirectionIndexer>,
+        dir: Expr<u32>,
+        normal: Expr<Vec3<f32>>,
+    ) -> Expr<f32> {
+        let dir = encoder.linear_to_grid(dir).cast_f32();
+        let total_weight = 0.0f32.var();
+        for i in 0u32..16 {
+            let offset = Vec2::expr(i % 4, i / 4);
+            let subdir = encoder.grid_to_dir_f32(dir + (offset.cast_f32() + 0.5) / 4.0);
+            *total_weight += keter::max(subdir.dot(normal), 0.0);
+        }
+        total_weight / 16.0
     }
     pub fn query_optimized(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0(
@@ -80,8 +95,7 @@ impl SplatData {
                 let normal = core.read_normal(pixel);
                 let encoder = rc.cache.get_encoder(0.expr());
 
-                let dir = encoder.linear_to_dir(thread);
-                let total_weight = keter::max(dir.dot(normal), 0.0);
+                let direction_weight = self.get_lambertian_weight(encoder, thread, normal);
 
                 let result = Vec4::splat(0.0_f32).var();
                 for i in 0u32..8 {
@@ -99,13 +113,14 @@ impl SplatData {
                         *result += weight * radiance.extend(1.0);
                     }
                 }
-                *result *= total_weight;
+                *result *= direction_weight;
                 for i in 0u32..3 {
                     if thread % (1 << i) == 0 {
                         *result +=
                             warp_read_lane_at(**result, thread_id().x + 4 * (thread + (1 << i)));
                     }
                 }
+
                 if thread == 0 {
                     let pixel_index = core.pixel_to_linear(pixel);
                     self.radiance.write(pixel_index, result);
@@ -136,7 +151,7 @@ impl SplatData {
                 let world_pos = core.get_world_pos(pixel);
                 let lod = rc.cache.estimate_lod(world_pos);
 
-                let c_1_len = rc.cm1_len * rc.cache.base_grid_size * (1_u32 << lod).cast_f32();
+                let cm1_len = rc.cm1_len * rc.cache.base_grid_size * (1_u32 << lod).cast_f32();
 
                 let shadow_mask = 0u32.var();
                 // TODO: Adjust for less base resolution.
@@ -144,19 +159,19 @@ impl SplatData {
 
                 for i in 0_u32.expr()..encoder.linear_size() {
                     // let offset = pcg3df(pixel.extend(i + tick * 32)).xy();
-                    let c_1_dir = encoder.linear_to_dir(i);
-                    let c_1_dir = c_1_dir * c_1_len;
+                    let cm1_dir = encoder.linear_to_dir(i);
+                    let cm1_dir = cm1_dir * cm1_len;
                     // raymarch in screenspace
                     for j in 0_u32..num_samples {
                         let sample_pos =
-                            world_pos + c_1_dir * ((j.cast_f32() + 0.5) / num_samples as f32);
+                            world_pos + cm1_dir * ((j.cast_f32() + 0.5) / num_samples as f32);
                         // does this add the 0.5 bias anyways?
                         let screen_pos = view.project(sample_pos);
                         let sample_depth = (sample_pos - view.pos).length();
                         let object_depth = core.depth.read(screen_pos.cast_u32());
                         if object_depth != 0.0
                             && object_depth < sample_depth * 0.9992
-                            && !(sample_depth > object_depth + c_1_len)
+                            && !(sample_depth > object_depth + cm1_len)
                         {
                             *shadow_mask |= 1 << i;
                             break;
@@ -297,8 +312,11 @@ impl SplatData {
 
                             let total_radiance = Vec4::splat(0.0_f32).var();
                             for j in 0_u32.expr()..encoder.linear_size() {
-                                let dir = encoder.linear_to_dir(j + block_id().y * 32);
-                                let weight = dir.dot(normal);
+                                let weight = self.get_lambertian_weight(
+                                    encoder,
+                                    j + block_id().y * 32,
+                                    normal,
+                                );
                                 if weight > 0.0 {
                                     let radiance = if cm1_shadow_mask & (1 << j) == 0 {
                                         radiance_data.read(j)

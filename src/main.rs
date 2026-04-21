@@ -29,11 +29,12 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 use std::f32::consts::PI;
 
 use chandra::algorithm::ddgi::{DdgiConfig, DdgiData};
-use chandra::algorithm::rc::{RcConfig, RcData, over};
+use chandra::algorithm::rc::{RcConfig, RcData};
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
 use chandra::algorithm::{CommandList, CoreData};
 use chandra::cache::{DirectionIndexer, DirectionIndexerComps};
+use chandra::utils::sample_bounce;
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
 use keter::graph::profile::Profiler;
@@ -42,7 +43,6 @@ use keter::prelude::*;
 use keter_testbed::{App, KeyCode};
 use yesod::camera::{Camera, View};
 use yesod::color::inferno;
-use yesod::direction::project_line;
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2};
 use yesod::utils::{dispatch0, offset_ray};
@@ -50,11 +50,6 @@ use yesod::{device_println, host};
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const DEBUG_SPLATS: u32 = 0b1;
-
-#[tracked]
-fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
-    dir - normal * (2.0_f32 * dir.dot(normal))
-}
 
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
@@ -107,11 +102,11 @@ fn main() {
         num_cascades: 5,
         quality_decay: 1.0,
         base_radius: 1200.0,
-        base_grid_size: 7.0,
+        // base_grid_size: 7.0,
+        base_grid_size: 4.0,
         base_angular_resolution: 2,
-        // cm1_len: 0.5,
-        // base_radius: 999999.0, // 250.0,
         // cm1_len: 1.0,
+        // base_radius: 999999.0, // 250.0,
         // length_scale: 2.0,
         terminate_deposit: false,
         ..Default::default()
@@ -122,7 +117,8 @@ fn main() {
     let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
     let max = glam::Vec3::new(700.0, 1300.0, 900.0);
     let size = max - min;
-    let spacing = size / (glam::UVec3::from(DdgiConfig::default().probe_dims).as_vec3() - 1.0);
+    let probe_dims = Vec3::new(32, 32, 16);
+    let spacing = size / (glam::UVec3::from(probe_dims).as_vec3() - 1.0);
     let spacing = spacing.max_element();
     // Hit at 21, position
     //  Hit at 193, position [505.3295, -1370.4766, 825.4145]
@@ -130,6 +126,9 @@ fn main() {
     let ddgi = DdgiData::new(DdgiConfig {
         spacing: Vec3::splat(spacing),
         origin: min.into(),
+        rays_per_probe: 1244,
+        hysteresis: 0.0,
+        probe_dims,
         ..Default::default()
     });
 
@@ -255,12 +254,23 @@ fn main() {
             } else if mode == 4 {
                 let ray_start_pos = offset_ray(world_pos, normal);
 
-                let bounce_ray = project_line((r2(tick) + pcg3df(pixel.extend(968)).xy()).fract());
-                let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
+                let added_radiance = Vec4::splat(0.0_f32).var();
+                let num_samples = 1024;
+                for i in 0u32..num_samples {
+                    let bounce_ray = sample_bounce(
+                        normal,
+                        (r2(tick * num_samples + i) + pcg3df(pixel.extend(968)).xy()).fract(),
+                    );
+                    // let bounce_ray = project_line(
+                    //     (r2(tick * num_samples + i) + pcg3df(pixel.extend(968)).xy()).fract(),
+                    // );
+                    // let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
-                let bounce_hit = core.world.trace(ray_start_pos, bounce_ray);
-                let radiance = core.get_radiance(ray_start_pos, bounce_ray, bounce_hit);
-                let value = accum_buf.read(pixel) + radiance.extend(1.0) * bounce_ray.dot(normal);
+                    let bounce_hit = core.world.trace(ray_start_pos, bounce_ray);
+                    let radiance = core.get_radiance(ray_start_pos, bounce_ray, bounce_hit);
+                    *added_radiance += radiance.extend(1.0); // * bounce_ray.dot(normal);
+                }
+                let value = accum_buf.read(pixel) + added_radiance;
                 accum_buf.write(pixel, value);
                 value.xyz() / value.w + emission
             } else if mode == 5 {
@@ -322,15 +332,22 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        // yaw: 6.857436,
-        // pitch: 0.12587574,
-        // pos: glam::Vec3::new(308.5938, -573.01685, 240.64691),
-        yaw: 6.437008,
-        pitch: 0.47492924,
-        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        // main
+        // yaw: 6.437008,
+        // pitch: 0.47492924,
+        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        // specular
         // yaw: -2.8706567,
         // pitch: 0.11235107,
         // pos: glam::Vec3::new(5.8384686, 1069.1106, 244.21223),
+        // penumbra
+        // yaw: 7.148522,
+        // pitch: 0.22371231,
+        // pos: glam::Vec3::new(-625.7774, 904.33496, 233.55939),
+        // curtain
+        yaw: 3.586528,
+        pitch: 0.3685319,
+        pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
         fov: 1.15,
     };
     let mut running = true;
@@ -488,12 +505,27 @@ fn main() {
                     0 => 1.0,
                     1 => blend_radius,
                     2 => 0.4,
-                3 => 0.51,
-                _ => unreachable!(),
-            };
-            let depth_prepass = splat_mode == 2;
-            let dispatch_size = 32 << (draw_cascade.saturating_sub(1) * 2);
-            if depth_prepass {
+                    3 => 0.51,
+                    _ => unreachable!(),
+                };
+                let depth_prepass = splat_mode == 2;
+                let dispatch_size = 32 << (draw_cascade.saturating_sub(1) * 2);
+                if depth_prepass {
+                    commands.push(
+                        splat
+                            .splat_radiance_raw(&core, &rc)
+                            .dispatch_async(
+                                [rc.max_probes[draw_cascade as usize], dispatch_size, 1],
+                                &blend_radius,
+                                &draw_cascade,
+                                &match splat_mode {
+                                    2 => 2,
+                                    _ => unreachable!(),
+                                },
+                            )
+                            .debug("Draw Splats (Depth Prepass)"),
+                    );
+                }
                 commands.push(
                     splat
                         .splat_radiance_raw(&core, &rc)
@@ -502,25 +534,10 @@ fn main() {
                             &blend_radius,
                             &draw_cascade,
                             &match splat_mode {
-                                2 => 2,
+                                0 => 0,
+                                1 => 0,
+                                2 => 1,
                                 _ => unreachable!(),
-                            },
-                        )
-                        .debug("Draw Splats (Depth Prepass)"),
-                );
-            }
-            commands.push(
-                splat
-                    .splat_radiance_raw(&core, &rc)
-                    .dispatch_async(
-                        [rc.max_probes[draw_cascade as usize], dispatch_size, 1],
-                        &blend_radius,
-                        &draw_cascade,
-                        &match splat_mode {
-                            0 => 0,
-                            1 => 0,
-                            2 => 1,
-                            _ => unreachable!(),
                             },
                         )
                         .debug("Draw Splats"),
