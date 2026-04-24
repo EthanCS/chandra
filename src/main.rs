@@ -86,7 +86,7 @@ fn main() {
     };*/
 
     let world = TriangleWorld::load(
-        "assets/sponza.obj",
+        "assets/conference.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
@@ -96,22 +96,19 @@ fn main() {
 
     let core = CoreData::new(world, app.size(), sunlight_dir.into());
     let mut rc = RcData::new(RcConfig {
-        increased_base_resolution: true,
         use_quality_weight: false,
         max_lifetime: 1,
         quality_decay: 1.0,
-        base_radius: 500.0,
+        base_radius: 1200.0,
         // base_grid_size: 7.0,
         num_cascades: 5,
         base_grid_size: 4.0,
         base_angular_resolution: 2,
-        terminate_deposit: false,
         // num_cascades: 4,
         // base_grid_size: 8.0,
         // base_angular_resolution: 4,
-        // terminate_deposit: true,
-        blending_radius: 1.4,
-        // cm1_len: 0.5,
+        blending_radius: 1.3,
+        // cm1_len: 1.0,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080 * 2, true);
@@ -184,11 +181,11 @@ fn main() {
             let color = if mode == 0 {
                 let result = splat.get_radiance(pixel_index);
 
-                /*let specular_dir = reflect(ray_dir, normal);
+                /*let specular_dir = chandra::utils::reflect(ray_dir, normal);
                 let specular_radiance = rc.sample(world_pos, 3.expr(), specular_dir).var();
                 for i in (0..3).rev() {
                     let fluence = rc.cache.sample(world_pos, i.expr(), specular_dir);
-                    *specular_radiance = over(fluence, **specular_radiance);
+                    *specular_radiance = chandra::algorithm::rc::over(fluence, **specular_radiance);
                 }*/
 
                 if flags & DEBUG_SPLATS == 0 {
@@ -336,13 +333,17 @@ fn main() {
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
         // main
-        yaw: 6.437008,
-        pitch: 0.47492924,
-        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        // yaw: 6.437008,
+        // pitch: 0.47492924,
+        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         // specular
         // yaw: -2.8706567,
         // pitch: 0.11235107,
         // pos: glam::Vec3::new(5.8384686, 1069.1106, 244.21223),
+        // specular (no sunlight)
+        yaw: 0.24019964,
+        pitch: 0.17068534,
+        pos: glam::Vec3::new(-130.0943, -978.813, 184.45943),
         // penumbra
         // yaw: 7.148522,
         // pitch: 0.22371231,
@@ -457,7 +458,7 @@ fn main() {
 
             if normal_rc {
                 for c in 0..num_cascades {
-                    commands += rc.trace_deposit(&core, c0_len, c, 2, true);
+                    commands += rc.trace_deposit(&core, c0_len, c, 1, false);
                 }
             } else {
                 commands += trace.reset();
@@ -496,14 +497,14 @@ fn main() {
 
         commands += splat.reset();
 
-        if rc.cm1_len > 0.0 {
-            commands += splat.trace_cm1(&core, &rc, 4);
-        }
+        // if rc.cm1_len > 0.0 {
+        //     commands += splat.trace_cm1(&core, &rc, 4);
+        // }
 
         if mode == 0 {
             if rc.base_angular_resolution == 2 && splat_mode == 0 {
                 commands += splat.shade_optimized_8(&core, &rc);
-            } else if rc.base_angular_resolution == 4 && splat_mode == 0 && rc.cm1_len == 0.0 {
+            } else if rc.base_angular_resolution == 4 && splat_mode == 0 {
                 commands += splat.calculate_irradiance(&rc);
                 commands += splat.copy_irradiance_borders(&rc);
                 commands += splat.shade_optimized_32(&core, &rc);

@@ -8,6 +8,7 @@ use keter::prelude::*;
 use yesod::camera::View;
 use yesod::device_println;
 use yesod::direction::{DirectionEncoder, SphericalEncoder};
+use yesod::rand::pcg3df;
 use yesod::utils::{dispatch0, dispatch1, memo, offset_ray};
 
 use crate::cache::{Fluence, Probe, Radiance};
@@ -62,18 +63,35 @@ impl CoreData {
     }
     #[tracked]
     pub fn get_emission(&self, pos: Expr<Vec3<f32>>, hit: Expr<Hit>) -> Expr<Radiance> {
+        const BISTRO_LIGHTS: [u32; 27] = [
+            1002, 1018, 1022, 1026, 1030, 1079, 1081, 1077, 1046, 1034, 1038, 1042, 1014, 1051,
+            1053, 1055, 1057, 1059, 1061, 1010, 1063, 1065, 1067, 1006, 1075, 1073, 1071,
+        ];
+
         let normal = self.world.get_normal_flat(hit);
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
-        // if weight > 0.0 {
-        //     *radiance += self
-        //         .world
-        //         .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
-        //         .miss()
-        //         .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
-        //         * weight;
-        // }
+        if weight > 0.0 {
+            *radiance += self
+                .world
+                .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
+                .miss()
+                .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
+                * weight;
+        }
+
+        /*
+        let bistro_lights = BISTRO_LIGHTS.expr();
+
+        for i in 0..BISTRO_LIGHTS.len() as u32 {
+            if hit.inst == bistro_lights.read(i) {
+                *radiance += 100.0 * pcg3df(Vec3::expr(i, 15, 32));
+            }
+        }
+        */
+
+        //
         if hit.inst == 1
         /*292*/ /*162*/
         {

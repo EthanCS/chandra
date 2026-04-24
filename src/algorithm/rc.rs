@@ -46,7 +46,7 @@ impl Default for RcConfig {
             min_direction_weight: 2.0,
             max_lifetime: 10,
             merge_nearest: false,
-            increased_base_resolution: false,
+            increased_base_resolution: true,
             terminate_deposit: true,
             interpolation_exponent: 1.0,
             cm1_len: 0.0,
@@ -370,7 +370,7 @@ impl RcData {
                     };
                     // shadowing issues...
                     let start_len = if cascade == 0 {
-                        self.cm1_len.expr()
+                        self.cm1_len.expr() * self.cache.spacing(node.probe.position.w, 0)
                     } else {
                         start_len * self.start_length_multiplier
                     };
