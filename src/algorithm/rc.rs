@@ -14,6 +14,7 @@ use crate::cache::{Fluence, HashCache, LoadedNode, ProbeComps, Radiance};
 pub struct RcConfig {
     pub base_grid_size: f32,
     pub base_radius: f32,
+    pub blending_radius: f32,
     pub base_angular_resolution: u32,
     pub base_probes: u32,
     pub num_cascades: u32,
@@ -35,6 +36,7 @@ impl Default for RcConfig {
         Self {
             base_grid_size: 10.0,
             base_radius: 1000.0,
+            blending_radius: 1.1,
             base_angular_resolution: 4,
             base_probes: 1 << 19,
             num_cascades: 4,
@@ -125,6 +127,7 @@ impl RcData {
         let cache = HashCache::new(
             config.base_grid_size,
             config.base_radius,
+            config.blending_radius,
             config.base_angular_resolution,
             config.base_probes,
             config.num_cascades,
@@ -499,9 +502,10 @@ impl RcData {
                 set_block_size([8, 8, 1]);
                 let world_pos = core.get_world_pos(dispatch_id().xy());
 
-                let lod = self.cache.estimate_lod(world_pos);
-                let probe = self.cache.quantize(world_pos, lod, 0.expr());
-                self.cache.insert(probe, |_| {});
+                self.cache.iter_lods(world_pos, |lod, _, _| {
+                    let probe = self.cache.quantize(world_pos, lod, 0.expr());
+                    self.cache.insert(probe, |_| {});
+                });
             },
             core.screen_dispatch_size(),
         )
@@ -530,11 +534,12 @@ impl RcData {
                 set_block_size([8, 8, 1]);
                 let world_pos = core.get_world_pos(dispatch_id().xy());
 
-                let lod = self.cache.estimate_lod(world_pos);
-                let probe = self.cache.quantize(world_pos, lod, 0.expr());
+                self.cache.iter_lods(world_pos, |lod, _, _| {
+                    let probe = self.cache.quantize(world_pos, lod, 0.expr());
 
-                let node = self.cache.get(probe);
-                self.probe_lifetime.write(node.index, self.max_lifetime);
+                    let node = self.cache.get(probe);
+                    self.probe_lifetime.write(node.index, self.max_lifetime);
+                });
             }))
         })
         .dispatch_async(core.screen_dispatch_size())
@@ -577,13 +582,14 @@ impl RcData {
                     let cascade = dispatch_id().z;
                     let world_pos = core.get_world_pos(pixel);
 
-                    let lod = self.cache.estimate_lod(world_pos);
-                    let probe = self.cache.quantize(world_pos, lod, cascade);
-                    let node = self.cache.get(probe);
+                    self.cache.iter_lods(world_pos, |lod, _, _| {
+                        let probe = self.cache.quantize(world_pos, lod, cascade);
+                        let node = self.cache.get(probe);
 
-                    self.average_position
-                        .atomic_ref(node.index)
-                        .add_sample(world_pos);
+                        self.average_position
+                            .atomic_ref(node.index)
+                            .add_sample(world_pos);
+                    });
                 }),
                 [
                     core.screen_size().x,

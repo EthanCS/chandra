@@ -166,17 +166,27 @@ impl TraceData {
                 );
                 let dir = dir * dir.dot(normal).signum();
 
-                let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
+                let start = offset_ray(world_pos, normal);
+                let hit = core.world.trace_segment(
+                    start,
+                    dir,
+                    Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
+                );
 
-                if ray_index < self.traced_rays.len_expr_u32() {
-                    let start = offset_ray(world_pos, normal);
-                    let hit = core.world.trace_segment(
-                        start,
-                        dir,
-                        Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
-                    );
+                let radiance = core.get_radiance(start, dir, hit);
 
-                    let radiance = core.get_radiance(start, dir, hit);
+                if let Some(raw_radiance) = &self.raw_radiance {
+                    raw_radiance.write(pixel, radiance);
+                }
+
+                rc.cache.iter_lods(world_pos, |lod, _, _| {
+                    let probe = rc.cache.quantize(world_pos, lod, 0.expr());
+
+                    let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
+
+                    if ray_index >= self.traced_rays.len_expr_u32() {
+                        return;
+                    }
 
                     let cascade = if hit.miss() {
                         rc.last_cascade().expr()
@@ -200,11 +210,7 @@ impl TraceData {
                         dir: SphericalEncoder::encode(dir),
                     });
                     self.traced_rays.write(ray_index, ray);
-
-                    if let Some(raw_radiance) = &self.raw_radiance {
-                        raw_radiance.write(pixel, radiance);
-                    }
-                }
+                })
             }),
             core.screen_dispatch_size(),
             tick,

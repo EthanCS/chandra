@@ -204,6 +204,7 @@ pub struct Projection {
 pub struct HashCache {
     pub base_grid_size: f32,
     pub base_radius: f32,
+    pub blending_radius: f32,
     pub base_angular_resolution: u32,
     pub base_probes: u32,
     pub num_cascades: u32,
@@ -216,6 +217,7 @@ impl HashCache {
     pub fn new(
         base_grid_size: f32,
         base_radius: f32,
+        blending_radius: f32,
         base_angular_resolution: u32,
         base_probes: u32,
         num_cascades: u32,
@@ -229,6 +231,7 @@ impl HashCache {
         Self {
             base_grid_size,
             base_radius,
+            blending_radius,
             base_angular_resolution,
             base_probes,
             num_cascades,
@@ -296,6 +299,36 @@ impl HashCache {
         keter::max((radius / self.base_radius).log2(), 0.0)
             .ceil()
             .cast_u32()
+    }
+    #[tracked]
+    pub fn iter_lods(&self, pos: Expr<Vec3<f32>>, f: impl Fn(Expr<u32>, Expr<u32>, Expr<f32>)) {
+        if self.blending_radius == 1.0 {
+            // Don't do LODs
+            f(self.estimate_lod(pos), 0.expr(), 1.0.expr());
+        } else {
+            let radius = (pos - self.projection().view_pos).abs().reduce_max();
+            let lod_index = keter::max((radius / self.base_radius).log2(), -0.9);
+            let blending_factor =
+                keter::min(1.0, (1.0 - lod_index.fract()) / self.blending_radius.log2());
+            let lower_lod = lod_index.ceil().cast_u32();
+            // let higher_lod = (lod_index + self.blending_radius.log2()).ceil().cast_u32();
+            let num_lods = if blending_factor >= 1.0 {
+                1u32.expr()
+            } else {
+                2.expr()
+            };
+            for i in 0u32.expr()..num_lods {
+                f(
+                    lower_lod + i,
+                    i,
+                    if i == 0 {
+                        blending_factor
+                    } else {
+                        1.0 - blending_factor
+                    },
+                );
+            }
+        }
     }
 
     #[tracked]

@@ -189,39 +189,41 @@ impl SplatData {
                 let pixel = dispatch_id().xy();
                 let thread = thread_id().z;
                 let world_pos = core.get_world_pos(pixel);
-                let lod = rc.cache.estimate_lod(world_pos);
-                let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
 
-                let normal = core.read_normal(pixel);
-                let dir = OctahedralEncoder::encode(normal);
-                let dir = dir * self.irradiance_resolution as f32 + 1.0;
+                let result = Vec4::splat(0.0f32).var();
 
-                let (probe, weight) = interp_probes.get(thread);
-                let probe = Probe::from_comps_expr(ProbeComps {
-                    position: probe.extend(lod),
-                    cascade: 0.expr(),
+                rc.cache.iter_lods(world_pos, |lod, _, lod_weight| {
+                    let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
+
+                    let normal = core.read_normal(pixel);
+                    let dir = OctahedralEncoder::encode(normal);
+                    let dir = dir * self.irradiance_resolution as f32 + 1.0;
+
+                    let (probe, weight) = interp_probes.get(thread);
+                    let probe = Probe::from_comps_expr(ProbeComps {
+                        position: probe.extend(lod),
+                        cascade: 0.expr(),
+                    });
+                    let node = rc.cache.get(probe);
+                    if node.loaded() {
+                        let tile = Vec2::expr(
+                            node.index % self.irradiance_dims.x,
+                            node.index / self.irradiance_dims.x,
+                        );
+                        let uv = (tile * self.irradiance_size()).cast_f32() + dir;
+                        let irradiance = self
+                            .irradiance
+                            .var()
+                            .sample(
+                                uv / (self.irradiance_dims * self.irradiance_size())
+                                    .expr()
+                                    .cast_f32(),
+                            )
+                            .xyz();
+                        *result += irradiance.extend(1.0) * weight * lod_weight;
+                    }
                 });
-                let node = rc.cache.get(probe);
-                let result = if node.loaded() {
-                    let tile = Vec2::expr(
-                        node.index % self.irradiance_dims.x,
-                        node.index / self.irradiance_dims.x,
-                    );
-                    let uv = (tile * self.irradiance_size()).cast_f32() + dir;
-                    let irradiance = self
-                        .irradiance
-                        .var()
-                        .sample(
-                            uv / (self.irradiance_dims * self.irradiance_size())
-                                .expr()
-                                .cast_f32(),
-                        )
-                        .xyz();
-                    irradiance.extend(1.0) * weight
-                } else {
-                    Vec4::splat_expr(0.0_f32)
-                };
-                let result = result.var();
+
                 for i in 0u32..3 {
                     if thread % (1 << i) == 0 {
                         *result +=
@@ -248,44 +250,8 @@ impl SplatData {
                 let pixel = dispatch_id().xy();
                 // assume there's no early-exit for now.
                 let world_pos = core.get_world_pos(pixel);
-                let lod = rc.cache.estimate_lod(world_pos);
-                let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
 
-                /*
-                let thread = thread_id().z;
-
-                let adj_offsets = Shared::<u32>::new(32);
-                let adj_weights = Shared::<f32>::new(32);
-                let pixel_offsets = Shared::<u32>::new(5);
-
-                let (probe, weight) = interp_probes.get(i);
-                let probe = Probe::from_comps_expr(ProbeComps {
-                    position: probe.extend(lod),
-                    cascade: 0.expr(),
-                });
-                let node = rc.cache.get(probe);
-                if node.loaded() {
-                    let index = warp_prefix_count_bits(true.expr());
-                    adj_offsets.write(index, node.data_offset);
-                    adj_weights.write(index, weight);
-                    if thread == 0 {
-                        pixel_offsets.write(thread_id().x, index);
-                    }
-                }
-                let n = warp_active_count_bits(next.loaded());
-                pixel_offsets.write(4, n);
-
-                let normal = core.read_normal(pixel);
-                let encoder = rc.cache.get_encoder(0.expr());
-
-                let dir = encoder.linear_to_dir(thread);
-                let weight = dir.dot(normal);
-
-                let valid_dirs = Shared::<u32>::new(32);
-                if weight > 0.0 {
-                    valid_dirs.write(index, dir);
-                }
-                */
+                let result = Vec4::splat(0.0_f32).var();
 
                 let thread = thread_id().z;
 
@@ -294,22 +260,61 @@ impl SplatData {
 
                 let direction_weight = self.get_lambertian_weight(encoder, thread, normal);
 
-                let result = Vec4::splat(0.0_f32).var();
-                for i in 0u32..8 {
+                rc.cache.iter_lods(world_pos, |lod, _, lod_weight| {
+                    let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
+
+                    /*
+                    let thread = thread_id().z;
+
+                    let adj_offsets = Shared::<u32>::new(32);
+                    let adj_weights = Shared::<f32>::new(32);
+                    let pixel_offsets = Shared::<u32>::new(5);
+
                     let (probe, weight) = interp_probes.get(i);
                     let probe = Probe::from_comps_expr(ProbeComps {
                         position: probe.extend(lod),
                         cascade: 0.expr(),
                     });
                     let node = rc.cache.get(probe);
-                    if node.invalid() {
-                        continue;
+                    if node.loaded() {
+                        let index = warp_prefix_count_bits(true.expr());
+                        adj_offsets.write(index, node.data_offset);
+                        adj_weights.write(index, weight);
+                        if thread == 0 {
+                            pixel_offsets.write(thread_id().x, index);
+                        }
                     }
-                    let radiance = rc.base_radiance.read(node.data_offset + thread);
-                    if radiance.is_finite().all() {
-                        *result += weight * radiance.extend(1.0);
+                    let n = warp_active_count_bits(next.loaded());
+                    pixel_offsets.write(4, n);
+
+                    let normal = core.read_normal(pixel);
+                    let encoder = rc.cache.get_encoder(0.expr());
+
+                    let dir = encoder.linear_to_dir(thread);
+                    let weight = dir.dot(normal);
+
+                    let valid_dirs = Shared::<u32>::new(32);
+                    if weight > 0.0 {
+                        valid_dirs.write(index, dir);
                     }
-                }
+                    */
+
+                    for i in 0u32..8 {
+                        let (probe, weight) = interp_probes.get(i);
+                        let probe = Probe::from_comps_expr(ProbeComps {
+                            position: probe.extend(lod),
+                            cascade: 0.expr(),
+                        });
+                        let node = rc.cache.get(probe);
+                        if node.invalid() {
+                            continue;
+                        }
+                        let radiance = rc.base_radiance.read(node.data_offset + thread);
+                        if radiance.is_finite().all() {
+                            *result += weight * radiance.extend(1.0) * lod_weight;
+                        }
+                    }
+                });
                 *result *= direction_weight;
                 for i in 0u32..3 {
                     if thread % (1 << i) == 0 {

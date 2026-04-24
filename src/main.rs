@@ -100,7 +100,7 @@ fn main() {
         use_quality_weight: false,
         max_lifetime: 1,
         quality_decay: 1.0,
-        base_radius: 1200.0,
+        base_radius: 500.0,
         // base_grid_size: 7.0,
         num_cascades: 5,
         base_grid_size: 4.0,
@@ -110,10 +110,11 @@ fn main() {
         // base_grid_size: 8.0,
         // base_angular_resolution: 4,
         // terminate_deposit: true,
-        cm1_len: 0.5,
+        blending_radius: 1.4,
+        // cm1_len: 0.5,
         ..Default::default()
     });
-    let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
+    let trace = TraceData::new(&core, &rc, 1920 * 1080 * 2, true);
     let splat = SplatData::new(&core, &rc, 1.0);
     // let ris = RisData::new(&core);
     let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
