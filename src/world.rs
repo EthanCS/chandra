@@ -23,6 +23,9 @@ pub struct TriangleWorld {
     pub normals: Buffer<[f32; 3]>,
     pub indices: Buffer<[u32; 3]>,
     pub offsets: Buffer<[u32; 2]>,
+    // per-mesh
+    pub material_indices: Buffer<u32>,
+    pub material_diffuse: Buffer<Vec3<f32>>,
 }
 impl TriangleWorld {
     pub fn new(
@@ -30,11 +33,14 @@ impl TriangleWorld {
         normals: &[[f32; 3]],
         indices: &[[u32; 3]],
         offsets: &[[u32; 2]],
+        material_indices: &[u32],
+        material_diffuse: &[Vec3<f32>],
     ) -> Self {
-        let position_buffer = DEVICE.create_buffer_from_slice(positions);
-        let normal_buffer = DEVICE.create_buffer_from_slice(normals);
-        let index_buffer = DEVICE.create_buffer_from_slice(indices);
-        let offset_buffer = DEVICE.create_buffer_from_slice(offsets);
+        let positions = DEVICE.create_buffer_from_slice(positions);
+        let normals = DEVICE.create_buffer_from_slice(normals);
+        let indices = DEVICE.create_buffer_from_slice(indices);
+        let material_indices = DEVICE.create_buffer_from_slice(material_indices);
+        let material_diffuse = DEVICE.create_buffer_from_slice(material_diffuse);
 
         let accel = DEVICE.create_accel(AccelOption {
             hint: AccelUsageHint::FastTrace,
@@ -51,8 +57,8 @@ impl TriangleWorld {
             .tuple_windows()
         {
             let mesh = DEVICE.create_mesh(
-                position_buffer.view(start[1] as usize..end[1] as usize),
-                index_buffer.view(start[0] as usize..end[0] as usize),
+                positions.view(start[1] as usize..end[1] as usize),
+                indices.view(start[0] as usize..end[0] as usize),
                 AccelOption {
                     hint: AccelUsageHint::FastTrace,
                     allow_compaction: true,
@@ -63,16 +69,21 @@ impl TriangleWorld {
             accel.push_mesh(&mesh, Mat4::identity(), 0xFF, true);
         }
         accel.build(AccelBuildRequest::ForceBuild);
+
+        let offsets = DEVICE.create_buffer_from_slice(offsets);
+
         Self {
             accel,
-            positions: position_buffer,
-            normals: normal_buffer,
-            indices: index_buffer,
-            offsets: offset_buffer,
+            positions,
+            normals,
+            indices,
+            offsets,
+            material_indices,
+            material_diffuse,
         }
     }
     pub fn load(path: impl AsRef<Path> + Debug, rotation: glam::Mat3) -> Self {
-        let (models, _materials) = tobj::load_obj(
+        let (models, materials) = tobj::load_obj(
             path,
             &LoadOptions {
                 single_index: true,
@@ -81,10 +92,22 @@ impl TriangleWorld {
             },
         )
         .unwrap();
+        let diffuse = if let Ok(materials) = materials {
+            materials
+                .iter()
+                .map(|m| m.diffuse.unwrap_or([0.7; 3]).into())
+                .collect::<Vec<_>>()
+        } else {
+            vec![Vec3::splat(0.7); 1]
+        };
+
         let mut positions: Vec<[f32; 3]> = vec![];
         let mut normals: Vec<[f32; 3]> = vec![];
         let mut indices: Vec<[u32; 3]> = vec![];
         let mut offsets: Vec<[u32; 2]> = vec![];
+
+        let mut material_indices = Vec::<u32>::new();
+
         for model in models {
             let mesh = model.mesh;
 
@@ -99,8 +122,17 @@ impl TriangleWorld {
             ); // Z-up to Y-up
             normals.extend(bytemuck::cast_slice(&mesh.normals));
             indices.extend(bytemuck::cast_slice(&mesh.indices));
+
+            material_indices.push(mesh.material_id.unwrap_or(0).min(diffuse.len() - 1) as u32);
         }
-        Self::new(&positions, &normals, &indices, &offsets)
+        Self::new(
+            &positions,
+            &normals,
+            &indices,
+            &offsets,
+            &material_indices,
+            &diffuse,
+        )
     }
 
     #[tracked]
@@ -150,6 +182,12 @@ impl TriangleWorld {
         });
         hit.interpolate(normals[0], normals[1], normals[2])
             .normalize()
+    }
+
+    #[tracked]
+    pub fn get_diffuse(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
+        let material_index = self.material_indices.read(hit.inst);
+        self.material_diffuse.read(material_index)
     }
 }
 

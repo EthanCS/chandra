@@ -199,7 +199,8 @@ fn main() {
                     }
                 }
             } else if mode == 1 {
-                trace.raw_radiance.as_ref().unwrap().read(pixel) + emission
+                core.world.get_diffuse(core.hit.read(pixel_index))
+                // trace.raw_radiance.as_ref().unwrap().read(pixel) + emission
                 /*if rc.cache.contains(probe) {
                     let target_probe = rc.cache.decode(rc.cache.encode(probe), cascade);
                     if (target_probe.position != probe.position).any()
