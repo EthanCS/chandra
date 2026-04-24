@@ -99,20 +99,22 @@ fn main() {
         increased_base_resolution: true,
         use_quality_weight: false,
         max_lifetime: 1,
-        num_cascades: 5,
         quality_decay: 1.0,
         base_radius: 1200.0,
         // base_grid_size: 7.0,
+        num_cascades: 5,
         base_grid_size: 4.0,
         base_angular_resolution: 2,
-        // cm1_len: 1.0,
-        // base_radius: 999999.0, // 250.0,
-        // length_scale: 2.0,
         terminate_deposit: false,
+        // num_cascades: 4,
+        // base_grid_size: 8.0,
+        // base_angular_resolution: 4,
+        // terminate_deposit: true,
+        cm1_len: 0.5,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080, true);
-    let splat = SplatData::new(&core, 1.0);
+    let splat = SplatData::new(&core, &rc, 1.0);
     // let ris = RisData::new(&core);
     let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
     let max = glam::Vec3::new(700.0, 1300.0, 900.0);
@@ -126,8 +128,8 @@ fn main() {
     let ddgi = DdgiData::new(DdgiConfig {
         spacing: Vec3::splat(spacing),
         origin: min.into(),
-        rays_per_probe: 1244,
-        hysteresis: 0.0,
+        rays_per_probe: 1024,
+        hysteresis: 0.97,
         probe_dims,
         ..Default::default()
     });
@@ -255,7 +257,7 @@ fn main() {
                 let ray_start_pos = offset_ray(world_pos, normal);
 
                 let added_radiance = Vec4::splat(0.0_f32).var();
-                let num_samples = 1024;
+                let num_samples = 128;
                 for i in 0u32..num_samples {
                     let bounce_ray = sample_bounce(
                         normal,
@@ -308,7 +310,7 @@ fn main() {
                         .read(pixel_index)
                         .count_ones()
                         .cast_f32()
-                        / 32.0,
+                        / rc.cache.directions_per_probe(0) as f32,
                 )
             } else if mode == 8 {
                 /*let z = pixel.x / ddgi.irradiance.width()
@@ -333,9 +335,9 @@ fn main() {
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
         // main
-        // yaw: 6.437008,
-        // pitch: 0.47492924,
-        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        yaw: 6.437008,
+        pitch: 0.47492924,
+        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         // specular
         // yaw: -2.8706567,
         // pitch: 0.11235107,
@@ -345,9 +347,9 @@ fn main() {
         // pitch: 0.22371231,
         // pos: glam::Vec3::new(-625.7774, 904.33496, 233.55939),
         // curtain
-        yaw: 3.586528,
-        pitch: 0.3685319,
-        pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
+        // yaw: 3.586528,
+        // pitch: 0.3685319,
+        // pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
         fov: 1.15,
     };
     let mut running = true;
@@ -499,7 +501,11 @@ fn main() {
 
         if mode == 0 {
             if rc.base_angular_resolution == 2 && splat_mode == 0 {
-                commands += splat.query_optimized(&core, &rc);
+                commands += splat.shade_optimized_8(&core, &rc);
+            } else if rc.base_angular_resolution == 4 && splat_mode == 0 && rc.cm1_len == 0.0 {
+                commands += splat.calculate_irradiance(&rc);
+                commands += splat.copy_irradiance_borders(&rc);
+                commands += splat.shade_optimized_32(&core, &rc);
             } else {
                 let blend_radius = match splat_mode {
                     0 => 1.0,
@@ -585,6 +591,7 @@ fn main() {
                     "DDGI",
                     "Merge",
                     "Trace Cascade -1",
+                    "Calculate Irradiance",
                     "Draw",
                 ],
                 true,

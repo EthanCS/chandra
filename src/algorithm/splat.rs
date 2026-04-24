@@ -1,5 +1,6 @@
-use keter::lang::functions::{block_id, sync_block, thread_id, warp_read_lane_at};
+use keter::lang::functions::{block_id, sync_block, thread_id, warp_active_sum, warp_read_lane_at};
 use yesod::color::inferno;
+use yesod::direction::OctahedralEncoder;
 use yesod::shapes::intersect_sphere;
 use yesod::utils::FetchAddVector;
 
@@ -12,18 +13,157 @@ pub struct SplatData {
     // debug only
     pub depth: Buffer<f32>,
     pub cm1_shadow_mask: Buffer<u32>,
+    // for optimized 32-dir
+    pub irradiance: Tex2dHandle<Vec3<f32>>,
     // settings
     pub interpolation_exponent: f32,
+    pub irradiance_resolution: u32,
+    pub irradiance_dims: Vec2<u32>,
 }
 
 impl SplatData {
-    pub fn new(core: &CoreData, interpolation_exponent: f32) -> Self {
+    pub fn new(core: &CoreData, rc: &RcData, interpolation_exponent: f32) -> Self {
+        let c0_size = rc.cache.base_probes;
+        let x_size = 1 << (c0_size.ilog2() / 2);
+        let y_size = c0_size.div_ceil(x_size);
+        let resolution = 6;
+        let full_resolution = resolution + 2;
+        let irradiance_texture = DEVICE.create_tex2d::<Vec3<f32>>(
+            PixelStorage::Half4,
+            x_size * full_resolution,
+            y_size * full_resolution,
+            1,
+        );
+        let irradiance = BINDLESS.push_tex2d(
+            irradiance_texture,
+            Sampler {
+                filter: SamplerFilter::LinearLinear,
+                address: SamplerAddress::Edge,
+            },
+        );
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
             cm1_shadow_mask: DEVICE.create_buffer::<u32>(core.num_pixels() as usize),
+            irradiance,
             interpolation_exponent,
+            irradiance_resolution: resolution,
+            irradiance_dims: Vec2::new(x_size, y_size),
         }
+    }
+    fn irradiance_size(&self) -> u32 {
+        self.irradiance_resolution + 2
+    }
+    // could switch to gather instead.
+    pub fn calculate_irradiance(&self, rc: &RcData) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                set_block_size([1, 32, 1]);
+                assert!(rc.increased_base_resolution);
+                assert_eq!(rc.base_angular_resolution, 4);
+
+                let node = rc.cache.get_occupied(0.expr(), dispatch_id().x);
+                if node.invalid() {
+                    return;
+                }
+
+                let radiance = rc.base_radiance.read(node.data_offset + dispatch_id().y);
+                let radiance = if radiance.is_finite().all() {
+                    radiance.extend(1.0)
+                } else {
+                    Vec4::splat_expr(0.0)
+                };
+                let dir = rc
+                    .cache
+                    .get_encoder(0.expr())
+                    .linear_to_dir(dispatch_id().y);
+
+                for index in 0..self.irradiance_resolution.pow(2) {
+                    let index = Vec2::expr(
+                        index % self.irradiance_resolution,
+                        index / self.irradiance_resolution,
+                    );
+                    let offset = (index.cast_f32() + 0.5) / self.irradiance_resolution as f32;
+                    let out_dir = OctahedralEncoder::decode(offset);
+                    let weight = keter::max(out_dir.dot(dir), 0.0);
+                    let deposit = radiance * weight;
+                    let deposit = Vec4::expr(
+                        warp_active_sum(deposit.x),
+                        warp_active_sum(deposit.y),
+                        warp_active_sum(deposit.z),
+                        warp_active_sum(deposit.w),
+                    );
+                    if dispatch_id().y == 0 {
+                        let tile = Vec2::expr(
+                            dispatch_id().x % self.irradiance_dims.x,
+                            dispatch_id().x / self.irradiance_dims.x,
+                        );
+                        let uv = tile * self.irradiance_size() + index + 1;
+                        self.irradiance.write(uv, deposit.xyz() / deposit.w);
+                    }
+                }
+            }),
+            [rc.max_probes[0], 32, 1],
+        )
+        .debug("Calculate Irradiance")
+    }
+    pub fn copy_irradiance_borders(&self, rc: &RcData) -> NodeConfigs<'static> {
+        (
+            dispatch0(
+                track!(|| {
+                    set_block_size([1, 8, 4]);
+                    let size = self.irradiance_size();
+                    let res = self.irradiance_resolution;
+
+                    let probe_index = dispatch_id().x;
+                    let probe_pos = Vec2::expr(
+                        probe_index % self.irradiance_dims.x,
+                        probe_index / self.irradiance_dims.x,
+                    );
+                    let texture_offset = probe_pos * size;
+
+                    let write_index = dispatch_id().y + 1;
+                    let read_index = res + 2 - write_index;
+                    let side = dispatch_id().z;
+                    let near = side % 2 == 0;
+                    let write_pos = Vec2::expr(
+                        write_index,
+                        if near { 0_u32.expr() } else { (res + 1).expr() },
+                    );
+                    let read_pos =
+                        Vec2::expr(read_index, if near { 1_u32.expr() } else { res.expr() });
+                    let horiz = side / 2 == 0;
+                    let write_pos = if horiz { write_pos } else { write_pos.yx() };
+                    let read_pos = if horiz { read_pos } else { read_pos.yx() };
+                    let value = self.irradiance.read(texture_offset + read_pos);
+                    self.irradiance.write(texture_offset + write_pos, value);
+                }),
+                [rc.max_probes[0], self.irradiance_resolution, 4],
+            )
+            .debug("Copy Irradiance Borders"),
+            dispatch0(
+                track!(|| {
+                    set_block_size([8, 4, 1]);
+                    let probe_index = dispatch_id().x;
+                    let probe_pos = Vec2::expr(
+                        probe_index % self.irradiance_dims.x,
+                        probe_index / self.irradiance_dims.x,
+                    );
+                    let corner = Vec2::expr(dispatch_id().y % 2, dispatch_id().y / 2);
+                    // Irradiance
+                    let write_pos = corner * (self.irradiance_resolution + 1);
+                    let read_pos = (1 - corner) * (self.irradiance_resolution) + 1;
+                    let value = self
+                        .irradiance
+                        .read(probe_pos * self.irradiance_size() + read_pos);
+                    self.irradiance
+                        .write(probe_pos * self.irradiance_size() + write_pos, value);
+                }),
+                [rc.max_probes[0], 4, 1],
+            )
+            .debug("Copy Irradiance Corners"),
+        )
+            .chain()
     }
     #[tracked]
     fn get_lambertian_weight(
@@ -41,7 +181,64 @@ impl SplatData {
         }
         total_weight / 16.0
     }
-    pub fn query_optimized(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
+
+    pub fn shade_optimized_32(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                set_block_size([4, 1, 8]);
+                let pixel = dispatch_id().xy();
+                let thread = thread_id().z;
+                let world_pos = core.get_world_pos(pixel);
+                let lod = rc.cache.estimate_lod(world_pos);
+                let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
+
+                let normal = core.read_normal(pixel);
+                let dir = OctahedralEncoder::encode(normal);
+                let dir = dir * self.irradiance_resolution as f32 + 1.0;
+
+                let (probe, weight) = interp_probes.get(thread);
+                let probe = Probe::from_comps_expr(ProbeComps {
+                    position: probe.extend(lod),
+                    cascade: 0.expr(),
+                });
+                let node = rc.cache.get(probe);
+                let result = if node.loaded() {
+                    let tile = Vec2::expr(
+                        node.index % self.irradiance_dims.x,
+                        node.index / self.irradiance_dims.x,
+                    );
+                    let uv = (tile * self.irradiance_size()).cast_f32() + dir;
+                    let irradiance = self
+                        .irradiance
+                        .var()
+                        .sample(
+                            uv / (self.irradiance_dims * self.irradiance_size())
+                                .expr()
+                                .cast_f32(),
+                        )
+                        .xyz();
+                    irradiance.extend(1.0) * weight
+                } else {
+                    Vec4::splat_expr(0.0_f32)
+                };
+                let result = result.var();
+                for i in 0u32..3 {
+                    if thread % (1 << i) == 0 {
+                        *result +=
+                            warp_read_lane_at(**result, thread_id().x + 4 * (thread + (1 << i)));
+                    }
+                }
+
+                if thread == 0 {
+                    let pixel_index = core.pixel_to_linear(pixel);
+                    self.radiance.write(pixel_index, result);
+                }
+            }),
+            [core.screen_size().x, core.screen_size().y, 8],
+        )
+        .debug("Draw Splats (Optimized, 32 dirs)")
+    }
+    pub fn shade_optimized_8(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0(
             track!(|| {
                 set_block_size([4, 1, 8]);
@@ -128,7 +325,7 @@ impl SplatData {
             }),
             [core.screen_size().x, core.screen_size().y, 8],
         )
-        .debug("Draw Splats (Optimized)")
+        .debug("Draw Splats (Optimized, 8 dirs)")
     }
     #[tracked]
     pub fn get_radiance(&self, pixel_index: Expr<u32>) -> Expr<Vec3<f32>> {
