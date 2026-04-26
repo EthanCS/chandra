@@ -8,6 +8,7 @@ use parking_lot::Mutex;
 use yesod::utils::FetchAddVector;
 
 use super::*;
+use crate::algorithm::trace::TraceData;
 use crate::cache::{Fluence, HashCache, LoadedNode, ProbeComps, Radiance};
 
 #[derive(Debug, Clone, Copy)]
@@ -23,6 +24,7 @@ pub struct RcConfig {
     pub quality_decay: f32,
     pub min_direction_weight: f32,
     pub max_lifetime: u32,
+    pub secondary_lifetime: u32,
     pub merge_nearest: bool,
     pub increased_base_resolution: bool,
     pub terminate_deposit: bool,
@@ -42,9 +44,10 @@ impl Default for RcConfig {
             num_cascades: 4,
             length_scale: 4.0,
             use_quality_weight: true,
-            quality_decay: 0.99,
+            quality_decay: 0.97,
             min_direction_weight: 2.0,
-            max_lifetime: 10,
+            max_lifetime: 1,
+            secondary_lifetime: 10,
             merge_nearest: false,
             increased_base_resolution: true,
             terminate_deposit: true,
@@ -378,7 +381,8 @@ impl RcData {
                     let hit =
                         core.world
                             .trace_segment(world_pos, dir, Vec2::expr(start_len, end_len));
-                    *fluence += core.get_fluence(world_pos, dir, hit);
+                    *fluence +=
+                        core.get_fluence(world_pos, dir, hit, cascade == self.last_cascade());
                 }
 
                 self.cache.deposit_once(
@@ -422,7 +426,7 @@ impl RcData {
 
                     let node = self.cache.get(probe.shift_up(cascade));
 
-                    if !node.loaded() {
+                    if node.invalid() {
                         // device_println!("Impossible!");
                         return;
                     }
@@ -511,6 +515,23 @@ impl RcData {
         )
         .debug("Init Probes Cascade 0")
     }
+    pub fn init_probes_secondary(&self, trace: &TraceData) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                let hit = trace.traced_hits.read(dispatch_id().x);
+                if !hit.valid() {
+                    return;
+                }
+                let world_pos = hit.position;
+
+                let lod = self.cache.estimate_lod_secondary(world_pos);
+                let probe = self.cache.quantize(world_pos, lod, 0.expr());
+                self.cache.insert(probe, |_| {});
+            }),
+            [trace.traced_hits.len() as u32, 1, 1],
+        )
+        .debug("Init Probes Cascade 0 (Secondary)")
+    }
     pub fn init_probes(&self, cascade: u32) -> NodeConfigs<'static> {
         dispatch1(
             track!(|cascade| {
@@ -544,6 +565,26 @@ impl RcData {
         })
         .dispatch_async(core.screen_dispatch_size())
         .debug("Init Probes Cascade 0: Lifetime")
+    }
+    pub fn set_lifetime_secondary(&self, trace: &TraceData) -> NodeConfigs<'static> {
+        memo(self.secondary_lifetime, || {
+            DEVICE.create_kernel::<fn()>(&track!(|| {
+                let hit = trace.traced_hits.read(dispatch_id().x);
+                if !hit.valid() {
+                    return;
+                }
+                let world_pos = hit.position;
+
+                let lod = self.cache.estimate_lod_secondary(world_pos);
+                let probe = self.cache.quantize(world_pos, lod, 0.expr());
+
+                let node = self.cache.get(probe);
+                self.probe_lifetime
+                    .write(node.index, self.secondary_lifetime);
+            }))
+        })
+        .dispatch_async([trace.traced_hits.len() as u32, 1, 1])
+        .debug("Init Probes Cascade 0: Lifetime (Secondary)")
     }
     pub fn set_lifetime(&self, cascade: u32) -> NodeConfigs<'static> {
         dispatch1(
@@ -603,6 +644,33 @@ impl RcData {
     }
 
     #[tracked]
+    pub fn sample_secondary(
+        &self,
+        pos: Expr<Vec3<f32>>,
+        normal: Expr<Vec3<f32>>,
+    ) -> Expr<Radiance> {
+        let lod = self.cache.estimate_lod_secondary(pos);
+        let probe = self.cache.quantize(pos, lod, 0.expr());
+        let node = self.cache.get(probe);
+        let irradiance = Vec4::splat(0.0_f32).var();
+        let encoder = self.cache.get_encoder(0.expr());
+        if node.loaded() {
+            for i in 0.expr()..encoder.linear_size() {
+                let dir = encoder.linear_to_dir(i);
+                let weight = dir.dot(normal);
+                if weight > 0.0 {
+                    let radiance = self.base_radiance.read(node.data_offset + i);
+                    if radiance.is_finite().all() {
+                        *irradiance += radiance.extend(1.0) * weight;
+                    }
+                }
+            }
+        }
+        let output = irradiance.xyz() / keter::max(irradiance.w, 0.00001);
+        output
+    }
+
+    #[tracked]
     pub fn sample(
         &self,
         pos: Expr<Vec3<f32>>,
@@ -624,7 +692,7 @@ impl RcData {
                 cascade,
             });
             let node = self.cache.get(probe);
-            if !node.invalid() {
+            if node.loaded() {
                 // TODO: There are a lot of radiance values which are still NAN'y.
                 for i in 0u32..4 {
                     let (dir, weight) = interp_dirs.get(i);
@@ -636,6 +704,7 @@ impl RcData {
                 }
             }
         }
-        radiance_weight.xyz() / radiance_weight.w
+        let output = radiance_weight.xyz() / radiance_weight.w;
+        output
     }
 }

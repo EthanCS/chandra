@@ -179,9 +179,11 @@ impl SplatData {
             let subdir = encoder.grid_to_dir_f32(dir + (offset.cast_f32() + 0.5) / 4.0);
             *total_weight += keter::max(subdir.dot(normal), 0.0);
         }
-        total_weight / 16.0
+        let output = total_weight / 16.0;
+        output
     }
 
+    // TODO: Can weigh which LOD to interpolate from based on quality.
     pub fn shade_optimized_32(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0(
             track!(|| {
@@ -220,7 +222,10 @@ impl SplatData {
                                     .cast_f32(),
                             )
                             .xyz();
-                        *result += irradiance.extend(1.0) * weight * lod_weight;
+                        *result += irradiance.extend(1.0)
+                            * weight
+                            * lod_weight
+                            * rc.get_quality_weight(node);
                     }
                 });
 
@@ -311,7 +316,10 @@ impl SplatData {
                         }
                         let radiance = rc.base_radiance.read(node.data_offset + thread);
                         if radiance.is_finite().all() {
-                            *result += weight * radiance.extend(1.0) * lod_weight;
+                            *result += radiance.extend(1.0)
+                                * weight
+                                * lod_weight
+                                * rc.get_quality_weight(node);
                         }
                     }
                 });

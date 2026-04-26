@@ -86,23 +86,22 @@ fn main() {
     };*/
 
     let world = TriangleWorld::load(
-        "assets/conference.obj",
+        "assets/bistro.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
 
-    // let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
-    let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
+    let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
+    // let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
 
     let core = CoreData::new(world, app.size(), sunlight_dir.into());
     let mut rc = RcData::new(RcConfig {
         use_quality_weight: false,
-        max_lifetime: 1,
-        quality_decay: 1.0,
+        quality_decay: 0.97,
         base_radius: 1200.0,
         // base_grid_size: 7.0,
         num_cascades: 5,
-        base_grid_size: 4.0,
+        base_grid_size: 6.0,
         base_angular_resolution: 2,
         // num_cascades: 4,
         // base_grid_size: 8.0,
@@ -111,7 +110,7 @@ fn main() {
         // cm1_len: 1.0,
         ..Default::default()
     });
-    let trace = TraceData::new(&core, &rc, 1920 * 1080 * 2, true);
+    let trace = TraceData::new(&core, &rc, 1920 * 1080 * 2);
     let splat = SplatData::new(&core, &rc, 1.0);
     // let ris = RisData::new(&core);
     let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
@@ -166,7 +165,7 @@ fn main() {
 
             let depth = core.read_depth(pixel);
             if depth == 0.0 {
-                app.set_pixel(pixel.cast_i32(), Vec3::splat_expr(0.1_f32));
+                app.set_pixel(pixel.cast_i32(), core.get_environment(ray_dir));
                 return;
             }
             let world_pos = view.pos + ray_dir * depth;
@@ -342,9 +341,9 @@ fn main() {
         // pitch: 0.11235107,
         // pos: glam::Vec3::new(5.8384686, 1069.1106, 244.21223),
         // specular (no sunlight)
-        yaw: 0.24019964,
-        pitch: 0.17068534,
-        pos: glam::Vec3::new(-130.0943, -978.813, 184.45943),
+        // yaw: 0.24019964,
+        // pitch: 0.17068534,
+        // pos: glam::Vec3::new(-130.0943, -978.813, 184.45943),
         // penumbra
         // yaw: 7.148522,
         // pitch: 0.22371231,
@@ -353,7 +352,16 @@ fn main() {
         // yaw: 3.586528,
         // pitch: 0.3685319,
         // pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
+        // bistro
+        yaw: -0.044271395,
+        pitch: 0.5069327,
+        pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
         fov: 1.15,
+        // bistro (square)
+        // yaw: 0.007311836,
+        // pitch: 0.6932703,
+        // pos: glam::Vec3::new(-218.57637, -1431.495, 1126.1423),
+        // fov: 1.8,
     };
     let mut running = true;
     let mut mode = 0;

@@ -300,6 +300,14 @@ impl HashCache {
             .ceil()
             .cast_u32()
     }
+    // 2 lods up
+    #[tracked]
+    pub fn estimate_lod_secondary(&self, pos: Expr<Vec3<f32>>) -> Expr<u32> {
+        let radius = (pos - self.projection().view_pos).abs().reduce_max();
+        keter::max((radius / (self.base_radius / 4.0)).log2(), 0.0)
+            .ceil()
+            .cast_u32()
+    }
     #[tracked]
     pub fn iter_lods(&self, pos: Expr<Vec3<f32>>, f: impl Fn(Expr<u32>, Expr<u32>, Expr<f32>)) {
         if self.blending_radius == 1.0 {
@@ -480,7 +488,7 @@ impl HashCache {
                 cascade,
             });
             let node = self.get(probe);
-            if !node.invalid() {
+            if node.loaded() {
                 for i in 0u32..4 {
                     let (dir, weight) = interp_dirs.get(i);
                     let offset = node.data_offset + encoder.grid_to_linear(dir);
@@ -490,6 +498,7 @@ impl HashCache {
             }
         }
 
-        fluence / total_weight
+        let output = fluence / total_weight;
+        output
     }
 }

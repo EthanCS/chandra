@@ -77,21 +77,22 @@ impl CoreData {
                 .world
                 .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
                 .miss()
-                .select(Vec3::splat_expr(10.0_f32), Vec3::splat_expr(0.0_f32))
+                .select(
+                    10.0 * Vec3::expr(1.0, 0.95, 0.85),
+                    Vec3::splat_expr(0.0_f32),
+                )
                 * weight;
         }
 
-        /*
-        let bistro_lights = BISTRO_LIGHTS.expr();
+        /*let bistro_lights = BISTRO_LIGHTS.expr();
 
         for i in 0..BISTRO_LIGHTS.len() as u32 {
             if hit.inst == bistro_lights.read(i) {
                 *radiance += 100.0 * pcg3df(Vec3::expr(i, 15, 32));
             }
-        }
-        */
+        }*/
 
-        //
+        /*
         if hit.inst == 1
         /*292*/ /*162*/
         {
@@ -99,6 +100,7 @@ impl CoreData {
         } else if hit.inst == 9 {
             *radiance += Vec3::expr(0.0, 7.0, 7.0);
         }
+        */
         **radiance
     }
     #[tracked]
@@ -109,10 +111,18 @@ impl CoreData {
         hit: Expr<Hit>,
     ) -> Expr<Radiance> {
         if hit.miss() {
-            Vec3::splat_expr(0.0_f32)
+            self.get_environment(dir)
         } else {
             self.get_emission(start + dir * hit.committed_ray_t, hit)
         }
+    }
+    #[tracked]
+    pub fn get_environment(&self, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
+        let facing = dir.dot(Vec3::z());
+        let base = Vec3::splat(1.0f32);
+        let falloff = Vec3::new(0.9, 0.9, 0.2);
+        let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
+        downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)
     }
     #[tracked]
     pub fn get_fluence(
@@ -120,9 +130,14 @@ impl CoreData {
         start: Expr<Vec3<f32>>,
         dir: Expr<Vec3<f32>>,
         hit: Expr<Hit>,
+        infinite: Expr<bool>,
     ) -> Expr<Fluence> {
         if hit.miss() {
-            Vec3::splat_expr(0.0_f32).extend(1.0)
+            if infinite {
+                self.get_environment(dir).extend(0.0)
+            } else {
+                Vec3::splat_expr(0.0_f32).extend(1.0)
+            }
         } else {
             self.get_emission(start + dir * hit.committed_ray_t, hit)
                 .extend(0.0)
@@ -136,7 +151,8 @@ impl CoreData {
         if depth == 0.0 {
             return;
         }
-        view.pos + ray_dir * depth
+        let output = view.pos + ray_dir * depth;
+        output
     }
     #[tracked]
     pub fn read_normal(&self, pixel: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {

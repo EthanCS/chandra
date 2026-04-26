@@ -6,6 +6,28 @@ use super::*;
 use crate::algorithm::rc::{Ray, RayComps, RcData};
 use crate::cache::LoadedNode;
 
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Value)]
+pub struct Hit {
+    pub position: Vec3<f32>,
+    pub normal: Vec3<f32>,
+    pub radiance: Vec3<f32>,
+}
+impl HitExpr {
+    pub fn valid(&self) -> Expr<bool> {
+        self.position.x.is_finite()
+    }
+}
+impl Hit {
+    pub fn invalid() -> Self {
+        Self {
+            position: Vec3::splat(f32::INFINITY),
+            normal: Vec3::splat(0.0),
+            radiance: Vec3::splat(0.0),
+        }
+    }
+}
+
 pub struct TraceData {
     // Number of rays traced through this probe
     pub ray_count: Buffer<u32>,
@@ -15,13 +37,13 @@ pub struct TraceData {
     pub ray_offset: Buffer<u32>,
     // Index of current ray direction within a base probe
     pub base_ray_index: Buffer<u32>,
+    pub traced_hits: Buffer<Hit>,
     pub traced_rays: Buffer<Ray>,
     pub next_traced_ray: Singleton<u32>,
-    pub raw_radiance: Option<Tex2d<Vec3<f32>>>,
 }
 
 impl TraceData {
-    pub fn new(core: &CoreData, rc: &RcData, max_rays: usize, debug_raw_radiance: bool) -> Self {
+    pub fn new(core: &CoreData, rc: &RcData, max_rays: usize) -> Self {
         Self {
             ray_count: DEVICE.create_buffer_from_fn::<u32>(rc.cache.total_probes() as usize, |_| 0),
             next_max_cascade_ray_direction: Singleton::new(0),
@@ -29,17 +51,10 @@ impl TraceData {
                 .create_buffer_from_fn::<u32>(rc.cache.total_probes() as usize, |_| 0),
             base_ray_index: DEVICE
                 .create_buffer_from_fn::<u32>(rc.cache.base_probes as usize, |_| 0),
+            traced_hits: DEVICE.create_buffer::<Hit>(core.num_pixels() as usize),
             traced_rays: DEVICE.create_buffer::<Ray>(max_rays),
             next_traced_ray: Singleton::new(0),
             // used for debug
-            raw_radiance: debug_raw_radiance.then(|| {
-                DEVICE.create_tex2d::<Vec3<f32>>(
-                    PixelStorage::Float4,
-                    core.screen_size().x,
-                    core.screen_size().y,
-                    1,
-                )
-            }),
         }
     }
     pub fn compute_ray_count_base(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
@@ -147,9 +162,7 @@ impl TraceData {
                 let normal = core.read_normal(pixel);
 
                 let lod = rc.cache.estimate_lod(world_pos);
-
                 let probe = rc.cache.quantize(world_pos, lod, 0.expr());
-
                 let node = rc.cache.get(probe);
 
                 if node.invalid() {
@@ -175,41 +188,21 @@ impl TraceData {
 
                 let radiance = core.get_radiance(start, dir, hit);
 
-                if let Some(raw_radiance) = &self.raw_radiance {
-                    raw_radiance.write(pixel, radiance);
-                }
+                self.traced_hits.write(
+                    core.pixel_to_linear(pixel),
+                    if hit.miss() {
+                        Hit::invalid().expr()
+                    } else {
+                        Hit::from_comps_expr(HitComps {
+                            position: start + dir * hit.committed_ray_t,
+                            normal: core.world.get_normal(hit),
+                            radiance,
+                        })
+                    },
+                );
 
                 rc.cache.iter_lods(world_pos, |lod, _, _| {
-                    let probe = rc.cache.quantize(world_pos, lod, 0.expr());
-
-                    let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
-
-                    if ray_index >= self.traced_rays.len_expr_u32() {
-                        return;
-                    }
-
-                    let cascade = if hit.miss() {
-                        rc.last_cascade().expr()
-                    } else {
-                        let c0_len: Expr<f32> = c0_len;
-                        let cascade = keter::max(
-                            (hit.committed_ray_t / (c0_len * rc.cache.spacing(lod, 0)))
-                                .log(rc.length_scale),
-                            0.0,
-                        )
-                        .ceil()
-                        .cast_u32();
-
-                        keter::min(cascade, rc.num_cascades - 1)
-                    };
-
-                    let ray = Ray::from_comps_expr(RayComps {
-                        radiance,
-                        base_probe: probe,
-                        cascade,
-                        dir: SphericalEncoder::encode(dir),
-                    });
-                    self.traced_rays.write(ray_index, ray);
+                    self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);
                 })
             }),
             core.screen_dispatch_size(),
@@ -217,6 +210,90 @@ impl TraceData {
             c0_len,
         )
         .debug("Compute Rays")
+    }
+    pub fn compute_secondary_rays(
+        &self,
+        core: &CoreData,
+        rc: &RcData,
+        tick: u32,
+        c0_len: f32,
+    ) -> NodeConfigs<'static> {
+        dispatch2(
+            track!(|tick, c0_len| {
+                let hit = self.traced_hits.read(dispatch_id().x);
+                if !hit.valid() {
+                    return;
+                }
+                let world_pos = hit.position;
+                let normal = hit.normal;
+
+                let lod = rc.cache.estimate_lod_secondary(world_pos);
+                let probe = rc.cache.quantize(world_pos, lod, 0.expr());
+                let node = rc.cache.get(probe);
+
+                if node.invalid() {
+                    device_println!("Should be impossible!");
+                    return;
+                }
+                let dir = project_line(pcg3df(Vec3::expr(dispatch_id().x, tick, 173)).xy());
+                let dir = dir * dir.dot(normal).signum();
+                let start = offset_ray(world_pos, normal);
+
+                let hit = core.world.trace_segment(
+                    start,
+                    dir,
+                    Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
+                );
+
+                let radiance = core.get_radiance(start, dir, hit);
+
+                self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);
+            }),
+            [self.traced_hits.len() as u32, 1, 1],
+            tick,
+            c0_len,
+        )
+        .debug("Compute Secondary Rays")
+    }
+    #[tracked]
+    pub fn compute_deposit_ray(
+        &self,
+        rc: &RcData,
+        world_pos: Expr<Vec3<f32>>,
+        lod: Expr<u32>,
+        dir: Expr<Vec3<f32>>,
+        radiance: Expr<Vec3<f32>>,
+        hit: Expr<crate::algorithm::Hit>,
+        c0_len: Expr<f32>,
+    ) {
+        let probe = rc.cache.quantize(world_pos, lod, 0.expr());
+
+        let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
+
+        if ray_index >= self.traced_rays.len_expr_u32() {
+            return;
+        }
+
+        let cascade = if hit.miss() {
+            rc.last_cascade().expr()
+        } else {
+            let cascade = keter::max(
+                (hit.committed_ray_t / (c0_len * rc.cache.spacing(lod, 0))).log(rc.length_scale),
+                0.0,
+            )
+            .ceil()
+            .cast_u32();
+
+            keter::min(cascade, rc.num_cascades - 1)
+        };
+
+        let ray = Ray::from_comps_expr(RayComps {
+            radiance,
+            base_probe: probe,
+            cascade,
+            dir: SphericalEncoder::encode(dir),
+        });
+        self.traced_rays.write(ray_index, ray);
     }
     pub fn reset(&self) -> NodeConfigs<'static> {
         (

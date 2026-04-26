@@ -100,6 +100,9 @@ impl HashTable {
     pub fn entry_capacity(&self) -> u32 {
         self.entry_capacity
     }
+    fn probing_step(&self) -> u32 {
+        1 // (GOLDEN_RATIO * self.entry_capacity as f32) as u32
+    }
     #[tracked]
     fn insert_entry_index(&self, key: Expr<Key>, table: Expr<u32>, index: Expr<u32>) {
         let entry_index = (hash(key) % self.entry_capacity).var();
@@ -116,7 +119,7 @@ impl HashTable {
                 break;
             }
 
-            *entry_index = (entry_index + 1) % self.entry_capacity;
+            *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
         }
     }
     // Inserts a key into the table. It takes a while to get the index, so that has to be done later after synchronization.
@@ -139,7 +142,7 @@ impl HashTable {
                 on_insert(index);
                 break;
             }
-            *entry_index = (entry_index + 1) % self.entry_capacity;
+            *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
         }
     }
     #[tracked]
@@ -155,7 +158,7 @@ impl HashTable {
             } else if entry.key == INVALID_KEY {
                 break;
             }
-            *entry_index = (entry_index + 1) % self.entry_capacity;
+            *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
         }
         **result
     }
@@ -176,7 +179,7 @@ impl HashTable {
                 *cost = u32::MAX;
                 break;
             }
-            *entry_index = (entry_index + 1) % self.entry_capacity;
+            *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
             *cost += 1;
         }
         **cost
