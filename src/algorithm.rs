@@ -11,6 +11,7 @@ use yesod::direction::{DirectionEncoder, SphericalEncoder};
 use yesod::rand::pcg3df;
 use yesod::utils::{dispatch0, dispatch1, memo, offset_ray};
 
+use crate::algorithm::rc::RcData;
 use crate::cache::{Fluence, Probe, Radiance};
 
 #[cfg(not(feature = "voxel"))]
@@ -62,7 +63,12 @@ impl CoreData {
         self.normal.width() * self.normal.height()
     }
     #[tracked]
-    pub fn get_emission(&self, pos: Expr<Vec3<f32>>, hit: Expr<Hit>) -> Expr<Radiance> {
+    pub fn get_emission(
+        &self,
+        rc: Option<&RcData>,
+        pos: Expr<Vec3<f32>>,
+        hit: Expr<Hit>,
+    ) -> Expr<Radiance> {
         const BISTRO_LIGHTS: [u32; 27] = [
             1002, 1018, 1022, 1026, 1030, 1079, 1081, 1077, 1046, 1034, 1038, 1042, 1014, 1051,
             1053, 1055, 1057, 1059, 1061, 1010, 1063, 1065, 1067, 1006, 1075, 1073, 1071,
@@ -72,7 +78,7 @@ impl CoreData {
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
-        if weight > 0.0 {
+        /*if weight > 0.0 {
             *radiance += self
                 .world
                 .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
@@ -82,6 +88,9 @@ impl CoreData {
                     Vec3::splat_expr(0.0_f32),
                 )
                 * weight;
+        }*/
+        if let Some(rc) = rc {
+            *radiance += rc.sample_secondary(pos, normal);
         }
 
         /*let bistro_lights = BISTRO_LIGHTS.expr();
@@ -92,20 +101,27 @@ impl CoreData {
             }
         }*/
 
-        /*
         if hit.inst == 1
-        /*292*/ /*162*/
         {
             *radiance += Vec3::expr(10.0, 0.0, 0.0);
         } else if hit.inst == 9 {
             *radiance += Vec3::expr(0.0, 7.0, 7.0);
         }
-        */
-        **radiance
+        
+        /*if hit.inst == 14 {
+            *radiance += Vec3::splat(7.0);
+        }*/
+        /*if hit.inst == 0 {
+            *radiance += Vec3::splat(10.0);
+        }*/
+
+        let output = radiance * self.world.get_diffuse(hit);
+        output
     }
     #[tracked]
     pub fn get_radiance(
         &self,
+        rc: Option<&RcData>,
         start: Expr<Vec3<f32>>,
         dir: Expr<Vec3<f32>>,
         hit: Expr<Hit>,
@@ -113,20 +129,22 @@ impl CoreData {
         if hit.miss() {
             self.get_environment(dir)
         } else {
-            self.get_emission(start + dir * hit.committed_ray_t, hit)
+            self.get_emission(rc, start + dir * hit.committed_ray_t, hit)
         }
     }
     #[tracked]
     pub fn get_environment(&self, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        let facing = dir.dot(Vec3::z());
+        Vec3::splat_expr(0.0f32)
+        /*let facing = dir.dot(Vec3::z());
         let base = Vec3::splat(1.0f32);
         let falloff = Vec3::new(0.9, 0.9, 0.2);
         let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
-        downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)
+        downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)*/
     }
     #[tracked]
     pub fn get_fluence(
         &self,
+        rc: Option<&RcData>,
         start: Expr<Vec3<f32>>,
         dir: Expr<Vec3<f32>>,
         hit: Expr<Hit>,
@@ -139,7 +157,7 @@ impl CoreData {
                 Vec3::splat_expr(0.0_f32).extend(1.0)
             }
         } else {
-            self.get_emission(start + dir * hit.committed_ray_t, hit)
+            self.get_emission(rc, start + dir * hit.committed_ray_t, hit)
                 .extend(0.0)
         }
     }

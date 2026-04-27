@@ -86,22 +86,22 @@ fn main() {
     };*/
 
     let world = TriangleWorld::load(
-        "assets/bistro.obj",
+        "assets/cornell-box.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
 
-    let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
-    // let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
+    // let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
+    let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
 
     let core = CoreData::new(world, app.size(), sunlight_dir.into());
     let mut rc = RcData::new(RcConfig {
         use_quality_weight: false,
         quality_decay: 0.97,
-        base_radius: 1200.0,
+        base_radius: 1200.0 / 512.0,
         // base_grid_size: 7.0,
         num_cascades: 5,
-        base_grid_size: 6.0,
+        base_grid_size: 6.0 / 512.0,
         base_angular_resolution: 2,
         // num_cascades: 4,
         // base_grid_size: 8.0,
@@ -110,7 +110,7 @@ fn main() {
         // cm1_len: 1.0,
         ..Default::default()
     });
-    let trace = TraceData::new(&core, &rc, 1920 * 1080 * 2);
+    let trace = TraceData::new(&core, &rc, 1920 * 1080 * 3);
     let splat = SplatData::new(&core, &rc, 1.0);
     // let ris = RisData::new(&core);
     let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
@@ -175,10 +175,11 @@ fn main() {
             let probe = rc.cache.quantize(world_pos, lod, cascade);
 
             let pixel_index = core.pixel_to_linear(pixel);
-            let emission = core.get_emission(world_pos, core.hit.read(pixel_index));
+            let hit = core.hit.read(pixel_index);
+            let emission = core.get_emission(None, world_pos, hit);
 
             let color = if mode == 0 {
-                let result = splat.get_radiance(pixel_index);
+                let result = splat.get_radiance(pixel_index) * core.world.get_diffuse(hit);
 
                 /*let specular_dir = chandra::utils::reflect(ray_dir, normal);
                 let specular_radiance = rc.sample(world_pos, 3.expr(), specular_dir).var();
@@ -198,6 +199,7 @@ fn main() {
                     }
                 }
             } else if mode == 1 {
+                // rc.sample_secondary(world_pos, normal)
                 core.world.get_diffuse(core.hit.read(pixel_index))
                 // trace.raw_radiance.as_ref().unwrap().read(pixel) + emission
                 /*if rc.cache.contains(probe) {
@@ -229,7 +231,7 @@ fn main() {
                 }
                 inferno(**num_next)*/
             } else if mode == 3 {
-                let node = rc.cache.get(probe);
+                /*let node = rc.cache.get(probe);
                 if node.loaded() {
                     let encoder = DirectionIndexer::from_comps_expr(DirectionIndexerComps {
                         resolution: (rc.cache.base_angular_resolution / 2) << cascade,
@@ -249,8 +251,8 @@ fn main() {
                     result + emission
                 } else {
                     Vec3::expr(1.0, 0.0, 0.0)
-                }
-                // pcg3df(probe.position.xyz())
+                }*/
+                pcg3df(probe.position.xyz())
             } else if mode == 4 {
                 let ray_start_pos = offset_ray(world_pos, normal);
 
@@ -267,7 +269,7 @@ fn main() {
                     // let bounce_ray = bounce_ray * bounce_ray.dot(normal).signum();
 
                     let bounce_hit = core.world.trace(ray_start_pos, bounce_ray);
-                    let radiance = core.get_radiance(ray_start_pos, bounce_ray, bounce_hit);
+                    let radiance = core.get_radiance(None, ray_start_pos, bounce_ray, bounce_hit);
                     *added_radiance += radiance.extend(1.0); // * bounce_ray.dot(normal);
                 }
                 let value = accum_buf.read(pixel) + added_radiance;
@@ -370,6 +372,7 @@ fn main() {
     let mut splat_mode = 0;
     let mut blend_radius = 0.5;
     let mut normal_rc = false;
+    let mut secondary_bounce = true;
 
     let mut profiler = Profiler::new();
 
@@ -378,7 +381,7 @@ fn main() {
         let move_speed = if rt.key_down(KeyCode::ControlLeft) {
             20.0
         } else {
-            800.0
+            10.0
         } * rt.frame_time();
         let camera_updated = camera.apply_movement(&rt.keys_down, rot_speed, move_speed);
         if rt.key_pressed(KeyCode::KeyP) {
@@ -453,10 +456,16 @@ fn main() {
 
             // add c0 probes
             commands += rc.init_probes_base(&core);
+            if secondary_bounce {
+                commands += rc.init_probes_secondary(&trace);
+            }
             for c in 1..num_cascades {
                 commands += rc.init_probes(c);
             }
             commands += rc.set_lifetime_base(&core);
+            if secondary_bounce {
+                commands += rc.set_lifetime_secondary(&trace);
+            }
             for c in 1..num_cascades {
                 commands += rc.set_lifetime(c);
             }
@@ -480,9 +489,15 @@ fn main() {
                 for c in (0..num_cascades).rev() {
                     commands += trace.compute_ray_offset(&rc, c);
                 }
-                commands += trace.compute_rays(&core, &rc, rt.tick, c0_len);
+                if secondary_bounce {
+                    commands += trace.compute_secondary_rays(&core, &rc, rt.tick, c0_len, true);
+                }
+                commands += trace.compute_rays(&core, &rc, rt.tick, c0_len, secondary_bounce);
 
-                commands += rc.deposit_split(trace.traced_rays.view(..));
+                commands.execute();
+                let ray_count = trace.next_traced_ray.read_blocking();
+
+                commands += rc.deposit_split(trace.traced_rays.view(..ray_count as usize));
             }
 
             for c in (0..num_cascades).rev() {

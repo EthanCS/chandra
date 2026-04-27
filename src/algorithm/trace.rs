@@ -51,7 +51,8 @@ impl TraceData {
                 .create_buffer_from_fn::<u32>(rc.cache.total_probes() as usize, |_| 0),
             base_ray_index: DEVICE
                 .create_buffer_from_fn::<u32>(rc.cache.base_probes as usize, |_| 0),
-            traced_hits: DEVICE.create_buffer::<Hit>(core.num_pixels() as usize),
+            traced_hits: DEVICE
+                .create_buffer_from_fn::<Hit>(core.num_pixels() as usize, |_| Hit::invalid()),
             traced_rays: DEVICE.create_buffer::<Ray>(max_rays),
             next_traced_ray: Singleton::new(0),
             // used for debug
@@ -153,6 +154,7 @@ impl TraceData {
         rc: &RcData,
         tick: u32,
         c0_len: f32,
+        multibounce: bool,
     ) -> NodeConfigs<'static> {
         dispatch2(
             track!(|tick, c0_len| {
@@ -186,7 +188,7 @@ impl TraceData {
                     Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
                 );
 
-                let radiance = core.get_radiance(start, dir, hit);
+                let radiance = core.get_radiance(multibounce.then_some(rc), start, dir, hit);
 
                 self.traced_hits.write(
                     core.pixel_to_linear(pixel),
@@ -195,7 +197,7 @@ impl TraceData {
                     } else {
                         Hit::from_comps_expr(HitComps {
                             position: start + dir * hit.committed_ray_t,
-                            normal: core.world.get_normal(hit),
+                            normal: core.world.get_normal_flat(hit),
                             radiance,
                         })
                     },
@@ -217,6 +219,7 @@ impl TraceData {
         rc: &RcData,
         tick: u32,
         c0_len: f32,
+        multibounce: bool,
     ) -> NodeConfigs<'static> {
         dispatch2(
             track!(|tick, c0_len| {
@@ -245,7 +248,7 @@ impl TraceData {
                     Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
                 );
 
-                let radiance = core.get_radiance(start, dir, hit);
+                let radiance = core.get_radiance(multibounce.then_some(rc), start, dir, hit);
 
                 self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);
             }),
@@ -284,7 +287,7 @@ impl TraceData {
             .ceil()
             .cast_u32();
 
-            keter::min(cascade, rc.num_cascades - 1)
+            keter::min(cascade, rc.last_cascade())
         };
 
         let ray = Ray::from_comps_expr(RayComps {

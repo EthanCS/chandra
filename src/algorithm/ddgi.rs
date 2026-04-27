@@ -288,7 +288,7 @@ impl DdgiData {
                         Vec3::splat_expr(0.0)
                     } else {
                         let hit_pos = origin + dir * hit.committed_ray_t;
-                        core.get_emission(hit_pos, hit)
+                        core.get_emission(None, hit_pos, hit)
                         // + self.query_irradiance(hit_pos, normal, -dir) * 0.3
                     };
                     let distance = if hit_backface {

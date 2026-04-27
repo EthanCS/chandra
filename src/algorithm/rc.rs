@@ -382,7 +382,7 @@ impl RcData {
                         core.world
                             .trace_segment(world_pos, dir, Vec2::expr(start_len, end_len));
                     *fluence +=
-                        core.get_fluence(world_pos, dir, hit, cascade == self.last_cascade());
+                        core.get_fluence(None, world_pos, dir, hit, cascade == self.last_cascade());
                 }
 
                 self.cache.deposit_once(

@@ -300,13 +300,9 @@ impl HashCache {
             .ceil()
             .cast_u32()
     }
-    // 2 lods up
     #[tracked]
     pub fn estimate_lod_secondary(&self, pos: Expr<Vec3<f32>>) -> Expr<u32> {
-        let radius = (pos - self.projection().view_pos).abs().reduce_max();
-        keter::max((radius / (self.base_radius / 4.0)).log2(), 0.0)
-            .ceil()
-            .cast_u32()
+        self.estimate_lod(pos) + 2
     }
     #[tracked]
     pub fn iter_lods(&self, pos: Expr<Vec3<f32>>, f: impl Fn(Expr<u32>, Expr<u32>, Expr<f32>)) {
