@@ -50,6 +50,8 @@ use yesod::{device_println, host};
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;
 const DEBUG_SPLATS: u32 = 0b1;
+const DRAW_SPECULAR: u32 = 0b10;
+const DRAW_DIFFUSE: u32 = 0b100;
 
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
@@ -86,28 +88,34 @@ fn main() {
     };*/
 
     let world = TriangleWorld::load(
-        "assets/cornell-box.obj",
+        "assets/interior.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
+        Some(Vec3::splat(0.7)),
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
 
     // let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
     let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
 
-    let core = CoreData::new(world, app.size(), sunlight_dir.into());
+    let envmap = image::open("assets/qwantani_dusk_2_4k.exr")
+        .unwrap()
+        .to_rgb32f();
+
+    let core = CoreData::new(world, app.size(), sunlight_dir.into(), envmap);
     let mut rc = RcData::new(RcConfig {
-        use_quality_weight: false,
+        use_quality_weight: true,
         quality_decay: 0.97,
-        base_radius: 1200.0 / 512.0,
+        base_radius: 1200.0,
         // base_grid_size: 7.0,
-        num_cascades: 5,
-        base_grid_size: 6.0 / 512.0,
-        base_angular_resolution: 2,
-        // num_cascades: 4,
-        // base_grid_size: 8.0,
-        // base_angular_resolution: 4,
+        // num_cascades: 5,
+        // base_grid_size: 6.0,
+        // base_angular_resolution: 2,
+        num_cascades: 4,
+        base_grid_size: 8.0,
+        base_angular_resolution: 4,
         blending_radius: 1.3,
         // cm1_len: 1.0,
+        // base_probes: 1 << 22,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080 * 3);
@@ -179,28 +187,35 @@ fn main() {
             let emission = core.get_emission(None, world_pos, hit);
 
             let color = if mode == 0 {
-                let result = splat.get_radiance(pixel_index) * core.world.get_diffuse(hit);
+                let result = Vec3::splat(0.0f32).var();
+                if flags & DRAW_DIFFUSE != 0 {
+                    *result = splat.get_radiance(pixel_index) * core.world.get_diffuse(hit);
+                }
 
-                /*let specular_dir = chandra::utils::reflect(ray_dir, normal);
-                let specular_radiance = rc.sample(world_pos, 3.expr(), specular_dir).var();
-                for i in (0..3).rev() {
-                    let fluence = rc.cache.sample(world_pos, i.expr(), specular_dir);
-                    *specular_radiance = chandra::algorithm::rc::over(fluence, **specular_radiance);
-                }*/
+                if flags & DRAW_SPECULAR != 0 {
+                    let specular_dir = chandra::utils::reflect(ray_dir, normal);
+                    let specular_radiance = rc.sample(world_pos, 3.expr(), specular_dir).var();
+                    for i in (0..3).rev() {
+                        let fluence = rc.cache.sample(world_pos, i.expr(), specular_dir);
+                        *specular_radiance =
+                            chandra::algorithm::rc::over(fluence, **specular_radiance);
+                    }
+                    *result += specular_radiance;
+                }
 
                 if flags & DEBUG_SPLATS == 0 {
-                    result + emission // + specular_radiance
+                    result + emission
                 } else {
                     let radiance_depth = splat.depth.read(pixel_index);
                     if radiance_depth > depth + 0.1 {
                         pcg3df(probe.position.xyz()) * 0.1 + result * 0.9
                     } else {
-                        result
+                        **result
                     }
                 }
             } else if mode == 1 {
-                // rc.sample_secondary(world_pos, normal)
-                core.world.get_diffuse(core.hit.read(pixel_index))
+                rc.sample_secondary(world_pos, normal)
+                // core.world.get_diffuse(core.hit.read(pixel_index))
                 // trace.raw_radiance.as_ref().unwrap().read(pixel) + emission
                 /*if rc.cache.contains(probe) {
                     let target_probe = rc.cache.decode(rc.cache.encode(probe), cascade);
@@ -355,15 +370,21 @@ fn main() {
         // pitch: 0.3685319,
         // pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
         // bistro
-        yaw: -0.044271395,
-        pitch: 0.5069327,
-        pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
-        fov: 1.15,
+        // yaw: -0.044271395,
+        // pitch: 0.5069327,
+        // pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
         // bistro (square)
         // yaw: 0.007311836,
         // pitch: 0.6932703,
         // pos: glam::Vec3::new(-218.57637, -1431.495, 1126.1423),
         // fov: 1.8,
+        // yaw: 3.2929106,
+        // pitch: 0.10817528,
+        // pos: glam::Vec3::new(1.6976551, 22.22719, 2.1686177),
+        yaw: -0.041864544,
+        pitch: 0.20691827,
+        pos: glam::Vec3::new(-339.8187, 526.7882, 253.7226),
+        fov: 1.15,
     };
     let mut running = true;
     let mut mode = 0;
@@ -373,6 +394,7 @@ fn main() {
     let mut blend_radius = 0.5;
     let mut normal_rc = false;
     let mut secondary_bounce = true;
+    let mut specular_mode = 0;
 
     let mut profiler = Profiler::new();
 
@@ -381,7 +403,7 @@ fn main() {
         let move_speed = if rt.key_down(KeyCode::ControlLeft) {
             20.0
         } else {
-            10.0
+            800.0
         } * rt.frame_time();
         let camera_updated = camera.apply_movement(&rt.keys_down, rot_speed, move_speed);
         if rt.key_pressed(KeyCode::KeyP) {
@@ -415,6 +437,12 @@ fn main() {
         }
         if rt.key_pressed(KeyCode::KeyN) {
             normal_rc = !normal_rc;
+        }
+        if rt.key_pressed(KeyCode::KeyV) {
+            secondary_bounce = !secondary_bounce;
+        }
+        if rt.key_pressed(KeyCode::KeyG) {
+            specular_mode = (specular_mode + 1) % 3;
         }
 
         // spacing between end of rays shoudl be equal to spatial spacing.
@@ -521,14 +549,14 @@ fn main() {
 
         commands += splat.reset();
 
-        // if rc.cm1_len > 0.0 {
-        //     commands += splat.trace_cm1(&core, &rc, 4);
-        // }
+        if rc.cm1_len > 0.0 {
+            commands += splat.trace_cm1(&core, &rc, 4);
+        }
 
         if mode == 0 {
             if rc.base_angular_resolution == 2 && splat_mode == 0 {
                 commands += splat.shade_optimized_8(&core, &rc);
-            } else if rc.base_angular_resolution == 4 && splat_mode == 0 {
+            } else if rc.base_angular_resolution == 4 && splat_mode == 0 && rc.cm1_len == 0.0 {
                 commands += splat.calculate_irradiance(&rc);
                 commands += splat.copy_irradiance_borders(&rc);
                 commands += splat.shade_optimized_32(&core, &rc);
@@ -592,7 +620,13 @@ fn main() {
                     rt.dispatch_size(),
                     &camera.view(),
                     &rt.tick,
-                    &if splat_mode == 2 { DEBUG_SPLATS } else { 0 },
+                    &(if splat_mode == 2 { DEBUG_SPLATS } else { 0 }
+                        | match specular_mode {
+                            0 => DRAW_DIFFUSE,
+                            1 => DRAW_SPECULAR,
+                            2 => DRAW_DIFFUSE | DRAW_SPECULAR,
+                            _ => unreachable!(),
+                        }),
                     &mode,
                     &draw_cascade,
                     &rt.cursor_position.map(|x| x as u32),
@@ -619,6 +653,7 @@ fn main() {
                     "Trace Cascade -1",
                     "Calculate Irradiance",
                     "Draw",
+                    "Secondary",
                 ],
                 true,
             );

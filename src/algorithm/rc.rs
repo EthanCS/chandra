@@ -508,6 +508,7 @@ impl RcData {
 
                 self.cache.iter_lods(world_pos, |lod, _, _| {
                     let probe = self.cache.quantize(world_pos, lod, 0.expr());
+                    // We do not run `set_lifetime` here, as probes that exist in previous frames do not get re-inserted here.
                     self.cache.insert(probe, |_| {});
                 });
             },

@@ -82,7 +82,11 @@ impl TriangleWorld {
             material_diffuse,
         }
     }
-    pub fn load(path: impl AsRef<Path> + Debug, rotation: glam::Mat3) -> Self {
+    pub fn load(
+        path: impl AsRef<Path> + Debug,
+        rotation: glam::Mat3,
+        material_override: Option<Vec3<f32>>,
+    ) -> Self {
         let (models, materials) = tobj::load_obj(
             path,
             &LoadOptions {
@@ -92,13 +96,15 @@ impl TriangleWorld {
             },
         )
         .unwrap();
-        let diffuse = if let Ok(materials) = materials {
+        let diffuse = if let Some(material) = material_override {
+            vec![material; 1]
+        } else if let Ok(materials) = materials {
             materials
                 .iter()
                 .map(|m| m.diffuse.unwrap_or([0.7; 3]).into())
                 .collect::<Vec<_>>()
         } else {
-            vec![Vec3::splat(0.7); 1]
+            panic!("No materials provided");
         };
 
         let mut positions: Vec<[f32; 3]> = vec![];

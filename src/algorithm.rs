@@ -1,5 +1,6 @@
 use std::ops::AddAssign;
 
+use image::Rgb32FImage;
 use keter::bindless::{BINDLESS, Tex2dHandle};
 use keter::graph::NodeConfigs;
 use keter::lang::types::shared::Shared;
@@ -7,7 +8,7 @@ use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use yesod::camera::View;
 use yesod::device_println;
-use yesod::direction::{DirectionEncoder, SphericalEncoder};
+use yesod::direction::{DirectionEncoder, EquirectangularEncoder, SphericalEncoder};
 use yesod::rand::pcg3df;
 use yesod::utils::{dispatch0, dispatch1, memo, offset_ray};
 
@@ -31,15 +32,35 @@ pub struct CoreData {
     pub hit: Buffer<Hit>,
 
     pub sunlight_dir: Vec3<f32>,
+    pub environment: Tex2dHandle<Vec4<f32>>,
 }
 impl CoreData {
-    pub fn new(world: World, [width, height]: [u32; 2], sunlight_dir: Vec3<f32>) -> Self {
+    pub fn new(
+        world: World,
+        [width, height]: [u32; 2],
+        sunlight_dir: Vec3<f32>,
+        envmap: Rgb32FImage,
+    ) -> Self {
         let depth = DEVICE.create_tex2d::<f32>(PixelStorage::Float1, width, height, 1);
         let depth = BINDLESS.push_tex2d(
             depth,
             Sampler {
                 filter: SamplerFilter::LinearLinear,
                 address: SamplerAddress::Edge,
+            },
+        );
+        let environment =
+            DEVICE.create_tex2d(PixelStorage::Float4, envmap.width(), envmap.height(), 1);
+        let envmap = envmap
+            .pixels()
+            .map(|p| Vec4::new(p[0], p[1], p[2], 1.0))
+            .collect::<Vec<_>>();
+        environment.copy_from_vec(envmap).execute_blocking();
+        let environment = BINDLESS.push_tex2d(
+            environment,
+            Sampler {
+                filter: SamplerFilter::LinearLinear,
+                address: SamplerAddress::Repeat,
             },
         );
         BINDLESS.update();
@@ -51,6 +72,7 @@ impl CoreData {
             normal: DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, width, height, 1),
             hit: DEVICE.create_buffer::<Hit>(width as usize * height as usize),
             sunlight_dir,
+            environment,
         }
     }
     pub fn screen_size(&self) -> Vec2<u32> {
@@ -101,13 +123,12 @@ impl CoreData {
             }
         }*/
 
-        if hit.inst == 1
-        {
+        /*if hit.inst == 1 {
             *radiance += Vec3::expr(10.0, 0.0, 0.0);
         } else if hit.inst == 9 {
             *radiance += Vec3::expr(0.0, 7.0, 7.0);
-        }
-        
+        }*/
+
         /*if hit.inst == 14 {
             *radiance += Vec3::splat(7.0);
         }*/
@@ -134,12 +155,14 @@ impl CoreData {
     }
     #[tracked]
     pub fn get_environment(&self, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        Vec3::splat_expr(0.0f32)
+        // Vec3::splat_expr(0.0f32)
         /*let facing = dir.dot(Vec3::z());
         let base = Vec3::splat(1.0f32);
         let falloff = Vec3::new(0.9, 0.9, 0.2);
         let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
         downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)*/
+        let uv = EquirectangularEncoder::encode(dir);
+        self.environment.var().sample(uv).xyz()
     }
     #[tracked]
     pub fn get_fluence(

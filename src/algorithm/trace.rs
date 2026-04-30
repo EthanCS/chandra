@@ -156,8 +156,8 @@ impl TraceData {
         c0_len: f32,
         multibounce: bool,
     ) -> NodeConfigs<'static> {
-        dispatch2(
-            track!(|tick, c0_len| {
+        memo(multibounce, || {
+            DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();
                 let world_pos = core.get_world_pos(pixel);
@@ -206,11 +206,9 @@ impl TraceData {
                 rc.cache.iter_lods(world_pos, |lod, _, _| {
                     self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);
                 })
-            }),
-            core.screen_dispatch_size(),
-            tick,
-            c0_len,
-        )
+            }))
+        })
+        .dispatch_async(core.screen_dispatch_size(), &tick, &c0_len)
         .debug("Compute Rays")
     }
     pub fn compute_secondary_rays(
@@ -221,8 +219,8 @@ impl TraceData {
         c0_len: f32,
         multibounce: bool,
     ) -> NodeConfigs<'static> {
-        dispatch2(
-            track!(|tick, c0_len| {
+        memo(multibounce, || {
+            DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 let hit = self.traced_hits.read(dispatch_id().x);
                 if !hit.valid() {
                     return;
@@ -251,14 +249,13 @@ impl TraceData {
                 let radiance = core.get_radiance(multibounce.then_some(rc), start, dir, hit);
 
                 self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);
-            }),
-            [self.traced_hits.len() as u32, 1, 1],
-            tick,
-            c0_len,
-        )
-        .debug("Compute Secondary Rays")
+            }))
+        })
+        .dispatch_async([self.traced_hits.len() as u32, 1, 1], &tick, &c0_len)
+        .debug("Secondary: Compute Rays")
     }
     #[tracked]
+    #[allow(clippy::too_many_arguments)]
     pub fn compute_deposit_ray(
         &self,
         rc: &RcData,
