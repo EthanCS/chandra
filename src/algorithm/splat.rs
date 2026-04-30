@@ -14,7 +14,7 @@ pub struct SplatData {
     pub depth: Buffer<f32>,
     pub cm1_shadow_mask: Buffer<u32>,
     // for optimized 32-dir
-    pub irradiance: Tex2dHandle<Vec3<f32>>,
+    pub irradiance: Tex2dHandle<Vec4<f32>>,
     // settings
     pub interpolation_exponent: f32,
     pub irradiance_resolution: u32,
@@ -28,7 +28,7 @@ impl SplatData {
         let y_size = c0_size.div_ceil(x_size);
         let resolution = 6;
         let full_resolution = resolution + 2;
-        let irradiance_texture = DEVICE.create_tex2d::<Vec3<f32>>(
+        let irradiance_texture = DEVICE.create_tex2d::<Vec4<f32>>(
             PixelStorage::Half4,
             x_size * full_resolution,
             y_size * full_resolution,
@@ -99,7 +99,7 @@ impl SplatData {
                             dispatch_id().x / self.irradiance_dims.x,
                         );
                         let uv = tile * self.irradiance_size() + index + 1;
-                        self.irradiance.write(uv, deposit.xyz() / deposit.w);
+                        self.irradiance.write(uv, deposit);
                     }
                 }
             }),
@@ -213,19 +213,12 @@ impl SplatData {
                             node.index / self.irradiance_dims.x,
                         );
                         let uv = (tile * self.irradiance_size()).cast_f32() + dir;
-                        let irradiance = self
-                            .irradiance
-                            .var()
-                            .sample(
-                                uv / (self.irradiance_dims * self.irradiance_size())
-                                    .expr()
-                                    .cast_f32(),
-                            )
-                            .xyz();
-                        *result += irradiance.extend(1.0)
-                            * weight
-                            * lod_weight
-                            * rc.get_quality_weight(node);
+                        let irradiance = self.irradiance.var().sample(
+                            uv / (self.irradiance_dims * self.irradiance_size())
+                                .expr()
+                                .cast_f32(),
+                        );
+                        *result += irradiance * weight * lod_weight * rc.get_quality_weight(node);
                     }
                 });
 
