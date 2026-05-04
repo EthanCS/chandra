@@ -361,8 +361,9 @@ impl SplatData {
                 let encoder = self.get_encoder(rc, 0.expr());
 
                 for i in 0_u32.expr()..encoder.linear_size() {
-                    // let offset = pcg3df(pixel.extend(i + tick * 32)).xy();
-                    let cm1_dir = encoder.linear_to_dir(i);
+                    let offset = pcg3df(pixel.extend(i)).xy();
+                    let cm1_dir =
+                        encoder.grid_to_dir_f32(encoder.linear_to_grid(i).cast_f32() + offset);
                     let cm1_dir = cm1_dir * cm1_len;
                     // raymarch in screenspace
                     for j in 0_u32..num_samples {

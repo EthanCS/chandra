@@ -106,12 +106,8 @@ fn main() {
         use_quality_weight: true,
         quality_decay: 0.97,
         base_radius: 1200.0 / 512.0,
-        // num_cascades: 5,
-        // base_grid_size: 4.0 / 512.0,
-        // base_angular_resolution: 2,
-        // terminate_deposit: false,
         num_cascades: 4,
-        base_grid_size: 7.0 / 512.0,
+        base_grid_size: 12.0 / 512.0,
         base_angular_resolution: 4,
         blending_radius: 1.3,
         // cm1_len: 1.0,
@@ -351,9 +347,9 @@ fn main() {
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
         // main
-        yaw: 6.437008,
-        pitch: 0.47492924,
-        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        // yaw: 6.437008,
+        // pitch: 0.47492924,
+        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         // specular
         // yaw: -2.8706567,
         // pitch: 0.11235107,
@@ -371,9 +367,9 @@ fn main() {
         // pitch: 0.3685319,
         // pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
         // bistro
-        // yaw: -0.044271395,
-        // pitch: 0.5069327,
-        // pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
+        yaw: -0.044271395,
+        pitch: 0.5069327,
+        pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
         // bistro (square)
         // yaw: 0.007311836,
         // pitch: 0.6932703,
@@ -386,6 +382,9 @@ fn main() {
         // yaw: -0.041864544,
         // pitch: 0.20691827,
         // pos: glam::Vec3::new(-339.8187, 526.7882, 253.7226),
+        // yaw: 7.737651,
+        // pitch: 0.36433113,
+        // pos: glam::Vec3::new(11.931349, -268.17606, 204.18045),
         fov: 1.15,
     };
     let mut running = true;
@@ -551,14 +550,18 @@ fn main() {
 
         commands += splat.reset();
 
-        // if rc.cm1_len > 0.0 {
-        //     commands += splat.trace_cm1(&core, &rc, 4);
-        // }
+        if rc.cm1_len > 0.0 {
+            commands += splat.trace_cm1(&core, &rc, 4);
+        }
 
         if mode == 0 {
             if rc.base_angular_resolution == 2 && splat_mode == 0 && draw_cascade == 0 {
                 commands += splat.shade_optimized_8(&core, &rc);
-            } else if rc.base_angular_resolution == 4 && splat_mode == 0 && draw_cascade == 0 {
+            } else if rc.base_angular_resolution == 4
+                && splat_mode == 0
+                && draw_cascade == 0
+                && rc.cm1_len == 0.0
+            {
                 commands += splat.calculate_irradiance(&rc);
                 commands += splat.copy_irradiance_borders(&rc);
                 commands += splat.shade_optimized_32(&core, &rc);
