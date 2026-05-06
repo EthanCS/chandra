@@ -88,14 +88,14 @@ fn main() {
     };*/
 
     let world = TriangleWorld::load(
-        "assets/sponza.obj",
-        FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
-        Some(Vec3::splat(0.7)),
+        "assets/bistro-colored.obj",
+        FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]) * 100.0,
+        None, // Some(Vec3::splat(0.7)),
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
 
-    // let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
-    let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
+    let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
+    // let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
 
     let envmap = image::open("assets/qwantani_night_puresky_4k.exr")
         .unwrap()

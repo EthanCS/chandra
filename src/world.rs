@@ -20,7 +20,7 @@ use crate::utils::*;
 pub struct TriangleWorld {
     accel: Accel,
     pub positions: Buffer<[f32; 3]>,
-    pub normals: Buffer<[f32; 3]>,
+    // pub normals: Buffer<[f32; 3]>,
     pub indices: Buffer<[u32; 3]>,
     pub offsets: Buffer<[u32; 2]>,
     // per-mesh
@@ -30,14 +30,14 @@ pub struct TriangleWorld {
 impl TriangleWorld {
     pub fn new(
         positions: &[[f32; 3]],
-        normals: &[[f32; 3]],
+        // normals: &[[f32; 3]],
         indices: &[[u32; 3]],
         offsets: &[[u32; 2]],
         material_indices: &[u32],
         material_diffuse: &[Vec3<f32>],
     ) -> Self {
         let positions = DEVICE.create_buffer_from_slice(positions);
-        let normals = DEVICE.create_buffer_from_slice(normals);
+        // let normals = DEVICE.create_buffer_from_slice(normals);
         let indices = DEVICE.create_buffer_from_slice(indices);
         let material_indices = DEVICE.create_buffer_from_slice(material_indices);
         let material_diffuse = DEVICE.create_buffer_from_slice(material_diffuse);
@@ -75,7 +75,7 @@ impl TriangleWorld {
         Self {
             accel,
             positions,
-            normals,
+            // normals,
             indices,
             offsets,
             material_indices,
@@ -117,7 +117,7 @@ impl TriangleWorld {
         for model in models {
             let mesh = model.mesh;
 
-            assert_eq!(mesh.normals.len() / 3, mesh.positions.len() / 3);
+            // assert_eq!(mesh.normals.len() / 3, mesh.positions.len() / 3);
 
             offsets.push([indices.len() as u32, positions.len() as u32]);
 
@@ -126,14 +126,14 @@ impl TriangleWorld {
                     .iter()
                     .map(|&p| <[f32; 3]>::from(rotation * glam::Vec3::from(p))),
             ); // Z-up to Y-up
-            normals.extend(bytemuck::cast_slice(&mesh.normals));
+            //  normals.extend(bytemuck::cast_slice(&mesh.normals));
             indices.extend(bytemuck::cast_slice(&mesh.indices));
 
             material_indices.push(mesh.material_id.unwrap_or(0).min(diffuse.len() - 1) as u32);
         }
         Self::new(
             &positions,
-            &normals,
+            // &normals,
             &indices,
             &offsets,
             &material_indices,
@@ -179,6 +179,7 @@ impl TriangleWorld {
             .normalize()
     }
 
+    /*
     #[tracked]
     pub fn get_normal(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
         let offsets = self.offsets.read(hit.inst);
@@ -189,6 +190,7 @@ impl TriangleWorld {
         hit.interpolate(normals[0], normals[1], normals[2])
             .normalize()
     }
+    */
 
     #[tracked]
     pub fn get_diffuse(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {

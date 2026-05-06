@@ -373,7 +373,8 @@ impl RcData {
                     };
                     // shadowing issues...
                     let start_len = if cascade == 0 {
-                        self.cm1_len.expr() * self.cache.spacing(node.probe.position.w, 0)
+                        keter::max(self.cm1_len.expr(), 1.0)
+                            * self.cache.spacing(node.probe.position.w, 0)
                     } else {
                         start_len * self.start_length_multiplier
                     };

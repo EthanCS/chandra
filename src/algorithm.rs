@@ -123,17 +123,17 @@ impl CoreData {
             }
         }*/
 
-        if hit.inst == 1 {
+        /*if hit.inst == 1 {
             *radiance += Vec3::expr(10.0, 0.0, 0.0);
         } else if hit.inst == 9 {
             *radiance += Vec3::expr(0.0, 7.0, 7.0);
-        }
+        }*/
 
         /*if hit.inst == 14 {
             *radiance += Vec3::splat(7.0);
         }*/
-        /*if hit.inst == 0 {
-            *radiance += Vec3::splat(10.0);
+        /*if hit.inst == 29 {
+            *radiance += Vec3::splat(1.0);
         }*/
 
         let output = radiance * self.world.get_diffuse(hit);
@@ -155,14 +155,14 @@ impl CoreData {
     }
     #[tracked]
     pub fn get_environment(&self, dir: Expr<Vec3<f32>>) -> Expr<Radiance> {
-        Vec3::splat_expr(0.0f32)
+        // Vec3::splat_expr(0.0f32)
         /*let facing = dir.dot(Vec3::z());
         let base = Vec3::splat(1.0f32);
         let falloff = Vec3::new(0.9, 0.9, 0.2);
         let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
         downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)*/
-        // let uv = EquirectangularEncoder::encode(dir);
-        // self.environment.var().sample(uv).xyz()
+        let uv = EquirectangularEncoder::encode(dir);
+        self.environment.var().sample(uv).xyz()
     }
     #[tracked]
     pub fn get_fluence(
@@ -199,11 +199,11 @@ impl CoreData {
     pub fn read_normal(&self, pixel: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
         SphericalEncoder::decode(self.normal.read(pixel))
     }
-    #[tracked]
+    /*#[tracked]
     pub fn read_normal_smooth(&self, pixel: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
         let hit = self.hit.read(self.pixel_to_linear(pixel));
         self.world.get_normal(hit)
-    }
+    }*/
     #[tracked]
     pub fn read_depth(&self, pixel: Expr<Vec2<u32>>) -> Expr<f32> {
         // could use hit.committed_ray_t instead
