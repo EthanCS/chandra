@@ -208,7 +208,8 @@ impl DdgiData {
         let total_irradiance = Vec4::splat(0.0f32).var();
 
         if is_oob {
-            *total_irradiance = Vec4::new(1.0, 0.0, 0.0, 1.0);
+            *total_irradiance = Vec4::new(3.6339993, 3.6684604, 3.5874016, 1.0);
+            // *total_irradiance = Vec4::new(1.0, 0.0, 0.0, 1.0);
         } else {
             for i in 0_u32..8_u32 {
                 let adj_probe_offset = index_to_corner(i);
@@ -279,16 +280,16 @@ impl DdgiData {
                         dir: encoded_dir,
                         distance: self.max_distance.expr(),
                         hit_backface: false.expr(),
-                        radiance: Vec3::splat_expr(0.0),
+                        radiance: core.get_environment(dir),
                     })
                 } else {
-                    let normal = core.world.get_normal_flat(hit);
+                    let normal = core.world.get_normal_flat(hit, dir);
                     let hit_backface = normal.dot(dir) > 0.0;
                     let radiance = if hit_backface {
                         Vec3::splat_expr(0.0)
                     } else {
                         let hit_pos = origin + dir * hit.committed_ray_t;
-                        core.get_emission(None, hit_pos, hit)
+                        core.get_emission(None, hit_pos, hit, dir)
                         // + self.query_irradiance(hit_pos, normal, -dir) * 0.3
                     };
                     let distance = if hit_backface {

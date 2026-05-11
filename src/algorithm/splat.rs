@@ -258,6 +258,12 @@ impl SplatData {
 
                 let direction_weight = self.get_lambertian_weight(encoder, thread, normal);
 
+                let cm1_shadow_mask = if rc.cm1_len > 0.0 {
+                    self.cm1_shadow_mask.read(core.pixel_to_linear(pixel))
+                } else {
+                    0u32.expr()
+                };
+
                 rc.cache.iter_lods(world_pos, |lod, _, lod_weight| {
                     let interp_probes = rc.cache.quantize_trilinear(world_pos, lod, 0.expr());
 
@@ -308,6 +314,11 @@ impl SplatData {
                             continue;
                         }
                         let radiance = rc.base_radiance.read(node.data_offset + thread);
+                        let radiance = if cm1_shadow_mask & (1 << thread) == 0 {
+                            radiance
+                        } else {
+                            Vec3::splat_expr(0f32)
+                        };
                         if radiance.is_finite().all() {
                             *result += radiance.extend(1.0)
                                 * weight

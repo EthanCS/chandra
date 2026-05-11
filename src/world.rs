@@ -168,15 +168,16 @@ impl TriangleWorld {
     }
 
     #[tracked]
-    pub fn get_normal_flat(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
+    pub fn get_normal_flat(&self, hit: Expr<SurfaceHit>, dir: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
         let offsets = self.offsets.read(hit.inst);
         let triangle = self.indices.read(offsets[0] + hit.prim);
         let positions: [_; 3] = std::array::from_fn(|i| {
             Expr::<Vec3<f32>>::from(self.positions.read(triangle[i as u32] + offsets[1]))
         });
-        (positions[1] - positions[0])
+        let normal = (positions[1] - positions[0])
             .cross(positions[2] - positions[0])
-            .normalize()
+            .normalize();
+        -normal.dot(dir).signum() * normal
     }
 
     /*

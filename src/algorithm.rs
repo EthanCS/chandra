@@ -90,13 +90,14 @@ impl CoreData {
         rc: Option<&RcData>,
         pos: Expr<Vec3<f32>>,
         hit: Expr<Hit>,
+        dir: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
         const BISTRO_LIGHTS: [u32; 27] = [
             1002, 1018, 1022, 1026, 1030, 1079, 1081, 1077, 1046, 1034, 1038, 1042, 1014, 1051,
             1053, 1055, 1057, 1059, 1061, 1010, 1063, 1065, 1067, 1006, 1075, 1073, 1071,
         ];
 
-        let normal = self.world.get_normal_flat(hit);
+        let normal = self.world.get_normal_flat(hit, dir);
         let weight = normal.dot(self.sunlight_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
@@ -121,6 +122,14 @@ impl CoreData {
             if hit.inst == bistro_lights.read(i) {
                 *radiance += 100.0 * pcg3df(Vec3::expr(i, 15, 32));
             }
+        }*/
+
+        /*if hit.inst == 2062 {
+            *radiance += Vec3::expr(10.0, 0.0, 0.0);
+        } else if hit.inst == 2063 {
+            *radiance += Vec3::expr(0.0, 10.0, 0.0);
+        } else if hit.inst == 2064 {
+            *radiance += Vec3::expr(0.0, 0.0, 10.0);
         }*/
 
         /*if hit.inst == 1 {
@@ -150,7 +159,7 @@ impl CoreData {
         if hit.miss() {
             self.get_environment(dir)
         } else {
-            self.get_emission(rc, start + dir * hit.committed_ray_t, hit)
+            self.get_emission(rc, start + dir * hit.committed_ray_t, hit, dir)
         }
     }
     #[tracked]
@@ -180,7 +189,7 @@ impl CoreData {
                 Vec3::splat_expr(0.0_f32).extend(1.0)
             }
         } else {
-            self.get_emission(rc, start + dir * hit.committed_ray_t, hit)
+            self.get_emission(rc, start + dir * hit.committed_ray_t, hit, dir)
                 .extend(0.0)
         }
     }
@@ -227,7 +236,7 @@ impl CoreData {
                     return;
                 }
                 self.depth.write(pixel, hit.committed_ray_t);
-                let normal = self.world.get_normal_flat(hit);
+                let normal = self.world.get_normal_flat(hit, ray_dir);
                 self.normal.write(pixel, SphericalEncoder::encode(normal));
                 self.hit.write(self.pixel_to_linear(pixel), hit);
             }),

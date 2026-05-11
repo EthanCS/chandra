@@ -88,16 +88,16 @@ fn main() {
     };*/
 
     let world = TriangleWorld::load(
-        "assets/bistro-colored.obj",
+        "assets/san-miguel-colored.obj",
         FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]) * 100.0,
         None, // Some(Vec3::splat(0.7)),
     );
     // let world = VoxelWorld::load("assets/sponza.vox");
 
-    let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
-    // let sunlight_dir = glam::Vec3::new(0.1, 0.5, 1.0).normalize();
+    // let sunlight_dir = glam::Vec3::new(0.3, 0.1, 1.0).normalize();
+    let sunlight_dir = glam::Vec3::new(0.1, 0.6, 1.0).normalize();
 
-    let envmap = image::open("assets/qwantani_night_puresky_4k.exr")
+    let envmap = image::open("assets/qwantani_dusk_2_4k.exr")
         .unwrap()
         .to_rgb32f();
 
@@ -105,20 +105,27 @@ fn main() {
     let mut rc = RcData::new(RcConfig {
         use_quality_weight: true,
         quality_decay: 0.97,
-        base_radius: 1200.0 / 512.0,
+        base_radius: 1200.0, // / 512.0,
         num_cascades: 4,
-        base_grid_size: 12.0 / 512.0,
+        base_grid_size: 6.0, // / 512.0,
         base_angular_resolution: 4,
-        blending_radius: 1.3,
-        // cm1_len: 1.0,
+        blending_radius: 1.0,
+        cm1_len: 1.0,
         base_probes: 1 << 20,
         ..Default::default()
     });
     let trace = TraceData::new(&core, &rc, 1920 * 1080 * 3);
     let splat = SplatData::new(&core, &rc, 1.0);
     // let ris = RisData::new(&core);
-    let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
-    let max = glam::Vec3::new(700.0, 1300.0, 900.0);
+
+    // pos: Vec3(-558.96094, 3003.0947, 244.39528),
+    // pos: Vec3(1499.722, 225.74374, 244.39528)
+
+    let min = glam::Vec3::new(-600.0, 225.0, -100.0);
+    let max = glam::Vec3::new(1500.0, 3000.0, 1281.0);
+
+    // let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
+    // let max = glam::Vec3::new(700.0, 1300.0, 900.0);
     let size = max - min;
     let probe_dims = Vec3::new(32, 32, 16);
     let spacing = size / (glam::UVec3::from(probe_dims).as_vec3() - 1.0);
@@ -129,8 +136,8 @@ fn main() {
     let ddgi = DdgiData::new(DdgiConfig {
         spacing: Vec3::splat(spacing),
         origin: min.into(),
-        rays_per_probe: 1245,
-        hysteresis: 0.0,
+        rays_per_probe: 512,
+        hysteresis: 0.99,
         probe_dims,
         ..Default::default()
     });
@@ -180,7 +187,7 @@ fn main() {
 
             let pixel_index = core.pixel_to_linear(pixel);
             let hit = core.hit.read(pixel_index);
-            let emission = core.get_emission(None, world_pos, hit);
+            let emission = core.get_emission(None, world_pos, hit, ray_dir);
             let diffuse = core.world.get_diffuse(hit);
 
             let color = if mode == 0 {
@@ -197,11 +204,18 @@ fn main() {
                         *specular_radiance =
                             chandra::algorithm::rc::over(fluence, **specular_radiance);
                     }
-                    *result += specular_radiance;
+                    if specular_radiance.is_finite().all() {
+                        *result += specular_radiance;
+                    }
+                }
+
+                if (cursor_pixel == pixel).all() {
+                    let res = result + emission;
+                    device_println!("Color: {:?}", host!(res));
                 }
 
                 if flags & DEBUG_SPLATS == 0 {
-                    result + emission
+                    **result + emission
                 } else {
                     let radiance_depth = splat.depth.read(pixel_index);
                     if radiance_depth > depth + 0.1 {
@@ -211,24 +225,21 @@ fn main() {
                     }
                 }
             } else if mode == 1 {
-                rc.sample_secondary(world_pos, normal)
-                // core.world.get_diffuse(core.hit.read(pixel_index))
-                // trace.raw_radiance.as_ref().unwrap().read(pixel) + emission
-                /*if rc.cache.contains(probe) {
-                    let target_probe = rc.cache.decode(rc.cache.encode(probe), cascade);
-                    if (target_probe.position != probe.position).any()
-                        || (rc.cache.quantize(world_pos, lod, cascade + 1).position
-                            != probe.next_nearest().position)
-                            .any()
-                    {
-                        Vec3::splat_expr(1.0)
-                    } else {
-                        inferno((probe.position.w.cast_f32() + 0.5) / 9.0)
-                            * pcg3df(probe.position.xyz()).x
+                // rc.sample_secondary(world_pos, normal)
+                let node = rc.cache.get(probe);
+                if node.loaded() {
+                    let encoder = rc.cache.get_encoder(cascade);
+                    let total_transmittance = Vec2::splat(0.0f32).var();
+                    for j in 0_u32.expr()..encoder.linear_size() {
+                        let transmittance = rc.cache.weighted_fluence.read(node.data_offset + j).w;
+                        let weight = rc.cache.weights.read(node.data_offset + j);
+                        *total_transmittance += Vec2::expr(transmittance, weight);
                     }
+                    let transmittance = total_transmittance.x / total_transmittance.y;
+                    inferno(transmittance)
                 } else {
-                    Vec3::splat_expr(0.0)
-                }*/
+                    Vec3::expr(1.0, 0.0, 0.0)
+                }
             } else if mode == 2 {
                 let output = inferno(yesod::color::reinhard(core.read_depth(pixel) / 1000.0));
                 #[cfg(feature = "denoise")]
@@ -367,9 +378,9 @@ fn main() {
         // pitch: 0.3685319,
         // pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
         // bistro
-        yaw: -0.044271395,
-        pitch: 0.5069327,
-        pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
+        // yaw: -0.044271395,
+        // pitch: 0.5069327,
+        // pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
         // bistro (square)
         // yaw: 0.007311836,
         // pitch: 0.6932703,
@@ -385,6 +396,14 @@ fn main() {
         // yaw: 7.737651,
         // pitch: 0.36433113,
         // pos: glam::Vec3::new(11.931349, -268.17606, 204.18045),
+        // san miguel
+        // yaw: 3.4480734,
+        // pitch: 0.39782777,
+        // pos: glam::Vec3::new(249.36424, 2055.892, 244.39528),
+        // san miguel (2)
+        yaw: 4.182359,
+        pitch: 0.36102834,
+        pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
         fov: 1.15,
     };
     let mut running = true;
@@ -505,7 +524,7 @@ fn main() {
 
             if normal_rc {
                 for c in 0..num_cascades {
-                    commands += rc.trace_deposit(&core, c0_len, c, 2, true);
+                    commands += rc.trace_deposit(&core, c0_len, c, 1, true);
                 }
             } else {
                 commands += trace.reset();
@@ -550,17 +569,15 @@ fn main() {
 
         commands += splat.reset();
 
-        if rc.cm1_len > 0.0 {
-            commands += splat.trace_cm1(&core, &rc, 4);
-        }
+        // if rc.cm1_len > 0.0 {
+        //     commands += splat.trace_cm1(&core, &rc, 4);
+        // }
 
         if mode == 0 {
             if rc.base_angular_resolution == 2 && splat_mode == 0 && draw_cascade == 0 {
                 commands += splat.shade_optimized_8(&core, &rc);
-            } else if rc.base_angular_resolution == 4
-                && splat_mode == 0
-                && draw_cascade == 0
-                && rc.cm1_len == 0.0
+            } else if rc.base_angular_resolution == 4 && splat_mode == 0 && draw_cascade == 0
+            // && rc.cm1_len == 0.0
             {
                 commands += splat.calculate_irradiance(&rc);
                 commands += splat.copy_irradiance_borders(&rc);

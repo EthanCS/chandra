@@ -197,7 +197,7 @@ impl TraceData {
                     } else {
                         Hit::from_comps_expr(HitComps {
                             position: start + dir * hit.committed_ray_t,
-                            normal: core.world.get_normal_flat(hit),
+                            normal: core.world.get_normal_flat(hit, dir),
                             radiance,
                         })
                     },
