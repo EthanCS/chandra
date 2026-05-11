@@ -3,6 +3,7 @@ use keter::prelude::*;
 use yesod::utils::once;
 
 use crate::algorithm::CoreData;
+use crate::algorithm::trace::Hit;
 
 pub struct Denoiser {
     denoiser: oidn::RayTracing<'static>,
@@ -33,12 +34,12 @@ impl Denoiser {
             output: DEVICE.create_buffer::<Vec3<f32>>(core.num_pixels() as usize),
         }
     }
-    pub fn denoise(&mut self, core: &CoreData, input: &Tex2d<Vec3<f32>>) {
+    pub fn denoise(&mut self, core: &CoreData, input: &Buffer<Hit>) {
         once(|| {
-            DEVICE.create_kernel_async::<fn(Tex2d<Vec3<f32>>)>(&|input| {
+            DEVICE.create_kernel_async::<fn(Buffer<Hit>)>(&|input| {
                 let pixel = dispatch_id().xy();
                 let index = core.pixel_to_linear(pixel);
-                self.input.write(index, input.read(pixel));
+                self.input.write(index, input.read(index).radiance);
                 self.normal.write(index, core.read_normal(pixel));
             })
         })

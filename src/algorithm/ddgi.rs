@@ -290,7 +290,7 @@ impl DdgiData {
                     } else {
                         let hit_pos = origin + dir * hit.committed_ray_t;
                         core.get_emission(None, hit_pos, hit, dir)
-                        // + self.query_irradiance(hit_pos, normal, -dir) * 0.3
+                        // + self.query_irradiance(hit_pos, normal, -dir) * core.world.get_diffuse(hit)
                     };
                     let distance = if hit_backface {
                         0.2 * hit.committed_ray_t

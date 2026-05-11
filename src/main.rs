@@ -105,12 +105,12 @@ fn main() {
     let mut rc = RcData::new(RcConfig {
         use_quality_weight: true,
         quality_decay: 0.97,
-        base_radius: 1200.0, // / 512.0,
+        base_radius: 1200.0 / 512.0,
         num_cascades: 4,
-        base_grid_size: 6.0, // / 512.0,
+        base_grid_size: 12.0 / 512.0,
         base_angular_resolution: 4,
-        blending_radius: 1.0,
-        cm1_len: 1.0,
+        blending_radius: 1.3,
+        // cm1_len: 1.0,
         base_probes: 1 << 20,
         ..Default::default()
     });
@@ -207,11 +207,6 @@ fn main() {
                     if specular_radiance.is_finite().all() {
                         *result += specular_radiance;
                     }
-                }
-
-                if (cursor_pixel == pixel).all() {
-                    let res = result + emission;
-                    device_println!("Color: {:?}", host!(res));
                 }
 
                 if flags & DEBUG_SPLATS == 0 {
@@ -358,9 +353,9 @@ fn main() {
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
         // main
-        // yaw: 6.437008,
-        // pitch: 0.47492924,
-        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        yaw: 6.437008,
+        pitch: 0.47492924,
+        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         // specular
         // yaw: -2.8706567,
         // pitch: 0.11235107,
@@ -401,9 +396,13 @@ fn main() {
         // pitch: 0.39782777,
         // pos: glam::Vec3::new(249.36424, 2055.892, 244.39528),
         // san miguel (2)
-        yaw: 4.182359,
-        pitch: 0.36102834,
-        pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
+        // yaw: 4.182359,
+        // pitch: 0.36102834,
+        // pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
+        // san miguel (3)
+        // yaw: 10.387859,
+        // pitch: 0.70613384,
+        // pos: glam::Vec3::new(351.25754, 2183.237, 802.5459),
         fov: 1.15,
     };
     let mut running = true;
@@ -569,15 +568,17 @@ fn main() {
 
         commands += splat.reset();
 
-        // if rc.cm1_len > 0.0 {
-        //     commands += splat.trace_cm1(&core, &rc, 4);
-        // }
+        if rc.cm1_len > 0.0 {
+            commands += splat.trace_cm1(&core, &rc, 4);
+        }
 
         if mode == 0 {
             if rc.base_angular_resolution == 2 && splat_mode == 0 && draw_cascade == 0 {
                 commands += splat.shade_optimized_8(&core, &rc);
-            } else if rc.base_angular_resolution == 4 && splat_mode == 0 && draw_cascade == 0
-            // && rc.cm1_len == 0.0
+            } else if rc.base_angular_resolution == 4
+                && splat_mode == 0
+                && draw_cascade == 0
+                && rc.cm1_len == 0.0
             {
                 commands += splat.calculate_irradiance(&rc);
                 commands += splat.copy_irradiance_borders(&rc);
@@ -696,7 +697,7 @@ fn main() {
         #[cfg(feature = "denoise")]
         if rt.key_pressed(KeyCode::KeyI) {
             println!("Denoising!");
-            denoiser.denoise(&core, trace.raw_radiance.as_ref().unwrap());
+            denoiser.denoise(&core, &trace.traced_hits);
         }
 
         flush_printer();
