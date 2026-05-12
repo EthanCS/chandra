@@ -9,7 +9,7 @@ use yesod::shapes::intersect_aabb;
 use yesod::utils::{cross_matrix, dispatch0_blocking, outer_product_3, spherical_fibonacci};
 
 use super::*;
-use crate::utils::{from_linear_expr, index_to_corner};
+use crate::utils::{draw_sphere, from_linear_expr, index_to_corner};
 
 pub struct DdgiConfig {
     pub origin: Vec3<f32>,
@@ -156,6 +156,31 @@ impl DdgiData {
             num_probes_used: Singleton::new(0),
         }
     }
+    pub fn draw_probes(&self, core: &CoreData, target: &Tex2d<Vec4<f32>>) -> NodeConfigs<'static> {
+        dispatch0(
+            track!(|| {
+                let probe = dispatch_id();
+                let probe_pos =
+                    self.probe_to_world(probe.cast_f32()) + self.probe_offsets.read(probe);
+                let probe_size = self.spacing.expr().reduce_min() * 0.03;
+
+                let view = core.view.read();
+
+                let pixel = view.project(probe_pos);
+                let depth = core.read_depth(pixel.cast_u32());
+                let probe_depth = (probe_pos - view.pos).length();
+                if probe_depth > depth {
+                    return;
+                }
+
+                draw_sphere(probe_pos, probe_size, view, |pixel| {
+                    target.write(pixel, Vec4::new(1.0, 0.0, 0.0, 1.0));
+                });
+            }),
+            self.probe_dims.into(),
+        )
+        .debug("DDGI Draw Probes")
+    }
     #[tracked]
     fn world_to_probe(&self, world_pos: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
         (world_pos - self.origin) / self.spacing
@@ -283,7 +308,7 @@ impl DdgiData {
                         radiance: core.get_environment(dir),
                     })
                 } else {
-                    let normal = core.world.get_normal_flat(hit, dir);
+                    let normal = core.world.get_normal_oriented(hit);
                     let hit_backface = normal.dot(dir) > 0.0;
                     let radiance = if hit_backface {
                         Vec3::splat_expr(0.0)
@@ -557,5 +582,4 @@ impl DdgiData {
         self.num_probes_used.write_host(0).execute_blocking();
         res
     }
-    // 2046 probes used
 }

@@ -3,6 +3,8 @@ use std::f32::consts::TAU;
 use glam::UVec3;
 use keter::lang::types::vector::{Vec2, Vec3};
 use keter::prelude::*;
+use yesod::camera::View;
+use yesod::shapes::intersect_sphere;
 
 #[tracked]
 pub fn index_to_corner(i: Expr<u32>) -> Expr<Vec3<u32>> {
@@ -71,4 +73,39 @@ pub fn sample_bounce(normal: Expr<Vec3<f32>>, rng: Expr<Vec2<f32>>) -> Expr<Vec3
 #[tracked]
 pub fn reflect(dir: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
     dir - normal * (2.0_f32 * dir.dot(normal))
+}
+
+#[tracked]
+pub fn draw_sphere(
+    center: Expr<Vec3<f32>>,
+    radius: Expr<f32>,
+    view: Expr<View>,
+    deposit: impl Fn(Expr<Vec2<u32>>),
+) {
+    let screen_min = view.screen_size.var();
+    let screen_max = Vec2::splat(0.0f32).var();
+
+    for i in 0u32..8 {
+        let coord = center + radius * (index_to_corner(i).cast_f32() * 2.0 - 1.0);
+        let screen_pos = view.project3(coord);
+        if screen_pos.z <= 0.0 {
+            return;
+        }
+        let screen_pos = screen_pos.xy();
+        *screen_min = keter::min(**screen_min, screen_pos);
+        *screen_max = keter::max(**screen_max, screen_pos);
+    }
+    let screen_min = keter::max(0.0_f32, **screen_min).cast_u32();
+    let screen_max = keter::min(view.screen_size, **screen_max).ceil().cast_u32();
+    let size = screen_max - screen_min;
+    let area = size.reduce_prod();
+    for i in 0u32.expr()..area {
+        let pixel = screen_min + Vec2::expr(i % size.x, i / size.x);
+        let ray_dir = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
+        let (_time, intersected) = intersect_sphere(view.pos - center, ray_dir, radius);
+        if !intersected {
+            continue;
+        }
+        deposit(pixel);
+    }
 }
