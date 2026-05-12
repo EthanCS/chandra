@@ -107,7 +107,7 @@ impl CoreData {
                 .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
                 .miss()
                 .select(
-                    10.0 * Vec3::splat_expr(1.0), // * Vec3::expr(1.0, 0.95, 0.85),
+                    30.0 * Vec3::splat_expr(1.0), // * Vec3::expr(1.0, 0.95, 0.85),
                     Vec3::splat_expr(0.0_f32),
                 )
                 * weight;
@@ -124,25 +124,10 @@ impl CoreData {
             }
         }*/
 
-        /*if hit.inst == 2062 {
-            *radiance += Vec3::expr(10.0, 0.0, 0.0);
-        } else if hit.inst == 2063 {
-            *radiance += Vec3::expr(0.0, 10.0, 0.0);
-        } else if hit.inst == 2064 {
-            *radiance += Vec3::expr(0.0, 0.0, 10.0);
-        }*/
-
         /*if hit.inst == 1 {
             *radiance += Vec3::expr(10.0, 0.0, 0.0);
         } else if hit.inst == 9 {
             *radiance += Vec3::expr(0.0, 7.0, 7.0);
-        }*/
-
-        /*if hit.inst == 14 {
-            *radiance += Vec3::splat(7.0);
-        }*/
-        /*if hit.inst == 29 {
-            *radiance += Vec3::splat(1.0);
         }*/
 
         let output = radiance * self.world.get_diffuse(hit);
@@ -171,7 +156,7 @@ impl CoreData {
         let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
         downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)*/
         let uv = EquirectangularEncoder::encode(dir);
-        self.environment.var().sample(uv).xyz()
+        self.environment.var().sample(uv).xyz() * 0.5
     }
     #[tracked]
     pub fn get_fluence(

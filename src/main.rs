@@ -95,7 +95,7 @@ fn main() {
     // let world = VoxelWorld::load("assets/sponza.vox");
 
     // let sunlight_dir = glam::Vec3::new(0.3, 0.1, 1.0).normalize();
-    let sunlight_dir = glam::Vec3::new(0.1, 0.6, 1.0).normalize();
+    let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
 
     let envmap = image::open("assets/qwantani_dusk_2_4k.exr")
         .unwrap()
@@ -105,11 +105,11 @@ fn main() {
     let mut rc = RcData::new(RcConfig {
         use_quality_weight: true,
         quality_decay: 0.97,
-        base_radius: 1200.0 / 512.0,
+        base_radius: 1200.0, // / 512.0,
         num_cascades: 4,
-        base_grid_size: 12.0 / 512.0,
+        base_grid_size: 12.0, // / 512.0,
         base_angular_resolution: 4,
-        blending_radius: 1.3,
+        blending_radius: 1.0,
         // cm1_len: 1.0,
         base_probes: 1 << 20,
         ..Default::default()
@@ -121,13 +121,13 @@ fn main() {
     // pos: Vec3(-558.96094, 3003.0947, 244.39528),
     // pos: Vec3(1499.722, 225.74374, 244.39528)
 
-    let min = glam::Vec3::new(-600.0, 225.0, -100.0);
+    let min = glam::Vec3::new(-600.0, -300.0, -100.0);
     let max = glam::Vec3::new(1500.0, 3000.0, 1281.0);
 
     // let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
     // let max = glam::Vec3::new(700.0, 1300.0, 900.0);
     let size = max - min;
-    let probe_dims = Vec3::new(32, 32, 16);
+    let probe_dims = Vec3::new(32, 48, 32);
     let spacing = size / (glam::UVec3::from(probe_dims).as_vec3() - 1.0);
     let spacing = spacing.max_element();
     // Hit at 21, position
@@ -136,7 +136,7 @@ fn main() {
     let ddgi = DdgiData::new(DdgiConfig {
         spacing: Vec3::splat(spacing),
         origin: min.into(),
-        rays_per_probe: 512,
+        rays_per_probe: 128,
         hysteresis: 0.99,
         probe_dims,
         ..Default::default()
@@ -353,9 +353,9 @@ fn main() {
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
         // main
-        yaw: 6.437008,
-        pitch: 0.47492924,
-        pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        // yaw: 6.437008,
+        // pitch: 0.47492924,
+        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
         // specular
         // yaw: -2.8706567,
         // pitch: 0.11235107,
@@ -396,9 +396,9 @@ fn main() {
         // pitch: 0.39782777,
         // pos: glam::Vec3::new(249.36424, 2055.892, 244.39528),
         // san miguel (2)
-        // yaw: 4.182359,
-        // pitch: 0.36102834,
-        // pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
+        yaw: 4.182359,
+        pitch: 0.36102834,
+        pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
         // san miguel (3)
         // yaw: 10.387859,
         // pitch: 0.70613384,
