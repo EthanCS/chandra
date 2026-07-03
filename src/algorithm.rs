@@ -24,6 +24,15 @@ type World = crate::world::VoxelWorld;
 #[cfg(feature = "voxel")]
 type Hit = keter::rtx::CommittedHit;
 
+pub struct WorldData {
+    pub world: World,
+    pub envmap: Rgb32FImage,
+    pub envmap_scale: f32,
+    pub sun_dir: Vec3<f32>,
+    pub sun_color: Vec3<f32>,
+    pub custom_emitters: Vec<(u32, Vec3<f32>)>,
+}
+
 pub struct CoreData {
     pub world: World,
     pub view: Singleton<View>,
@@ -31,15 +40,23 @@ pub struct CoreData {
     pub normal: Tex2d<Vec2<f32>>,
     pub hit: Buffer<Hit>,
 
-    pub sunlight_dir: Vec3<f32>,
+    pub sun_dir: Vec3<f32>,
+    pub sun_color: Vec3<f32>,
     pub environment: Tex2dHandle<Vec4<f32>>,
+    pub environment_scale: f32,
+    pub custom_emitters: Vec<(u32, Vec3<f32>)>,
 }
 impl CoreData {
     pub fn new(
-        world: World,
         [width, height]: [u32; 2],
-        sunlight_dir: Vec3<f32>,
-        envmap: Rgb32FImage,
+        WorldData {
+            world,
+            envmap,
+            envmap_scale,
+            sun_dir,
+            sun_color,
+            custom_emitters,
+        }: WorldData,
     ) -> Self {
         let depth = DEVICE.create_tex2d::<f32>(PixelStorage::Float1, width, height, 1);
         let depth = BINDLESS.push_tex2d(
@@ -71,8 +88,11 @@ impl CoreData {
             depth,
             normal: DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, width, height, 1),
             hit: DEVICE.create_buffer::<Hit>(width as usize * height as usize),
-            sunlight_dir,
+            sun_dir,
+            sun_color,
             environment,
+            environment_scale: envmap_scale,
+            custom_emitters,
         }
     }
     pub fn screen_size(&self) -> Vec2<u32> {
@@ -92,43 +112,27 @@ impl CoreData {
         hit: Expr<Hit>,
         dir: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
-        const BISTRO_LIGHTS: [u32; 27] = [
-            1002, 1018, 1022, 1026, 1030, 1079, 1081, 1077, 1046, 1034, 1038, 1042, 1014, 1051,
-            1053, 1055, 1057, 1059, 1061, 1010, 1063, 1065, 1067, 1006, 1075, 1073, 1071,
-        ];
-
         let normal = self.world.get_normal_flat(hit, dir);
-        let weight = normal.dot(self.sunlight_dir);
+        let weight = normal.dot(self.sun_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
         if weight > 0.0 {
             *radiance += self
                 .world
-                .trace(offset_ray(pos, normal), self.sunlight_dir.expr())
+                .trace(offset_ray(pos, normal), self.sun_dir.expr())
                 .miss()
-                .select(
-                    30.0 * Vec3::splat_expr(1.0), // * Vec3::expr(1.0, 0.95, 0.85),
-                    Vec3::splat_expr(0.0_f32),
-                )
+                .select(self.sun_color.expr(), Vec3::splat_expr(0.0_f32))
                 * weight;
         }
         if let Some(rc) = rc {
             *radiance += rc.sample_secondary(pos, normal);
         }
 
-        /*let bistro_lights = BISTRO_LIGHTS.expr();
-
-        for i in 0..BISTRO_LIGHTS.len() as u32 {
-            if hit.inst == bistro_lights.read(i) {
-                *radiance += 100.0 * pcg3df(Vec3::expr(i, 15, 32));
+        for (emitter_inst, emitter_color) in self.custom_emitters.iter() {
+            if hit.inst == *emitter_inst {
+                *radiance += *emitter_color;
             }
-        }*/
-
-        /*if hit.inst == 1 {
-            *radiance += Vec3::expr(10.0, 0.0, 0.0);
-        } else if hit.inst == 9 {
-            *radiance += Vec3::expr(0.0, 7.0, 7.0);
-        }*/
+        }
 
         let output = radiance * self.world.get_diffuse(hit);
         output
@@ -156,7 +160,7 @@ impl CoreData {
         let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
         downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)*/
         let uv = EquirectangularEncoder::encode(dir);
-        self.environment.var().sample(uv).xyz() * 0.5
+        self.environment.var().sample(uv).xyz() * self.environment_scale
     }
     #[tracked]
     pub fn get_fluence(

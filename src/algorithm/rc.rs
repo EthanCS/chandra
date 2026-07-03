@@ -37,10 +37,10 @@ impl Default for RcConfig {
     fn default() -> Self {
         Self {
             base_grid_size: 10.0,
-            base_radius: 1000.0,
+            base_radius: 1200.0,
             blending_radius: 1.1,
             base_angular_resolution: 4,
-            base_probes: 1 << 19,
+            base_probes: 1 << 20,
             num_cascades: 4,
             length_scale: 4.0,
             use_quality_weight: true,

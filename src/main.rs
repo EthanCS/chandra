@@ -27,16 +27,18 @@ Split into two caches. Also measure ray divergence and use that to stochasticall
 */
 
 use std::f32::consts::PI;
+use std::path::Path;
 
 use chandra::algorithm::ddgi::{DdgiConfig, DdgiData};
 use chandra::algorithm::rc::{RcConfig, RcData};
 use chandra::algorithm::splat::SplatData;
 use chandra::algorithm::trace::TraceData;
-use chandra::algorithm::{CommandList, CoreData};
+use chandra::algorithm::{CommandList, CoreData, WorldData};
 use chandra::cache::{DirectionIndexer, DirectionIndexerComps};
 use chandra::utils::sample_bounce;
 use chandra::world::TriangleWorld;
 use glam::Mat3 as FMat3;
+use image::Rgb32FImage;
 use keter::graph::profile::Profiler;
 use keter::lang::types::vector::{Vec2, Vec3, Vec4};
 use keter::prelude::*;
@@ -53,6 +55,91 @@ const DEBUG_SPLATS: u32 = 0b1;
 const DRAW_SPECULAR: u32 = 0b10;
 const DRAW_DIFFUSE: u32 = 0b100;
 
+fn load_envmap(path: impl AsRef<Path>) -> Rgb32FImage {
+    image::open(path).unwrap().to_rgb32f()
+}
+
+struct Scene {
+    world: WorldData,
+    rc_config: RcConfig,
+    ddgi_bounds: (glam::Vec3, glam::Vec3),
+    ddgi_probe_dims: glam::UVec3,
+
+    camera_yaw: f32,
+    camera_pitch: f32,
+    camera_pos: glam::Vec3,
+}
+impl Scene {
+    fn sponza_main() -> Self {
+        Self {
+            world: WorldData {
+                world: TriangleWorld::load(
+                    "assets/sponza.obj",
+                    FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]),
+                    Some(Vec3::splat(0.7)),
+                ),
+                envmap: load_envmap("assets/qwantani_dusk_2_4k.exr"),
+                envmap_scale: 1.0,
+                sun_dir: glam::Vec3::new(0.1, 0.5, 1.0).normalize().into(),
+                sun_color: Vec3::splat(10.0),
+                custom_emitters: vec![
+                    (1, Vec3::new(10.0, 0.0, 0.0)),
+                    (9, Vec3::new(0.0, 7.0, 7.0)),
+                ],
+            },
+            rc_config: RcConfig {
+                base_grid_size: 4.0,
+                ..Default::default()
+            },
+            ddgi_bounds: (
+                glam::Vec3::new(-700.0, -1600.0, -10.0),
+                glam::Vec3::new(700.0, 1300.0, 900.0),
+            ),
+            ddgi_probe_dims: glam::UVec3::new(32, 32, 16),
+
+            camera_yaw: 6.437008,
+            camera_pitch: 0.47492924,
+            camera_pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
+        }
+    }
+    fn sponza_penumbra() -> Self {
+        Self {
+            camera_yaw: 9.474376,
+            camera_pitch: 1.1788585,
+            camera_pos: glam::Vec3::new(-61.073547, 1171.4944, 375.83527),
+            ..Self::sponza_main()
+        }
+    }
+    fn sanmiguel_teaser() -> Self {
+        Self {
+            world: WorldData {
+                world: TriangleWorld::load(
+                    "assets/san-miguel-colored.obj",
+                    FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]) * 100.0,
+                    None,
+                ),
+                envmap: load_envmap("assets/qwantani_dusk_2_4k.exr"),
+                envmap_scale: 0.5,
+                sun_dir: glam::Vec3::new(0.1, 2.0, 1.0).normalize().into(),
+                sun_color: Vec3::splat(30.0),
+                custom_emitters: vec![],
+            },
+            rc_config: RcConfig {
+                base_grid_size: 12.0,
+                ..Default::default()
+            },
+            ddgi_bounds: (
+                glam::Vec3::new(-600.0, -300.0, -100.0),
+                glam::Vec3::new(1500.0, 3000.0, 1281.0),
+            ),
+            ddgi_probe_dims: glam::UVec3::new(32, 48, 32),
+            camera_yaw: 4.182359,
+            camera_pitch: 0.36102834,
+            camera_pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
+        }
+    }
+}
+
 // do sudo nvidia-smi --lock-gpu-clocks=405,1500 before running to make it have fixed time.
 // nvidia-smi -q -d SUPPORTED_CLOCKS
 fn main() {
@@ -64,83 +151,31 @@ fn main() {
 
     yesod::printer::global::set_capacity(1024 * 1024);
 
-    /*let world = {
-        let a = 6000.0;
-        let b = 150.0;
-        let h1 = 7.0;
-        let h2 = 307.0;
+    let scene = Scene::sanmiguel_teaser();
 
-        TriangleWorld::new(
-            &[
-                [-a, -a, h1],
-                [-a, a, h1],
-                [a, -a, h1],
-                [a, a, h1],
-                [-b, -b, h2],
-                [-b, b, h2],
-                [-b, -b, h1],
-                [-b, b, h1],
-            ],
-            &[[0.0; 3]; 4],
-            &[[0, 2, 1], [1, 2, 3], [0, 2, 1], [1, 2, 3]],
-            &[[0, 0], [2, 4]],
-        )
-    };*/
-
-    let world = TriangleWorld::load(
-        "assets/san-miguel-colored.obj",
-        FMat3::from_cols_array(&[0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0]) * 100.0,
-        None, // Some(Vec3::splat(0.7)),
-    );
-    // let world = VoxelWorld::load("assets/sponza.vox");
-
-    // let sunlight_dir = glam::Vec3::new(0.3, 0.1, 1.0).normalize();
-    let sunlight_dir = glam::Vec3::new(0.1, 2.0, 1.0).normalize();
-
-    let envmap = image::open("assets/qwantani_dusk_2_4k.exr")
-        .unwrap()
-        .to_rgb32f();
-
-    let core = CoreData::new(world, app.size(), sunlight_dir.into(), envmap);
-    let mut rc = RcData::new(RcConfig {
-        use_quality_weight: true,
-        quality_decay: 0.97,
-        base_radius: 1200.0, // / 512.0,
-        num_cascades: 4,
-        base_grid_size: 12.0, // / 512.0,
-        base_angular_resolution: 4,
-        blending_radius: 1.0,
-        // cm1_len: 1.0,
-        base_probes: 1 << 20,
-        ..Default::default()
-    });
+    let core = CoreData::new(app.size(), scene.world);
+    let mut rc = RcData::new(scene.rc_config);
     let trace = TraceData::new(&core, &rc, 1920 * 1080 * 3);
     let splat = SplatData::new(&core, &rc, 1.0);
     // let ris = RisData::new(&core);
 
-    // pos: Vec3(-558.96094, 3003.0947, 244.39528),
-    // pos: Vec3(1499.722, 225.74374, 244.39528)
+    let ddgi = {
+        let min = scene.ddgi_bounds.0;
+        let max = scene.ddgi_bounds.1;
+        let size = max - min;
+        let probe_dims = scene.ddgi_probe_dims.into();
+        let spacing = size / (glam::UVec3::from(probe_dims).as_vec3() - 1.0);
+        let spacing = spacing.max_element();
 
-    let min = glam::Vec3::new(-600.0, -300.0, -100.0);
-    let max = glam::Vec3::new(1500.0, 3000.0, 1281.0);
-
-    // let min = glam::Vec3::new(-700.0, -1600.0, -10.0);
-    // let max = glam::Vec3::new(700.0, 1300.0, 900.0);
-    let size = max - min;
-    let probe_dims = Vec3::new(32, 48, 32);
-    let spacing = size / (glam::UVec3::from(probe_dims).as_vec3() - 1.0);
-    let spacing = spacing.max_element();
-    // Hit at 21, position
-    //  Hit at 193, position [505.3295, -1370.4766, 825.4145]
-
-    let ddgi = DdgiData::new(DdgiConfig {
-        spacing: Vec3::splat(spacing),
-        origin: min.into(),
-        rays_per_probe: 128,
-        hysteresis: 0.99,
-        probe_dims,
-        ..Default::default()
-    });
+        DdgiData::new(DdgiConfig {
+            spacing: Vec3::splat(spacing),
+            origin: min.into(),
+            rays_per_probe: 512,
+            hysteresis: 0.97,
+            probe_dims,
+            ..Default::default()
+        })
+    };
 
     #[cfg(feature = "denoise")]
     let mut denoiser = chandra::denoise::Denoiser::new(&core);
@@ -352,57 +387,9 @@ fn main() {
 
     let mut camera = Camera {
         screen_size: app.size().map(|x| x as f32).into(),
-        // main
-        // yaw: 6.437008,
-        // pitch: 0.47492924,
-        // pos: glam::Vec3::new(-94.45221, -937.2442, 613.4341),
-        // specular
-        // yaw: -2.8706567,
-        // pitch: 0.11235107,
-        // pos: glam::Vec3::new(5.8384686, 1069.1106, 244.21223),
-        // specular (no sunlight)
-        // yaw: 0.24019964,
-        // pitch: 0.17068534,
-        // pos: glam::Vec3::new(-130.0943, -978.813, 184.45943),
-        // penumbra
-        // yaw: 7.148522,
-        // pitch: 0.22371231,
-        // pos: glam::Vec3::new(-625.7774, 904.33496, 233.55939),
-        // curtain
-        // yaw: 3.586528,
-        // pitch: 0.3685319,
-        // pos: glam::Vec3::new(453.958, 1051.4946, 240.64691),
-        // bistro
-        // yaw: -0.044271395,
-        // pitch: 0.5069327,
-        // pos: glam::Vec3::new(19.034603, -1065.8285, 1168.4574),
-        // bistro (square)
-        // yaw: 0.007311836,
-        // pitch: 0.6932703,
-        // pos: glam::Vec3::new(-218.57637, -1431.495, 1126.1423),
-        // fov: 1.8,
-        // yaw: 3.2929106,
-        // pitch: 0.10817528,
-        // pos: glam::Vec3::new(1.6976551, 22.22719, 2.1686177),
-        // bistro interior
-        // yaw: -0.041864544,
-        // pitch: 0.20691827,
-        // pos: glam::Vec3::new(-339.8187, 526.7882, 253.7226),
-        // yaw: 7.737651,
-        // pitch: 0.36433113,
-        // pos: glam::Vec3::new(11.931349, -268.17606, 204.18045),
-        // san miguel
-        // yaw: 3.4480734,
-        // pitch: 0.39782777,
-        // pos: glam::Vec3::new(249.36424, 2055.892, 244.39528),
-        // san miguel (2)
-        yaw: 4.182359,
-        pitch: 0.36102834,
-        pos: glam::Vec3::new(136.32507, 1907.1962, 244.39528),
-        // san miguel (3)
-        // yaw: 10.387859,
-        // pitch: 0.70613384,
-        // pos: glam::Vec3::new(351.25754, 2183.237, 802.5459),
+        yaw: scene.camera_yaw,
+        pitch: scene.camera_pitch,
+        pos: scene.camera_pos,
         fov: 1.15,
     };
     let mut running = true;
@@ -635,6 +622,7 @@ fn main() {
             if rt.key_pressed(KeyCode::KeyT) {
                 commands += ddgi.adjust_probe_offsets();
             }
+            // commands += ddgi.draw_probes(&core, rt.overlay());
         }
 
         commands.push(
@@ -688,6 +676,18 @@ fn main() {
                 (0..num_cascades)
                     .map(|n| rc.cache.max_probes_at_cascade(n))
                     .collect::<Vec<_>>()
+            );
+            let bytes_used = rc.cache.table.memory_size()
+                + (std::mem::size_of::<Vec4<f32>>() + std::mem::size_of::<f32>())
+                    * rc.num_probes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, x)| x * rc.cache.directions_per_probe(i as u32))
+                        .sum::<u32>() as usize;
+            println!("Memory: {:?} MB", bytes_used / 1024 / 1024);
+            println!(
+                "Table size: {:?} MB",
+                rc.cache.table.memory_size() / 1024 / 1024
             );
             if mode == 8 {
                 println!("Num used: {:?}", ddgi.calc_probes_used());
