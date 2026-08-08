@@ -289,6 +289,12 @@ impl DdgiData {
         dispatch1(
             track!(|tick| {
                 let probe_index = dispatch_id().x;
+                if !self
+                    .probe_used
+                    .read(from_linear_expr(probe_index, self.probe_dims))
+                {
+                    return;
+                }
                 let ray_index = dispatch_id().y;
                 let rand = pcg3df(Vec3::expr(probe_index, tick, 173));
                 let rot = random_rotation(rand);
@@ -343,6 +349,9 @@ impl DdgiData {
                 set_block_size([1, 8, 8]);
                 let probe_index = dispatch_id().x;
                 let probe_pos = from_linear_expr(probe_index, self.probe_dims);
+                if !self.probe_used.read(probe_pos) {
+                    return;
+                }
                 let local_pos = dispatch_id().yz();
                 let texture_index =
                     probe_pos * self.probe_irradiance_size() + (local_pos + 1).extend(0);
@@ -378,6 +387,9 @@ impl DdgiData {
                 set_block_size([1, 8, 8]);
                 let probe_index = dispatch_id().x;
                 let probe_pos = from_linear_expr(probe_index, self.probe_dims);
+                if !self.probe_used.read(probe_pos) {
+                    return;
+                }
                 let local_pos = dispatch_id().yz();
                 let texture_index =
                     probe_pos * self.probe_distance_size() + (local_pos + 1).extend(0);
@@ -432,6 +444,9 @@ impl DdgiData {
                     set_block_size([8, 4, 1]);
                     let probe_index = dispatch_id().x;
                     let probe_pos = from_linear_expr(probe_index, self.probe_dims);
+                    if !self.probe_used.read(probe_pos) {
+                        return;
+                    }
                     let corner = Vec2::expr(dispatch_id().y % 2, dispatch_id().y / 2);
                     // Irradiance
                     let write_pos = corner * (self.irradiance_resolution + 1);
@@ -475,6 +490,9 @@ impl DdgiData {
 
         let probe_index = dispatch_id().x;
         let probe_pos = from_linear_expr(probe_index, self.probe_dims);
+        if !self.probe_used.read(probe_pos) {
+            return;
+        }
         let texture_offset = probe_pos * size;
 
         let write_index = dispatch_id().y + 1;
