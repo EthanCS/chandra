@@ -256,8 +256,11 @@ impl<'a> CommandList<'a> {
         Self::default()
     }
     pub fn execute(&mut self) {
-        self.timings
-            .extend(std::mem::take(&mut self.unfinished).chain().execute_timed());
+        let commands = std::mem::take(&mut self.unfinished).chain();
+        #[cfg(feature = "trace")]
+        self.timings.extend(commands.execute_timed());
+        #[cfg(not(feature = "trace"))]
+        commands.execute();
     }
     pub fn push(&mut self, node: impl AsNodes<'a>) {
         self.unfinished.push(node.into_node_configs());

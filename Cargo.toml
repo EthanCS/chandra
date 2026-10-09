@@ -11,11 +11,12 @@ default = []
 # $env.LD_LIBRARY_PATH = "/home/keter/Documents/oidn-2.3.3.x86_64.linux/lib/"
 denoise = ["dep:oidn"]
 voxel = []
+trace = ["keter/trace"]
 
 [dependencies]
 dot_vox = "5.1.1"
 glam = { version = "0.30.0" }
-keter = { path = "../sefirot/keter", features = ["glam", "trace"] }
+keter = { path = "../sefirot/keter", features = ["glam"] }
 keter_testbed = { path = "../sefirot/testbed" }
 yesod = { path = "../sefirot/yesod", features = ["global-print"] }
 palette = "0.7.6"
