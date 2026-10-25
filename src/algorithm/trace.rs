@@ -1,6 +1,7 @@
 use yesod::direction::project_line;
 use yesod::rand::{pcg3df, r2};
 use yesod::utils::dispatch2;
+use keter::lang::functions::{warp_active_count_bits, warp_is_first_active_lane, warp_prefix_count_bits, warp_read_first_active_lane};
 
 use super::*;
 use crate::algorithm::rc::{Ray, RayComps, RcData};
@@ -11,7 +12,6 @@ use crate::cache::LoadedNode;
 pub struct Hit {
     pub position: Vec3<f32>,
     pub normal: Vec3<f32>,
-    pub radiance: Vec3<f32>,
 }
 impl HitExpr {
     pub fn valid(&self) -> Expr<bool> {
@@ -23,7 +23,6 @@ impl Hit {
         Self {
             position: Vec3::splat(f32::INFINITY),
             normal: Vec3::splat(0.0),
-            radiance: Vec3::splat(0.0),
         }
     }
 }
@@ -40,10 +39,19 @@ pub struct TraceData {
     pub traced_hits: Buffer<Hit>,
     pub traced_rays: Buffer<Ray>,
     pub next_traced_ray: Singleton<u32>,
+    pub fused_deposit: bool,
+    pub ray_capacity: u32,
 }
 
 impl TraceData {
     pub fn new(core: &CoreData, rc: &RcData, max_rays: usize) -> Self {
+        Self::create(core, rc, max_rays, false)
+    }
+    pub fn new_fused(core: &CoreData, rc: &RcData, max_rays: usize) -> Self {
+        Self::create(core, rc, max_rays, true)
+    }
+    fn create(core: &CoreData, rc: &RcData, max_rays: usize, fused_deposit: bool) -> Self {
+        assert!(max_rays <= u32::MAX as usize);
         Self {
             ray_count: DEVICE.create_buffer_from_fn::<u32>(rc.cache.total_probes() as usize, |_| 0),
             next_max_cascade_ray_direction: Singleton::new(0),
@@ -53,8 +61,10 @@ impl TraceData {
                 .create_buffer_from_fn::<u32>(rc.cache.base_probes as usize, |_| 0),
             traced_hits: DEVICE
                 .create_buffer_from_fn::<Hit>(core.num_pixels() as usize, |_| Hit::invalid()),
-            traced_rays: DEVICE.create_buffer::<Ray>(max_rays),
+            traced_rays: DEVICE.create_buffer::<Ray>(if fused_deposit { 1 } else { max_rays }),
             next_traced_ray: Singleton::new(0),
+            fused_deposit,
+            ray_capacity: max_rays as u32,
             // used for debug
         }
     }
@@ -92,6 +102,7 @@ impl TraceData {
                 }
                 let next = node.probe.next_nearest();
                 let next = rc.cache.get(next); // must exist
+                if next.invalid() { return; }
 
                 self.ray_count
                     .atomic_ref(next.index)
@@ -124,6 +135,7 @@ impl TraceData {
             dispatch1(
                 track!(|cascade| {
                     let node = rc.cache.get_occupied(cascade, dispatch_id().x);
+                    if node.invalid() { return; }
                     let lower_nodes = <[LoadedNode; 8]>::var_zeroed();
                     let counts = <[u32; 8]>::var_zeroed();
                     let j = 0_u32.var();
@@ -156,7 +168,7 @@ impl TraceData {
         c0_len: f32,
         multibounce: bool,
     ) -> NodeConfigs<'static> {
-        memo(multibounce, || {
+        memo((multibounce, self.fused_deposit), || {
             DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();
@@ -196,9 +208,8 @@ impl TraceData {
                         Hit::invalid().expr()
                     } else {
                         Hit::from_comps_expr(HitComps {
-                            position: start + dir * hit.committed_ray_t,
+                            position: core.hit_position(start, dir, hit),
                             normal: core.world.get_normal_flat(hit, dir),
-                            radiance,
                         })
                     },
                 );
@@ -219,7 +230,7 @@ impl TraceData {
         c0_len: f32,
         multibounce: bool,
     ) -> NodeConfigs<'static> {
-        memo(multibounce, || {
+        memo((multibounce, self.fused_deposit), || {
             DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 let hit = self.traced_hits.read(dispatch_id().x);
                 if !hit.valid() {
@@ -268,9 +279,17 @@ impl TraceData {
     ) {
         let probe = rc.cache.quantize(world_pos, lod, 0.expr());
 
-        let ray_index = self.next_traced_ray.atomic().fetch_add(1_u32.expr());
+        // Reserve one contiguous range per active warp instead of contending
+        // on the same global counter once per ray. Every active lane still
+        // emits its original ray, including partially active LOD iterations.
+        let count = warp_active_count_bits(true.expr());
+        let base = 0u32.var();
+        if warp_is_first_active_lane() {
+            *base = self.next_traced_ray.atomic().fetch_add(count);
+        }
+        let ray_index = warp_read_first_active_lane(**base) + warp_prefix_count_bits(true.expr());
 
-        if ray_index >= self.traced_rays.len_expr_u32() {
+        if ray_index >= self.ray_capacity {
             return;
         }
 
@@ -293,7 +312,11 @@ impl TraceData {
             cascade,
             dir: SphericalEncoder::encode(dir),
         });
-        self.traced_rays.write(ray_index, ray);
+        if self.fused_deposit {
+            rc.deposit_ray_linked(ray);
+        } else {
+            self.traced_rays.write(ray_index, ray);
+        }
     }
     pub fn reset(&self) -> NodeConfigs<'static> {
         (

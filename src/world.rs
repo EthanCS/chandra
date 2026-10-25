@@ -10,7 +10,7 @@ use keter::lang::types::vector::{Mat3, Mat4, Vec2, Vec3, Vec4};
 use keter::prelude::*;
 use keter::rtx::{
     Aabb, Accel, AccelBuildRequest, AccelOption, AccelTraceOptions, AccelUsageHint, CommittedHit,
-    Ray, SurfaceHit, TriangleInterpolate,
+    Mesh, Ray, SurfaceHit, TriangleInterpolate,
 };
 use tobj::LoadOptions;
 use yesod::shapes::dda;
@@ -19,6 +19,11 @@ use crate::utils::*;
 
 pub struct TriangleWorld {
     accel: Accel,
+    pub(crate) meshes: Vec<Mesh>,
+    pub(crate) mesh_vertex_ranges: Vec<std::ops::Range<usize>>,
+    mesh_index_ranges: Vec<std::ops::Range<usize>>,
+    rigid_instance_vertices: Vec<Option<Buffer<[f32; 3]>>>,
+    pub(crate) bind_positions: Vec<Vec<[f32; 3]>>,
     pub positions: Buffer<[f32; 3]>,
     // pub normals: Buffer<[f32; 3]>,
     pub indices: Buffer<[u32; 3]>,
@@ -26,6 +31,17 @@ pub struct TriangleWorld {
     // per-mesh
     pub material_indices: Buffer<u32>,
     pub material_diffuse: Buffer<Vec3<f32>>,
+    material_emission: Option<Buffer<Vec3<f32>>>,
+    diffuse_textures: Option<DiffuseTextures>,
+}
+
+struct DiffuseTextures {
+    uv: Buffer<[f32; 2]>,
+    uv_density: Buffer<f32>,
+    material_texture: Buffer<u32>,
+    sizes: Buffer<Vec2<f32>>,
+    array: BindlessArray,
+    _textures: Vec<Tex2d<Vec4<f32>>>,
 }
 impl TriangleWorld {
     pub fn new(
@@ -36,6 +52,52 @@ impl TriangleWorld {
         material_indices: &[u32],
         material_diffuse: &[Vec3<f32>],
     ) -> Self {
+        Self::new_dynamic(
+            positions,
+            indices,
+            offsets,
+            material_indices,
+            material_diffuse,
+            &[],
+        )
+    }
+
+    /// Fixed topology scene with selected meshes enabled for GPU deformation.
+    /// Positions remain in world space, including after rigid/skinned updates,
+    /// so all G-buffer and secondary-ray normals see the current geometry.
+    pub fn new_dynamic(
+        positions: &[[f32; 3]],
+        indices: &[[u32; 3]],
+        offsets: &[[u32; 2]],
+        material_indices: &[u32],
+        material_diffuse: &[Vec3<f32>],
+        dynamic_meshes: &[usize],
+    ) -> Self {
+        assert!(dynamic_meshes.iter().all(|&i| i < offsets.len()));
+        let mesh_vertex_ranges: Vec<_> = offsets
+            .iter()
+            .enumerate()
+            .map(|(i, offset)| {
+                offset[1] as usize
+                    ..offsets
+                        .get(i + 1)
+                        .map_or(positions.len(), |next| next[1] as usize)
+            })
+            .collect();
+        let bind_positions = mesh_vertex_ranges
+            .iter()
+            .enumerate()
+            .map(|(i, range)| {
+                if dynamic_meshes.contains(&i) {
+                    positions[range.clone()].to_vec()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let mesh_index_ranges = offsets.iter().enumerate().map(|(i, offset)| {
+            offset[0] as usize..offsets.get(i + 1).map_or(indices.len(), |next| next[0] as usize)
+        }).collect();
         let positions = DEVICE.create_buffer_from_slice(positions);
         // let normals = DEVICE.create_buffer_from_slice(normals);
         let indices = DEVICE.create_buffer_from_slice(indices);
@@ -44,29 +106,32 @@ impl TriangleWorld {
 
         let accel = DEVICE.create_accel(AccelOption {
             hint: AccelUsageHint::FastTrace,
-            allow_compaction: true,
-            allow_update: false,
+            allow_compaction: dynamic_meshes.is_empty(),
+            allow_update: !dynamic_meshes.is_empty(),
         });
 
-        for (start, end) in offsets
+        let mut meshes = Vec::new();
+        for (mesh_index, (start, end)) in offsets
             .iter()
             .chain(std::iter::once(&[
                 indices.len() as u32,
                 positions.len() as u32,
             ]))
             .tuple_windows()
+            .enumerate()
         {
             let mesh = DEVICE.create_mesh(
                 positions.view(start[1] as usize..end[1] as usize),
                 indices.view(start[0] as usize..end[0] as usize),
                 AccelOption {
                     hint: AccelUsageHint::FastTrace,
-                    allow_compaction: true,
-                    allow_update: false,
+                    allow_compaction: !dynamic_meshes.contains(&mesh_index),
+                    allow_update: dynamic_meshes.contains(&mesh_index),
                 },
             );
             mesh.build(AccelBuildRequest::ForceBuild);
             accel.push_mesh(&mesh, Mat4::identity(), 0xFF, true);
+            meshes.push(mesh);
         }
         accel.build(AccelBuildRequest::ForceBuild);
 
@@ -74,13 +139,139 @@ impl TriangleWorld {
 
         Self {
             accel,
+            meshes,
+            mesh_vertex_ranges,
+            mesh_index_ranges,
+            rigid_instance_vertices: (0..offsets.len()).map(|_| None).collect(),
+            bind_positions,
             positions,
             // normals,
             indices,
             offsets,
             material_indices,
             material_diffuse,
+            material_emission: None,
+            diffuse_textures: None,
         }
+    }
+
+    pub(crate) fn is_rigid_instance(&self, mesh: usize) -> bool {
+        self.rigid_instance_vertices[mesh].is_some()
+    }
+
+    /// Keep immutable bind geometry in the BLAS. World-space shading vertices
+    /// remain in `positions`, and are updated together by RigidBatch.
+    pub(crate) fn enable_rigid_instances(&mut self, indices: &[usize]) -> Result<(), String> {
+        if indices.iter().any(|&i| i >= self.meshes.len() || self.bind_positions[i].is_empty() || self.is_rigid_instance(i)) {
+            return Err("Rigid instances need previously unbound dynamic meshes".into());
+        }
+        for &i in indices {
+            let bind = DEVICE.create_buffer_from_slice(&self.bind_positions[i]);
+            let mesh = DEVICE.create_mesh(bind.view(..), self.indices.view(self.mesh_index_ranges[i].clone()), AccelOption {
+                hint: AccelUsageHint::FastTrace, allow_compaction: true, allow_update: false,
+            });
+            mesh.build(AccelBuildRequest::ForceBuild);
+            self.accel.set_mesh(i, &mesh, Mat4::identity(), 0xFF, true);
+            self.meshes[i] = mesh;
+            self.rigid_instance_vertices[i] = Some(bind);
+        }
+        if !indices.is_empty() { self.accel.build(AccelBuildRequest::ForceBuild); }
+        Ok(())
+    }
+
+    pub(crate) fn set_rigid_transforms(&self, transforms: &[(usize, Mat4)]) {
+        assert!(transforms.iter().all(|(i, _)| *i < self.meshes.len() && self.is_rigid_instance(*i)));
+        self.accel.set_transforms(transforms);
+    }
+
+    /// Linear emitted radiance, independent of diffuse reflectance. None keeps
+    /// the original non-emissive path free of material emission reads.
+    pub fn set_material_emission(&mut self, radiance: &[Vec3<f32>]) {
+        assert_eq!(radiance.len(), self.material_diffuse.len());
+        assert!(radiance.iter().all(|c| [c.x, c.y, c.z].iter().all(|v| v.is_finite() && *v >= 0.)));
+        self.material_emission = Some(DEVICE.create_buffer_from_slice(radiance));
+    }
+
+    #[tracked]
+    pub fn get_emission(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
+        if let Some(emission) = &self.material_emission {
+            emission.read(self.material_indices.read(hit.inst))
+        } else {
+            Vec3::splat_expr(0.0f32)
+        }
+    }
+
+    /// Linear-light mipmapped base-color textures. Geometry and UVs share indices.
+    pub fn set_diffuse_textures(
+        &mut self,
+        uv: &[[f32; 2]],
+        uv_density: &[f32],
+        material_texture: &[u32],
+        textures: Vec<Tex2d<Vec4<f32>>>,
+    ) {
+        assert_eq!(uv.len(), self.positions.len());
+        assert_eq!(uv_density.len(), self.indices.len());
+        assert_eq!(material_texture.len(), self.material_diffuse.len());
+        assert!(material_texture.iter().all(|&i| i == u32::MAX || (i as usize) < textures.len()));
+        let array = DEVICE.create_bindless_array(textures.len().max(1));
+        for (i, texture) in textures.iter().enumerate() {
+            array.emplace_tex2d_async(i, texture, Sampler {
+                filter: SamplerFilter::LinearLinear,
+                address: SamplerAddress::Repeat,
+            });
+        }
+        array.update();
+        let sizes: Vec<_> = textures.iter().map(|t| Vec2::new(t.width() as f32, t.height() as f32)).collect();
+        self.diffuse_textures = Some(DiffuseTextures {
+            uv: DEVICE.create_buffer_from_slice(uv),
+            uv_density: DEVICE.create_buffer_from_slice(uv_density),
+            material_texture: DEVICE.create_buffer_from_slice(material_texture),
+            sizes: DEVICE.create_buffer_from_slice(&sizes),
+            array,
+            _textures: textures,
+        });
+    }
+
+    /// Queue after vertex deformation and before any ray tracing. Only changed
+    /// BLASes are refitted; TLAS follows them on the same stream. Occasional full
+    /// rebuilds prevent prolonged deformation from degrading traversal quality.
+    pub fn update_acceleration(
+        &self,
+        changed_meshes: &[usize],
+        rebuild: bool,
+    ) -> keter::graph::NodeConfigs<'static> {
+        (self.update_bottom_level(changed_meshes, rebuild),
+         self.update_top_level(!changed_meshes.is_empty(), rebuild)).chain()
+    }
+
+    pub fn update_bottom_level(&self, changed_meshes: &[usize], rebuild: bool) -> keter::graph::NodeConfigs<'static> {
+        let request = if rebuild {
+            AccelBuildRequest::ForceBuild
+        } else {
+            AccelBuildRequest::PreferUpdate
+        };
+        let mut commands = Vec::new();
+        for &index in changed_meshes {
+            assert!(
+                index < self.meshes.len() && !self.bind_positions[index].is_empty(),
+                "Mesh was not created as dynamic"
+            );
+            if !self.is_rigid_instance(index) {
+                commands.push(self.meshes[index].build_async(request).into_node_configs());
+            }
+        }
+        // Keter's chain connects adjacent children only. An empty Multiple
+        // would sever the dependency between vertex updates and later tracing.
+        // A default Single is an empty fence container, preserving ordering
+        // without submitting GPU work or adding a host synchronization.
+        if commands.is_empty() { Default::default() } else { commands.chain() }
+    }
+
+    pub fn update_top_level(&self, changed: bool, rebuild: bool) -> keter::graph::NodeConfigs<'static> {
+        let request = if rebuild { AccelBuildRequest::ForceBuild } else { AccelBuildRequest::PreferUpdate };
+        let mut commands = Vec::new();
+        if changed { commands.push(self.accel.build_async(request).into_node_configs()); }
+        if commands.is_empty() { Default::default() } else { commands.chain() }
     }
     pub fn load(
         path: impl AsRef<Path> + Debug,
@@ -167,6 +358,35 @@ impl TriangleWorld {
         self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, f32::INFINITY))
     }
 
+    /// Opaque visibility only: terminate traversal on the first blocker.
+    #[tracked]
+    pub fn occluded(&self, ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>) -> Expr<bool> {
+        self.accel.intersect_any(
+            Ray::new_expr(Expr::<[f32; 3]>::from(ray_start), 0.0,
+                Expr::<[f32; 3]>::from(ray_dir), f32::INFINITY),
+            AccelTraceOptions { mask: 0xFF.expr(), ..Default::default() },
+        )
+    }
+
+    #[tracked]
+    pub fn occluded_segment(&self, start: Expr<Vec3<f32>>, direction: Expr<Vec3<f32>>, distance: Expr<f32>) -> Expr<bool> {
+        self.accel.intersect_any(
+            Ray::new_expr(Expr::<[f32; 3]>::from(start), 0.0,
+                Expr::<[f32; 3]>::from(direction), distance),
+            AccelTraceOptions { mask: 0xFF.expr(), ..Default::default() },
+        )
+    }
+
+    #[tracked]
+    pub fn get_position(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
+        let offsets = self.offsets.read(hit.inst);
+        let triangle = self.indices.read(offsets[0] + hit.prim);
+        let positions: [_; 3] = std::array::from_fn(|i| {
+            Expr::<Vec3<f32>>::from(self.positions.read(triangle[i as u32] + offsets[1]))
+        });
+        hit.interpolate(positions[0], positions[1], positions[2])
+    }
+
     #[tracked]
     pub fn get_normal_oriented(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
         let offsets = self.offsets.read(hit.inst);
@@ -201,7 +421,31 @@ impl TriangleWorld {
     #[tracked]
     pub fn get_diffuse(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
         let material_index = self.material_indices.read(hit.inst);
-        self.material_diffuse.read(material_index)
+        let diffuse = self.material_diffuse.read(material_index).var();
+        if let Some(textures) = &self.diffuse_textures {
+            let texture_index = textures.material_texture.read(material_index);
+            if texture_index != u32::MAX {
+                let offsets = self.offsets.read(hit.inst);
+                let triangle = self.indices.read(offsets[0] + hit.prim);
+                let uv: [_; 3] = std::array::from_fn(|i| {
+                    Expr::<Vec2<f32>>::from(textures.uv.read(offsets[1] + triangle[i as u32]))
+                });
+                let uv = hit.interpolate(uv[0], uv[1], uv[2]);
+                let texture = textures.array.tex2d(texture_index);
+                // Approximate ray-cone footprint for this diffuse research renderer.
+                let size = textures.sizes.read(texture_index);
+                let density = textures.uv_density.read(offsets[0] + hit.prim);
+                let footprint = hit.committed_ray_t * 0.0008 * density * keter::max(size.x, size.y);
+                let lod = keter::max(footprint, 1.0f32).log2();
+                let level = lod.floor().cast_u32();
+                let blend = lod - level.cast_f32();
+                // The pinned frontend exposes integer sample_level; interpolate
+                // adjacent levels explicitly instead of stepping between mips.
+                *diffuse *= (texture.sample_level(uv, level) * (1.0f32 - blend)
+                    + texture.sample_level(uv, level + 1u32) * blend).xyz();
+            }
+        }
+        **diffuse
     }
 }
 

@@ -1,2 +1,8 @@
 /target
 /assets/
+/.local/
+/external/
+/captures/
+**/IntelSponza/
+.env
+.env.*

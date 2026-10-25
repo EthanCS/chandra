@@ -65,6 +65,7 @@ pub struct RcData {
     pub base_radiance: Buffer<Radiance>,
     pub probe_quality: Buffer<f32>,
     pub probe_lifetime: Buffer<u32>,
+    parent_indices: Buffer<u32>,
     // for base probes only, currently
     pub average_position: Buffer<AveragePosition>,
     // created from build_freelists
@@ -142,6 +143,7 @@ impl RcData {
                 .create_buffer_from_fn::<f32>(cache.total_probes() as usize, |_| 0.0),
             probe_lifetime: DEVICE
                 .create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| 0),
+            parent_indices: DEVICE.create_buffer_from_fn::<u32>(cache.total_probes() as usize, |_| u32::MAX),
             average_position: DEVICE
                 .create_buffer_from_fn(cache.total_probes() as usize, |_| Default::default()),
             num_probes: vec![0; cache.num_cascades as usize],
@@ -278,15 +280,17 @@ impl RcData {
                 let radiance = self.radiance.read(next_offsets.read(i) / 4 + index);
                 // necessary?
                 if radiance.is_finite().all() {
-                    *total_radiance += next_weights.read(i)
-                        * radiance.powf(self.interpolation_exponent).extend(1.0);
+                    let value = if self.interpolation_exponent == 1.0 { radiance }
+                        else { radiance.powf(self.interpolation_exponent) };
+                    *total_radiance += next_weights.read(i) * value.extend(1.0);
                 }
             }
         }
         let data_index = node.data_offset + index;
 
         let far = total_radiance.xyz() / keter::max(total_radiance.w, 0.00001);
-        let far = far.powf(self.interpolation_exponent.recip());
+        let far = if self.interpolation_exponent == 1.0 { far }
+            else { far.powf(self.interpolation_exponent.recip()) };
 
         let weight = self.cache.weights.read(data_index);
         let weighted_fluence = self.cache.weighted_fluence.read(data_index);
@@ -411,38 +415,82 @@ impl RcData {
         dispatch0(
             track!(|| {
                 let ray = rays.read(dispatch_id().x);
-
-                let probe = ray.base_probe;
-
-                for cascade in 0..self.num_cascades {
-                    if self.terminate_deposit && cascade > ray.cascade {
-                        return;
-                    }
-
-                    let fluence = if cascade >= ray.cascade {
-                        ray.radiance.extend(0.0)
-                    } else {
-                        Vec3::splat_expr(0.0_f32).extend(1.0)
-                    };
-
-                    let node = self.cache.get(probe.shift_up(cascade));
-
-                    if node.invalid() {
-                        // device_println!("Impossible!");
-                        return;
-                    }
-
-                    let encoder = self.cache.get_encoder(cascade);
-                    self.cache.deposit(
-                        node.data_offset + encoder.grid_to_linear(encoder.quantize(ray.dir)),
-                        fluence,
-                    );
-                    self.probe_quality.atomic_ref(node.index).fetch_add(1.0);
-                }
+                self.deposit_ray(ray);
             }),
             [rays.len() as u32, 1, 1],
         )
         .debug("Deposit Split")
+    }
+
+    /// Same additive transport update, usable immediately after tracing because
+    /// tracing samples base_radiance, which stays immutable until the merge pass.
+    #[tracked]
+    pub fn deposit_ray(&self, ray: Expr<Ray>) {
+        self.deposit_ray_impl(ray, false);
+    }
+    /// Parent links are refreshed by reset_table before any frame tracing.
+    #[tracked]
+    pub fn deposit_ray_linked(&self, ray: Expr<Ray>) {
+        self.deposit_ray_impl(ray, true);
+    }
+    #[tracked]
+    fn deposit_ray_impl(&self, ray: Expr<Ray>, linked: bool) {
+        let probe = ray.base_probe;
+        let parent = u32::MAX.var();
+        if linked { *parent = self.cache.get(probe).index; }
+        for cascade in 0..self.num_cascades {
+                    if self.terminate_deposit && cascade > ray.cascade {
+                        break;
+                    }
+
+                    let node = if linked {
+                        self.cache.load_index(probe.shift_up(cascade), **parent)
+                    } else {
+                        self.cache.get(probe.shift_up(cascade))
+                    };
+
+                    if node.invalid() {
+                        // device_println!("Impossible!");
+                        break;
+                    }
+
+                    let encoder = self.cache.get_encoder(cascade);
+                    let index = node.data_offset + encoder.grid_to_linear(encoder.quantize(ray.dir));
+                    let fluence = self.cache.weighted_fluence.atomic_ref(index);
+                    // Transmission contributes only alpha; the hit endpoint
+                    // contributes only RGB. Do not issue atomics adding zero.
+                    if cascade >= ray.cascade {
+                        fluence.x.fetch_add(ray.radiance.x);
+                        fluence.y.fetch_add(ray.radiance.y);
+                        fluence.z.fetch_add(ray.radiance.z);
+                    } else {
+                        fluence.w.fetch_add(1.0f32);
+                    }
+                    self.cache.weights.atomic_ref(index).fetch_add(1.0f32);
+                    self.probe_quality.atomic_ref(node.index).fetch_add(1.0);
+                    if linked { *parent = self.parent_indices.read(node.index); }
+        }
+    }
+
+    fn update_parent_links(&self) -> NodeConfigs<'static> {
+        dispatch0(track!(|| {
+            let index=dispatch_id().x;
+            let key=self.cache.table.data_key.read(index);
+            if key == crate::table::INVALID_KEY {
+                self.parent_indices.write(index,u32::MAX);
+                return;
+            }
+            let cascade=0u32.var();
+            for c in 1..self.num_cascades {
+                if index >= self.cache.table.table_data_start.read(c) { *cascade=c; }
+            }
+            if **cascade == self.last_cascade() {
+                self.parent_indices.write(index,u32::MAX);
+            } else {
+                let probe=self.cache.decode(key,**cascade);
+                self.parent_indices.write(index,self.cache.get(probe.next_nearest()).index);
+            }
+        }), [self.cache.total_probes(),1,1]).debug("Update parent links")
     }
 
     pub fn reset_table(&mut self, commands: &mut CommandList<'static>, total: bool) {
@@ -469,6 +517,7 @@ impl RcData {
                 .copy_from_async(&ZEROS[..self.num_cascades as usize]),
             clear_entries,
             self.build_freelists(total),
+            table.freelist_index.copy_to_buffer_async(&table.freelist_end),
             table
                 .table_data_start
                 .copy_to_buffer_async(&table.freelist_index),
@@ -478,6 +527,8 @@ impl RcData {
         // find probe counts
         let total_occupied = Arc::new(Mutex::new(vec![0_u32; self.num_cascades as usize]));
         let last_occupied_index = Arc::new(Mutex::new(vec![0_u32; self.num_cascades as usize]));
+        let allocation_failures = Arc::new(Mutex::new(vec![0u32]));
+        *commands += table.allocation_failures.copy_to_shared(&allocation_failures);
         *commands += self
             .cache
             .table
@@ -491,6 +542,9 @@ impl RcData {
 
         commands.execute();
 
+        assert_eq!(allocation_failures.lock()[0], 0,
+            "Radiance cache capacity exhausted. Increase RcConfig::base_probes for this scene/view.");
+
         self.num_probes = total_occupied.lock().to_vec();
 
         let last_occupied_index = last_occupied_index.lock();
@@ -499,6 +553,9 @@ impl RcData {
             .enumerate()
             .map(|(c, &x)| x - self.cache.get_index_offset_host(c as u32) + 1)
             .collect();
+        // The hash table is now final for this frame. Resolve each parent once
+        // per occupied probe, instead of millions of times during ray deposits.
+        self.update_parent_links().execute();
     }
 
     pub fn init_probes_base(&self, core: &CoreData) -> NodeConfigs<'static> {
@@ -561,7 +618,7 @@ impl RcData {
                     let probe = self.cache.quantize(world_pos, lod, 0.expr());
 
                     let node = self.cache.get(probe);
-                    self.probe_lifetime.write(node.index, self.max_lifetime);
+                    if node.loaded() { self.probe_lifetime.write(node.index, self.max_lifetime); }
                 });
             }))
         })
@@ -581,8 +638,7 @@ impl RcData {
                 let probe = self.cache.quantize(world_pos, lod, 0.expr());
 
                 let node = self.cache.get(probe);
-                self.probe_lifetime
-                    .write(node.index, self.secondary_lifetime);
+                if node.loaded() { self.probe_lifetime.write(node.index, self.secondary_lifetime); }
             }))
         })
         .dispatch_async([trace.traced_hits.len() as u32, 1, 1])
@@ -599,9 +655,9 @@ impl RcData {
                 let probe = self.cache.decode(key, cascade);
                 let node = self.cache.load_index(probe, index);
                 let next = self.cache.get(probe.next_nearest());
-                self.probe_lifetime
-                    .atomic_ref(next.index)
-                    .fetch_max(self.probe_lifetime.read(node.index));
+                if next.loaded() {
+                    self.probe_lifetime.atomic_ref(next.index).fetch_max(self.probe_lifetime.read(node.index));
+                }
             }),
             [self.cache.max_probes_at_cascade(cascade - 1), 1, 1],
             cascade - 1,

@@ -283,7 +283,7 @@ fn main() {
                 app.set_pixel(pixel.cast_i32(), core.get_environment(ray_dir));
                 return;
             }
-            let world_pos = view.pos + ray_dir * depth;
+            let world_pos = core.get_world_pos(pixel);
             let normal = core.read_normal(pixel);
 
             let lod = rc.cache.estimate_lod(world_pos);

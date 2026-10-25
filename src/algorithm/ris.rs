@@ -161,7 +161,7 @@ impl RisData {
                     let emission = Vec3::splat_expr(0.0);
                     Sample::from_comps_expr(SampleComps { hit_pos, emission })
                 } else {
-                    let hit_pos = pos + sample_dir * hit.committed_ray_t;
+                    let hit_pos = core.hit_position(pos, sample_dir, hit);
                     let emission = core.get_emission(None, hit_pos, hit, sample_dir);
                     Sample::from_comps_expr(SampleComps { hit_pos, emission })
                 };

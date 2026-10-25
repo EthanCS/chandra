@@ -212,6 +212,8 @@ pub struct HashCache {
     pub table: HashTable,
     pub weighted_fluence: Buffer<Vec4<f32>>,
     pub weights: Buffer<f32>,
+    /// Fixed angular quadrature, evaluated once with the same GPU math as tracing.
+    pub sample_directions: Buffer<Vec3<f32>>,
 }
 impl HashCache {
     pub fn new(
@@ -228,7 +230,8 @@ impl HashCache {
             * INDEX_SCALING.y
             * base_probes
             * num_cascades) as usize;
-        Self {
+        let direction_count: u32 = (0..num_cascades).map(|c| base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y * (1 << (2*c))).sum();
+        let cache = Self {
             base_grid_size,
             base_radius,
             blending_radius,
@@ -244,7 +247,16 @@ impl HashCache {
             ),
             weighted_fluence: DEVICE.create_buffer_from_fn(num_data, |_| Vec4::splat(0.0)),
             weights: DEVICE.create_buffer_from_fn(num_data, |_| 0.0),
+            sample_directions: DEVICE.create_buffer(direction_count as usize),
+        };
+        let initialize = DEVICE.create_kernel::<fn(u32)>(&track!(|cascade| {
+            let index=dispatch_id().x;
+            cache.sample_directions.write(cache.direction_index(cascade,index), cache.get_encoder(cascade).linear_to_dir(index));
+        }));
+        for cascade in 0..num_cascades {
+            initialize.dispatch([cache.directions_per_probe(cascade),1,1], &cascade);
         }
+        cache
     }
     pub fn set_view(&self, view: View) -> NodeConfigs<'static> {
         self.projection
@@ -276,6 +288,15 @@ impl HashCache {
         DirectionIndexer::from_comps_expr(DirectionIndexerComps {
             resolution: self.base_angular_resolution << cascade,
         })
+    }
+    #[tracked]
+    pub fn direction_index(&self, cascade: Expr<u32>, index: Expr<u32>) -> Expr<u32> {
+        self.base_angular_resolution.pow(2) * INDEX_SCALING.x * INDEX_SCALING.y
+            * ((1u32 << (cascade * 2u32)) - 1u32) / 3u32 + index
+    }
+    #[tracked]
+    pub fn direction(&self, cascade: Expr<u32>, index: Expr<u32>) -> Expr<Vec3<f32>> {
+        self.sample_directions.read(self.direction_index(cascade,index))
     }
 
     pub fn get_index_offset_host(&self, cascade: u32) -> u32 {

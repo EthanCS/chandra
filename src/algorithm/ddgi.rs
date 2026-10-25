@@ -319,7 +319,7 @@ impl DdgiData {
                     let radiance = if hit_backface {
                         Vec3::splat_expr(0.0)
                     } else {
-                        let hit_pos = origin + dir * hit.committed_ray_t;
+                        let hit_pos = core.hit_position(origin, dir, hit);
                         core.get_emission(None, hit_pos, hit, dir)
                         // + self.query_irradiance(hit_pos, normal, -dir) * core.world.get_diffuse(hit)
                     };

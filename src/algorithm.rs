@@ -33,6 +33,25 @@ pub struct WorldData {
     pub custom_emitters: Vec<(u32, Vec3<f32>)>,
 }
 
+/// Lighting shared by all ray tracing kernels, updated without recompiling them.
+#[derive(Debug, Clone, Copy, Value)]
+#[repr(C)]
+pub struct Lighting {
+    pub sun_dir: Vec3<f32>,
+    pub sun_color: Vec3<f32>,
+    pub environment_scale: f32,
+    pub emission_scale: f32,
+}
+
+/// Finite-range point light. RGB is intensity in the renderer's centimetre
+/// coordinate system; range culls lights before issuing a visibility ray.
+#[derive(Debug, Clone, Copy, Value)]
+#[repr(C)]
+pub struct PointLight {
+    pub position_range: Vec4<f32>,
+    pub intensity: Vec4<f32>,
+}
+
 pub struct CoreData {
     pub world: World,
     pub view: Singleton<View>,
@@ -40,11 +59,11 @@ pub struct CoreData {
     pub normal: Tex2d<Vec2<f32>>,
     pub hit: Buffer<Hit>,
 
-    pub sun_dir: Vec3<f32>,
-    pub sun_color: Vec3<f32>,
+    pub lighting: Singleton<Lighting>,
     pub environment: Tex2dHandle<Vec4<f32>>,
-    pub environment_scale: f32,
+    constant_environment: Option<Vec3<f32>>,
     pub custom_emitters: Vec<(u32, Vec3<f32>)>,
+    point_lights: Option<Buffer<PointLight>>,
 }
 impl CoreData {
     pub fn new(
@@ -68,6 +87,9 @@ impl CoreData {
         );
         let environment =
             DEVICE.create_tex2d(PixelStorage::Float4, envmap.width(), envmap.height(), 1);
+        let constant_environment = envmap.pixels().next().and_then(|first| {
+            envmap.pixels().all(|p| p == first).then(|| Vec3::new(first[0], first[1], first[2]))
+        });
         let envmap = envmap
             .pixels()
             .map(|p| Vec4::new(p[0], p[1], p[2], 1.0))
@@ -88,12 +110,26 @@ impl CoreData {
             depth,
             normal: DEVICE.create_tex2d::<Vec2<f32>>(PixelStorage::Short2, width, height, 1),
             hit: DEVICE.create_buffer::<Hit>(width as usize * height as usize),
-            sun_dir,
-            sun_color,
+            lighting: Singleton::new(Lighting {
+                sun_dir,
+                sun_color,
+                environment_scale: envmap_scale,
+                emission_scale: 1.0,
+            }),
             environment,
-            environment_scale: envmap_scale,
+            constant_environment,
             custom_emitters,
+            point_lights: None,
         }
+    }
+    pub fn set_point_lights(&mut self, lights: &[PointLight]) {
+        assert!(!lights.is_empty());
+        self.point_lights = Some(DEVICE.create_buffer_from_slice(lights));
+    }
+    pub fn update_point_lights(&self, lights: Vec<PointLight>) -> NodeConfigs<'static> {
+        let buffer = self.point_lights.as_ref().expect("Point lights were not configured");
+        assert_eq!(buffer.len(), lights.len());
+        buffer.copy_from_vec(lights)
     }
     pub fn screen_size(&self) -> Vec2<u32> {
         Vec2::new(self.normal.width(), self.normal.height())
@@ -112,20 +148,67 @@ impl CoreData {
         hit: Expr<Hit>,
         dir: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
+        self.get_surface_irradiance(rc, pos, hit, dir) * self.world.get_diffuse(hit)
+            + self.get_surface_emission(hit)
+    }
+    #[tracked]
+    pub fn get_surface_emission(&self, hit: Expr<Hit>) -> Expr<Radiance> {
+        #[cfg(not(feature = "voxel"))]
+        let emission = self.world.get_emission(hit) * self.lighting.read().emission_scale;
+        #[cfg(feature = "voxel")]
+        let emission = Vec3::splat_expr(0.0f32);
+        emission
+    }
+    #[tracked]
+    pub fn get_surface_irradiance(
+        &self,
+        rc: Option<&RcData>,
+        pos: Expr<Vec3<f32>>,
+        hit: Expr<Hit>,
+        dir: Expr<Vec3<f32>>,
+    ) -> Expr<Radiance> {
         let normal = self.world.get_normal_flat(hit, dir);
-        let weight = normal.dot(self.sun_dir);
+        let lighting = self.lighting.read();
+        let weight = normal.dot(lighting.sun_dir);
         let radiance = Vec3::splat(0.0_f32).var();
 
-        if weight > 0.0 {
-            *radiance += self
-                .world
-                .trace(offset_ray(pos, normal), self.sun_dir.expr())
-                .miss()
-                .select(self.sun_color.expr(), Vec3::splat_expr(0.0_f32))
+        if weight > 0.0 && lighting.sun_color.reduce_max() > 0.0 {
+            #[cfg(not(feature = "voxel"))]
+            let visible = !self.world.occluded(offset_ray(pos, normal), lighting.sun_dir);
+            #[cfg(feature = "voxel")]
+            let visible = self.world.trace(offset_ray(pos, normal), lighting.sun_dir).miss();
+            *radiance += visible.select(lighting.sun_color, Vec3::splat_expr(0.0_f32))
                 * weight;
         }
         if let Some(rc) = rc {
             *radiance += rc.sample_secondary(pos, normal);
+        }
+
+        if let Some(lights) = &self.point_lights {
+            for i in 0..lights.len() as u32 {
+                let light = lights.read(i);
+                let delta = light.position_range.xyz() - pos;
+                let d2 = delta.dot(delta);
+                let range2 = light.position_range.w * light.position_range.w;
+                if d2 > 0.0001 && d2 < range2 && light.intensity.xyz().reduce_max() > 0.0 {
+                    let distance = d2.sqrt();
+                    let direction = delta / distance;
+                    let cosine = normal.dot(direction);
+                    if cosine > 0.0 {
+                        #[cfg(not(feature = "voxel"))]
+                        let visible = !self.world.occluded_segment(offset_ray(pos, normal), direction, distance - 0.01);
+                        #[cfg(feature = "voxel")]
+                        let visible = {
+                            let blocker = self.world.trace(offset_ray(pos, normal), direction);
+                            blocker.miss() || blocker.committed_ray_t >= distance - 0.01
+                        };
+                        let q = d2 / range2;
+                        let fade = 1.0 - q * q;
+                        let attenuation = fade * fade / keter::max(d2, 100.0);
+                        *radiance += visible.select(light.intensity.xyz(), Vec3::splat_expr(0.0f32)) * (cosine * attenuation);
+                    }
+                }
+            }
         }
 
         for (emitter_inst, emitter_color) in self.custom_emitters.iter() {
@@ -134,8 +217,7 @@ impl CoreData {
             }
         }
 
-        let output = radiance * self.world.get_diffuse(hit);
-        output
+        **radiance
     }
     #[tracked]
     pub fn get_radiance(
@@ -148,7 +230,7 @@ impl CoreData {
         if hit.miss() {
             self.get_environment(dir)
         } else {
-            self.get_emission(rc, start + dir * hit.committed_ray_t, hit, dir)
+            self.get_emission(rc, self.hit_position(start, dir, hit), hit, dir)
         }
     }
     #[tracked]
@@ -159,8 +241,13 @@ impl CoreData {
         let falloff = Vec3::new(0.9, 0.9, 0.2);
         let downwards_falloff = 1.0 / (1.0 + 2000.0 * keter::max(-facing, 0.0));
         downwards_falloff * (base - keter::max(facing, 0.0).powf(0.1) * falloff)*/
-        let uv = EquirectangularEncoder::encode(dir);
-        self.environment.var().sample(uv).xyz() * self.environment_scale
+        let color = if let Some(color) = self.constant_environment {
+            color.expr()
+        } else {
+            let uv = EquirectangularEncoder::encode(dir);
+            self.environment.var().sample(uv).xyz()
+        };
+        color * self.lighting.read().environment_scale
     }
     #[tracked]
     pub fn get_fluence(
@@ -178,9 +265,22 @@ impl CoreData {
                 Vec3::splat_expr(0.0_f32).extend(1.0)
             }
         } else {
-            self.get_emission(rc, start + dir * hit.committed_ray_t, hit, dir)
+            self.get_emission(rc, self.hit_position(start, dir, hit), hit, dir)
                 .extend(0.0)
         }
+    }
+    #[tracked]
+    pub fn hit_position(
+        &self,
+        _start: Expr<Vec3<f32>>,
+        _dir: Expr<Vec3<f32>>,
+        hit: Expr<Hit>,
+    ) -> Expr<Vec3<f32>> {
+        #[cfg(not(feature = "voxel"))]
+        let position = self.world.get_position(hit);
+        #[cfg(feature = "voxel")]
+        let position = _start + _dir * hit.committed_ray_t;
+        position
     }
     #[tracked]
     pub fn get_world_pos(&self, pixel: Expr<Vec2<u32>>) -> Expr<Vec3<f32>> {
@@ -190,7 +290,11 @@ impl CoreData {
         if depth == 0.0 {
             return;
         }
-        let output = view.pos + ray_dir * depth;
+        let output = self.hit_position(
+            view.pos,
+            ray_dir,
+            self.hit.read(self.pixel_to_linear(pixel)),
+        );
         output
     }
     #[tracked]
@@ -236,6 +340,7 @@ impl CoreData {
 }
 
 pub mod ddgi;
+pub mod dynamic_history;
 pub mod rc;
 pub mod ris;
 pub mod splat;
@@ -254,6 +359,10 @@ impl<'a> AddAssign<NodeConfigs<'a>> for CommandList<'a> {
 impl<'a> CommandList<'a> {
     pub fn new() -> Self {
         Self::default()
+    }
+    pub fn append(&mut self, mut other: Self) {
+        self.unfinished.append(&mut other.unfinished);
+        self.timings.append(&mut other.timings);
     }
     pub fn execute(&mut self) {
         let commands = std::mem::take(&mut self.unfinished).chain();

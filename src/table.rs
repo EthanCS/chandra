@@ -44,6 +44,8 @@ pub struct HashTable {
     // per table
     pub table_data_start: Buffer<u32>,
     pub freelist_index: Buffer<u32>, // reset to table_data_start after each build
+    pub freelist_end: Buffer<u32>, // exclusive end of currently free slots
+    pub allocation_failures: Buffer<u32>,
     pub last_occupied_index: Buffer<u32>,
     pub total_occupied: Buffer<u32>,
 }
@@ -82,6 +84,8 @@ impl HashTable {
 
             table_data_start: DEVICE.create_buffer_from_slice(&table_data_start),
             freelist_index: DEVICE.create_buffer(num_tables as usize),
+            freelist_end: DEVICE.create_buffer(num_tables as usize),
+            allocation_failures: DEVICE.create_buffer_from_slice(&[0u32]),
             last_occupied_index: DEVICE.create_buffer(num_tables as usize),
             total_occupied: DEVICE.create_buffer(num_tables as usize),
         }
@@ -134,12 +138,19 @@ impl HashTable {
                 // already inserted, do nothing
                 break;
             } else if prev == INVALID_KEY {
-                let index = self
-                    .freelist
-                    .read(self.freelist_index.atomic_ref(table).fetch_add(1));
-                entry.value.index.exchange(index);
-                self.data_key.write(index, key);
-                on_insert(index);
+                let slot = self.freelist_index.atomic_ref(table).fetch_add(1);
+                if slot < self.freelist_end.read(table) {
+                    let index = self.freelist.read(slot);
+                    entry.value.index.exchange(index);
+                    self.data_key.write(index, key);
+                    on_insert(index);
+                } else {
+                    // Keep the claimed key as a failed entry for this frame.
+                    // Readers see INVALID; the host rejects the frame before
+                    // tracing, instead of indexing another cascade's freelist.
+                    entry.value.index.exchange(u32::MAX);
+                    self.allocation_failures.atomic_ref(0u32).fetch_add(1u32);
+                }
                 break;
             }
             *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;

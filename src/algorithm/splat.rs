@@ -41,6 +41,7 @@ impl SplatData {
                 address: SamplerAddress::Edge,
             },
         );
+        BINDLESS.update();
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
@@ -73,11 +74,7 @@ impl SplatData {
                 } else {
                     Vec4::splat_expr(0.0)
                 };
-                let dir = rc
-                    .cache
-                    .get_encoder(0.expr())
-                    .linear_to_dir(dispatch_id().y);
-
+                let dir = rc.cache.get_encoder(0.expr()).linear_to_dir(dispatch_id().y);
                 for index in 0..self.irradiance_resolution.pow(2) {
                     let index = Vec2::expr(
                         index % self.irradiance_resolution,
@@ -348,7 +345,11 @@ impl SplatData {
     pub fn get_radiance(&self, pixel_index: Expr<u32>) -> Expr<Vec3<f32>> {
         let radiance = self.radiance.read(pixel_index);
         let radiance = radiance.xyz() / keter::max(radiance.w, 0.00001);
-        radiance.powf(self.interpolation_exponent.recip())
+        if self.interpolation_exponent == 1.0 {
+            radiance
+        } else {
+            radiance.powf(self.interpolation_exponent.recip())
+        }
     }
     pub fn trace_cm1(
         &self,
