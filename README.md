@@ -46,11 +46,16 @@ The pinned Luisa frontend lacks transform-only instance updates and needs a corr
 ./run-lighting-lab.ps1 -Gallery -FullHD -EmissiveNight
 # Experimental frame-local transport, 8 path vertices, 1 sample per surface pixel.
 ./run-lighting-lab.ps1 -Gallery -FullHD -SingleFrame
+# Original primary Split RC trace/split path, single-frame single-bounce comparison.
+# No radiance history, secondary bounce cache, extra path tracing or stable-rank sorting.
+./run-lighting-lab.ps1 -Gallery -FullHD -SplitSingleFrame -Static -View 2
 # More current-frame samples; this exceeds the 120 FPS budget on the tested GPU.
 ./run-lighting-lab.ps1 -Gallery -FullHD -SingleFrame -Samples 8
 ```
 
 Default resolution is 1280×800; `-FullHD` is 1920×1080 and `-Small` is 960×600. The `lighting_lab` binary is separate from the original `chandra` research viewer.
+
+`-SplitSingleFrame` / `--split-single-frame` explicitly selects the original primary trace/split function with multibounce disabled and fixed directional jitter, rebuilding GI transport each frame. It uses one primary GI ray per visible surface pixel and bypasses the experimental path tracer and stable pixel-rank sorting. Spatial probe allocation is retained, but radiance, directional weights and quality are cleared. This is a single-bounce algorithm comparison in the dynamic lab, not a claim of identical pixels to the upstream executable or elimination of all spatial interpolation/sampling artifacts. `-Static` starts with animations paused; the controls can re-enable them.
 
 ## Controls
 

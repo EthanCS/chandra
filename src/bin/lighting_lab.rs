@@ -100,11 +100,12 @@ impl Controls {
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
-    let single_frame = args.iter().any(|a| a == "--single-frame");
+    let split_single_frame = args.iter().any(|a| a == "--split-single-frame");
+    let single_frame = split_single_frame || args.iter().any(|a| a == "--single-frame");
     let integer_option = |name: &str, default: u32| args.iter().position(|a| a == name)
         .map(|i| args.get(i + 1).expect("Missing option value").parse::<u32>().expect("Invalid integer option"))
         .unwrap_or(default);
-    let path_depth = integer_option("--path-depth", 8);
+    let path_depth = integer_option("--path-depth", if split_single_frame { 1 } else { 8 });
     let samples = integer_option("--samples", 1);
     let min_probe_rays = integer_option("--min-probe-rays", 0);
     let quality_check = args.iter().any(|a| a == "--quality-check");
@@ -112,6 +113,8 @@ fn main() {
     let camera_preset = integer_option("--view", 0) as usize;
     let quality_motion = args.iter().any(|a| a == "--quality-motion");
     let frame_cache = args.iter().any(|a| a == "--frame-cache");
+    assert!(!split_single_frame || (path_depth == 1 && samples == 1 && min_probe_rays == 0 && !frame_cache),
+        "--split-single-frame uses the original one-ray, single-bounce transport; extra paths, samples and frame caches are disabled");
     assert!(min_probe_rays <= 256 && (min_probe_rays == 0 || (single_frame && !frame_cache)));
     assert!(min_probe_rays == 0 || !args.iter().any(|a| a == "--unfused"), "Weighted adaptive rays require fused deposit");
     assert!(!frame_cache || (single_frame && samples == 1 && path_depth >= 2 && !args.iter().any(|a| a == "--unfused")), "--frame-cache needs --single-frame, depth >= 2, samples=1 and fused deposit");
@@ -119,6 +122,7 @@ fn main() {
     assert!((1..=16).contains(&path_depth) && (1..=64).contains(&samples));
     assert!(single_frame || samples == 1, "--samples requires --single-frame");
     if args.iter().any(|a| a == "--help") {
+        println!("Split RC baseline:\n  --split-single-frame  Original primary trace/split path, one indirect bounce, cleared each frame; no temporal jitter or extra path tracing");
         println!("Experimental transport:\n  --single-frame  Clear GI transport each frame; no prior-frame hits or radiance\n  --path-depth N  Frame-local path depth (default 8, experimental)\n  --samples N     Samples per pixel within the same frame (default 1)\n  --min-probe-rays N  Fill undersampled probes within this frame (default 0)\n  --frame-cache   Experimental current-frame secondary spatial cache\n  --unbatched-skin  Reference separate skeleton dispatches and BLASes\n  --no-light-grid Reference full local-light loop\n  --view N        Camera preset 0..2\n  --indirect-only Show indirect light\n  --quality-check Export current-frame linear RGBA32F; alpha is surface mask\n  --quality-frames N End quality check at frame N (default 200)\n  --quality-motion Keep animations on during the quality check");
         println!(
             "Chandra lighting lab\n  --sponza       Load assets/sponza.obj\n  --intel-sponza Load an external Intel Sponza asset (--scene-path required)\n  --scene-path   Override the Intel Sponza glTF path\n  --smoke-test   Verify two light directions and save PNGs, then exit\n  --benchmark    Deterministic scenarios and convergence checks\n  --stress-test  3600 frames with rigid, skin, sun and camera motion\n  --profile      Collect CUDA event timings after 200 warmup frames\n  --output DIR   Benchmark, stress or profiler output directory\n  --unfused      Use the separate ray-deposit queue for comparison\n  --static       Start with all animations paused\n  --1080p        Render at 1920 x 1080\n  --small        Render at 960 x 600 (default: 1280 x 800)\n\nRendering is uncapped. Mouse sliders change sunlight live. WASD moves; arrows/right drag look; Space/Shift move vertically. R resets the camera."
@@ -301,7 +305,7 @@ fn main() {
     } else {
         TraceData::new_fused(&core, &rc, ray_capacity)
     };
-    if single_frame { trace.enable_stable_samples(&core, &rc); }
+    if single_frame && !split_single_frame { trace.enable_stable_samples(&core, &rc); }
     if min_probe_rays > 0 { trace.enable_probe_budget(&core, &rc, min_probe_rays); }
     if frame_cache { trace.enable_frame_cache(&core); }
     let splat = SplatData::new(&core, &rc, 1.0);
@@ -373,6 +377,7 @@ fn main() {
         overlay.write(p, rgb.extend(rgba.w));
     }));
     let mut controls = Controls::for_scene(intel, gallery);
+    if split_single_frame { controls.bounces = false; }
     if args.iter().any(|a| a == "--indirect-only") { controls.mode = 2; }
     if emissive_cubes {
         controls.emissive_preset(emissive_night, emission_strength);
@@ -450,7 +455,7 @@ fn main() {
         }
     );
     println!("Lighting setup: {lighting_metadata}");
-    let transport_metadata = format!("single_frame={single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
+    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
     println!("Transport: {transport_metadata}");
     let scene_counts = if gallery {
         "30 point lights; 30 rigid; 30 emissive; 30 skinned".to_string()
@@ -595,7 +600,10 @@ fn main() {
                 ui.radio_value(&mut controls.mode, 1, "Direct light only");
                 ui.radio_value(&mut controls.mode, 2, "Indirect light only");
                 ui.radio_value(&mut controls.mode, 3, "Surface normals");
-                if single_frame {
+                if split_single_frame {
+                    ui.label("Split RC: single frame / one indirect bounce");
+                    ui.small("No accumulation / no extra path tracing");
+                } else if single_frame {
                     ui.label(format!("Experimental single frame: {path_depth} path vertices, {samples} spp"));
                 } else { ui.checkbox(&mut controls.bounces, "Multiple indirect bounces"); }
                 ui.add(egui::Slider::new(&mut controls.exposure, -3.0..=3.).text("Exposure").suffix(" EV"));
@@ -611,7 +619,8 @@ fn main() {
                 ui.label("Space / Shift: up / down  |  Ctrl: slow");
                 ui.label("R: reset camera  |  Esc: close");
                 ui.add_space(8.);
-                ui.small(if single_frame { "Frame-local GI. Fixed sampling removes temporal random jitter; spatial sampling error remains experimental." }
+                ui.small(if split_single_frame { "Original primary trace/split path. GI is rebuilt each frame. Fixed directional jitter; no temporal accumulation or secondary bounce cache." }
+                    else if single_frame { "Frame-local GI. Fixed sampling removes temporal random jitter; spatial sampling error remains experimental." }
                     else { "Drag the sun sliders to move shadows. Switch to Indirect light to inspect color bleeding on white surfaces. GI settles over several frames after a change." });
                 ui.add_space(8.);
                 ui.small(format!("{} probes  /  {} cascades", rc.num_probes.iter().sum::<u32>(), rc.num_cascades));
@@ -708,7 +717,7 @@ fn main() {
         commands += trace.compute_ray_count_base(&core, &rc);
         for c in 1..rc.num_cascades { commands += trace.compute_ray_count(&rc, c); }
         for c in (0..rc.num_cascades).rev() { commands += trace.compute_ray_offset(&rc, c); }
-        if single_frame { commands += trace.prepare_stable_samples(&core, &rc); }
+        if single_frame && !split_single_frame { commands += trace.prepare_stable_samples(&core, &rc); }
         if min_probe_rays > 0 {
             commands += trace.apply_probe_budget(&rc);
             for c in 1..rc.num_cascades { commands += trace.compute_ray_count(&rc, c); }
@@ -720,7 +729,8 @@ fn main() {
         if !single_frame && controls.bounces && rt.tick > 0 { commands += trace.compute_secondary_rays(&core, &rc, rt.tick, c0_len, true); }
         profiler.checkpoint("GI secondary rays", &mut commands);
         if frame_cache { commands += trace.clear_frame_hits(); }
-        commands += if single_frame { trace.compute_rays_mode(&core, &rc, 0, c0_len, false, path_depth, samples) }
+        commands += if split_single_frame { trace.compute_rays(&core, &rc, 0, c0_len, false) }
+            else if single_frame { trace.compute_rays_mode(&core, &rc, 0, c0_len, false, path_depth, samples) }
             else { trace.compute_rays(&core, &rc, rt.tick, c0_len, controls.bounces) };
         profiler.checkpoint("GI primary rays", &mut commands);
         if frame_cache {

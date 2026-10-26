@@ -13,6 +13,9 @@ param(
     [switch]$FullHD,
     [switch]$ProfileGpu,
     [switch]$SingleFrame,
+    [switch]$SplitSingleFrame,
+    [switch]$Static,
+    [ValidateRange(0, 2)][int]$View = 0,
     [ValidateRange(1, 16)][int]$PathDepth = 8,
     [ValidateRange(1, 64)][int]$Samples = 1,
     [ValidateRange(0, 256)][int]$MinProbeRays = 0,
@@ -25,6 +28,7 @@ param(
     [string]$Output
 )
 $ErrorActionPreference = 'Stop'
+if ($SplitSingleFrame -and $SingleFrame) { throw 'Choose -SplitSingleFrame or the experimental -SingleFrame, not both.' }
 Set-Location -LiteralPath $PSScriptRoot
 & (Join-Path $PSScriptRoot 'tools\prepare-luisa-frontend.ps1')
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -70,6 +74,9 @@ if ($StressTest) { $arguments += '--stress-test' }
 if ($FullHD) { $arguments += '--1080p' }
 if ($ProfileGpu) { $arguments += '--profile' }
 if ($SingleFrame) { $arguments += @('--single-frame', '--path-depth', $PathDepth, '--samples', $Samples, '--min-probe-rays', $MinProbeRays) }
+if ($SplitSingleFrame) { $arguments += '--split-single-frame' }
+if ($Static) { $arguments += '--static' }
+if ($View -ne 0) { $arguments += @('--view', $View) }
 if ($Cubes -ne 1) { $arguments += @('--cubes', $Cubes) }
 if ($RigidOnly) { $arguments += '--rigid-only' }
 if ($RigidRefit) { $arguments += '--rigid-refit' }
