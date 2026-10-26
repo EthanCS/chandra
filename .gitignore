@@ -6,3 +6,4 @@
 **/IntelSponza/
 .env
 .env.*
+__pycache__/

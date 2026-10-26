@@ -2,7 +2,9 @@
 
 A dynamic-scene extension of [entropylost/chandra](https://github.com/entropylost/chandra), the reference implementation of [Split Radiance Cascades](https://arxiv.org/abs/2607.20384). The original research renderer is retained. This fork adds an interactive lighting lab, rigid instancing, GPU skinning, emissive materials, moving local lights, dynamic history invalidation and GPU timing tools.
 
-**1080p optimization update:** the experimental single-frame mode reaches **150.3 FPS** in the combined scenario and **143.9 FPS** over continuous motion on an RTX 5070 Ti, with **4.87 ms GI**. It clears transport every frame, but residual spatial sampling error remains. **120 FPS + no accumulation + no noise + unchanged quality has not been achieved.** The existing temporal path remains the default. See the [measurements and quality comparisons](benchmarks/1080p-single-frame/README.md).
+**2026-10-26 / 稳定间接漫反射与自由相机：** 在动态 GI 历史、RC 合并、容量恢复、薄墙偏移、白房间与独立场景 worker 的基础上，加入按像素归一化的自适应补采样、表面重投影和漫反射重建，修正移动光源及相机运动时的局部闪烁。自由相机使用实际面板范围判断右键输入，F 看向可释放控件焦点并停止自动环绕。用户已确认当前漫反射效果满意并要求收尾，最终版本不再补跑性能。见 [当前收尾记录](benchmarks/diffuse-motion/README.md)；[第一批基础验证](benchmarks/diffuse/README.md)及下面的性能数字均为历史结果。Lighting Lab 未接入间接高光或 ReSTIR，PICA/机器人资源接入仍在本轮范围外。
+
+**Historical 1080p optimization, before diffuse reconstruction:** the experimental single-frame mode reached **150.3 FPS** in the combined scenario and **143.9 FPS** over continuous motion on an RTX 5070 Ti, with **4.87 ms GI**. It clears transport every frame, but residual spatial sampling error remains. **120 FPS + no accumulation + no noise + unchanged quality has not been achieved.** The temporal path remains the default. See the [historical measurements and quality comparisons](benchmarks/1080p-single-frame/README.md).
 
 ![Procedural Chromatic Gallery](images/chromatic-gallery.png)
 
@@ -41,6 +43,10 @@ The pinned Luisa frontend lacks transform-only instance updates and needs a corr
 ./run-lighting-lab.ps1 -Gallery -Small
 # Original small procedural courtyard: one rigid box and one skinned object.
 ./run-lighting-lab.ps1 -Courtyard -FullHD
+# Four asset-free diffuse/leak fixtures: sealed shell, 8 cm slit, thin walls, roof corner.
+./run-lighting-lab.ps1 -WhiteRoom -View 0
+# Geometry motion with stationary camera and lights; optional one-bounce GI.
+./run-lighting-lab.ps1 -Courtyard -GeometryOnly -SingleBounce
 # Day/night presets disable the sun; local lights remain independently adjustable.
 ./run-lighting-lab.ps1 -Gallery -FullHD -EmissiveDay
 ./run-lighting-lab.ps1 -Gallery -FullHD -EmissiveNight
@@ -62,8 +68,9 @@ Default resolution is 1280×800; `-FullHD` is 1920×1080 and `-Small` is 960×60
 - Sliders: sun direction/color/intensity, sky, local-light strength, emission and exposure.
 - Toggles: sun/local-light motion, rigid/emissive motion, skinning and camera motion.
 - Compare full GI, direct illumination, indirect illumination and surface normals.
-- `WASD`: move; arrows or right-drag: look; `Space`/`Shift`: up/down; `Ctrl`: slow.
-- `R`: reset view; `Esc`: close. Three camera presets include close-up views.
+- `WASD`: free movement; arrows, right-drag or `F` mouse-look: look; `Q`/`E`: down/up; `Space`: up; `Shift`: fast; `Ctrl`: slow. Manual movement stops orbit. On Windows, losing window focus releases held input.
+- `R`: reset view; `Tab` or `F1`: show/hide panel; `Esc`: close. A visible button also restores a hidden panel. White Room has four camera presets; other scenes have three.
+- Scene menu: the supervisor waits for the renderer worker to exit before starting the new scene. A brief close/reopen is expected. `--scene-worker` bypasses supervision for deterministic diagnostics.
 - Default mode: `Clear GI history` resets temporal accumulation; indirect light needs several frames to settle. Single-frame mode: `Rebuild GI allocation` resets spatial allocation; it does not accumulate radiance across frames.
 
 Day/night presets use the same emission and exposure. Day scales the constant sky by 0.18; night sets sky to zero. The gallery's 30 local lights remain adjustable with the Local lights slider. These are lighting presets, not a physical atmosphere simulation. Radiance is in relative linear units, not calibrated lumens/lux; no bloom is added.
@@ -74,9 +81,10 @@ Day/night presets use the same emission and exposure. Day scales the constant sk
 - GPU skinning supports four normalized weights per vertex. The gallery batches 30 joint palettes and deformation dispatches; groups of three neighboring skins share a BLAS, retaining original triangle/material identity. Only deformed BLASes are refitted, with periodic rebuilds to limit traversal degradation. `--unbatched-skin` retains the reference path. Static BLASes are retained. Empty graph stages preserve execution order without extra GPU waits.
 - Material-indexed emitted radiance is independent of diffuse reflectance, for camera and GI ray shading. There is no per-ray emitter-list scan.
 - A conservative current-frame light grid selects candidates without changing light order or the exact range/cosine/shadow tests. `--no-light-grid` retains the full loop.
-- Moving geometry invalidates swept regions; changing lights decay history. Radiance is held fixed during each frame's transport accumulation.
+- Moving geometry reduces confidence in affected swept directions while preserving normalized radiance. Illumination motion and energy edits have separate response windows. Continuous point-light motion does not repeatedly trigger the stronger energy-edit flush.
+- The Lab reconstructs unexposed diffuse irradiance before albedo/direct-light composition. Adaptive rays retain a common sample prefix and divide their deposit weights by the per-pixel budget; extra rays cannot overweight thin edges or disocclusions. New surface history receives four high-sample warmup frames. Spatial/temporal support checks instance identity, normals, plane distance and projected coverage, with separate previous/current buffers. `--no-diffuse-filter` selects raw RC and `--diffuse-diagnostics` exports the stages.
 - Fused tracing/deposit, warp-aggregated counters, cached parent links/quadrature, coalesced history updates and opaque any-hit shadows reduce work. `--unfused` retains the separate deposit queue.
-- The gallery reserves 131,072 base probes with the same 10 cm spatial setting. Exhausted cascade pools report a capacity error instead of accessing another pool's memory.
+- The gallery reserves 131,072 base probes with the same 10 cm spatial setting. Exhausted pools reclaim allocations and coarsen spatial LOD, then explicitly skip GI if bounded recovery still fails. Direct light and the camera remain available; GI display resumes after two successful frames.
 - Irradiance uses shared-memory angular quadrature with the same 32 input directions, 6×6 output resolution and Half4 storage. Corrected octahedral border indices read current-frame interior texels instead of old border texels.
 - Experimental `--single-frame` retains the Split RC hierarchy, ray splitting and spatial interpolation. Hierarchical R2 primary directions and fixed later-bounce samples feed finite-depth paths within one frame. Transport/quality are cleared, prior-frame hits are unused, and no temporal denoiser is applied. This changes the multibounce estimator and is not quality-equivalent to converged temporal rendering.
 
@@ -95,6 +103,8 @@ The default research renderer uses temporal, approximate GI; fast motion and dis
 ```
 
 The suite checks counts/topology, motion of all 90 gallery meshes, skin deformation and bounds, mixed instancing, finite light visibility, emission, history invalidation, ray queues, transport accumulation and safe probe-pool exhaustion.
+
+The current suite has 31 passing Rust CPU/GPU tests, plus `python tools/test-diffuse-motion.py` for two receiver-correspondence checks. Current interaction acceptance and older image experiments are distinguished in the [closeout record](benchmarks/diffuse-motion/README.md). Performance reruns above remain optional; none was claimed for the final reconstruction build.
 
 `timings.csv` contains unprofiled frame intervals including CPU/UI/presentation, excluding warmup and screenshot I/O. `passes.csv` and `summary.csv` contain CUDA stream-event ranges including submission gaps, not isolated kernel execution times. GI excludes geometry, GBuffer and direct composition; history is reported separately and in the combined GI total. Configuration files, screenshots and convergence reports record the setup. Set `CHANDRA_GPU_DEBUG_SYNC=1` with profiling only for stage-by-stage GPU diagnostics; these are not performance runs.
 

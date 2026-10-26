@@ -209,6 +209,8 @@ pub struct HashCache {
     pub base_probes: u32,
     pub num_cascades: u32,
     pub projection: Singleton<Projection>,
+    /// Read by kernels so capacity recovery never captures an obsolete LOD.
+    pub lod_bias: Singleton<u32>,
     pub table: HashTable,
     pub weighted_fluence: Buffer<Vec4<f32>>,
     pub weights: Buffer<f32>,
@@ -239,6 +241,7 @@ impl HashCache {
             base_probes,
             num_cascades,
             projection: Singleton::new(Projection::default()),
+            lod_bias: Singleton::new(0u32),
 
             table: HashTable::new(
                 num_cascades,
@@ -319,7 +322,7 @@ impl HashCache {
         let radius = (pos - self.projection().view_pos).abs().reduce_max();
         keter::max((radius / self.base_radius).log2(), 0.0)
             .ceil()
-            .cast_u32()
+            .cast_u32() + self.lod_bias.read()
     }
     #[tracked]
     pub fn estimate_lod_secondary(&self, pos: Expr<Vec3<f32>>) -> Expr<u32> {
@@ -335,7 +338,7 @@ impl HashCache {
             let lod_index = keter::max((radius / self.base_radius).log2(), -0.9);
             let blending_factor =
                 keter::min(1.0, (1.0 - lod_index.fract()) / self.blending_radius.log2());
-            let lower_lod = lod_index.ceil().cast_u32();
+            let lower_lod = lod_index.ceil().cast_u32() + self.lod_bias.read();
             // let higher_lod = (lod_index + self.blending_radius.log2()).ceil().cast_u32();
             let num_lods = if blending_factor >= 1.0 {
                 1u32.expr()

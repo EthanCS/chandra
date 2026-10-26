@@ -10,7 +10,8 @@ use yesod::camera::View;
 use yesod::device_println;
 use yesod::direction::{DirectionEncoder, EquirectangularEncoder, SphericalEncoder};
 use yesod::rand::pcg3df;
-use yesod::utils::{dispatch0, dispatch1, memo, offset_ray};
+use yesod::utils::{dispatch0, dispatch1, memo};
+use crate::utils::offset_ray;
 
 use crate::algorithm::rc::RcData;
 use crate::cache::{Fluence, Probe, Radiance};
@@ -65,6 +66,7 @@ pub struct CoreData {
     pub custom_emitters: Vec<(u32, Vec3<f32>)>,
     point_lights: Option<Buffer<PointLight>>,
     light_grid: Option<light_grid::LightGrid>,
+    gbuffer_kernel: std::sync::OnceLock<Kernel<fn()>>,
 }
 impl CoreData {
     pub fn new(
@@ -122,6 +124,7 @@ impl CoreData {
             custom_emitters,
             point_lights: None,
             light_grid: None,
+            gbuffer_kernel: std::sync::OnceLock::new(),
         }
     }
     pub fn set_point_lights(&mut self, lights: &[PointLight]) {
@@ -331,8 +334,8 @@ impl CoreData {
         pixel.y * self.screen_size().x + pixel.x
     }
     pub fn compute_gbuffer(&self) -> NodeConfigs<'static> {
-        dispatch0(
-            track!(|| {
+        self.gbuffer_kernel
+            .get_or_init(|| DEVICE.create_kernel::<fn()>(&track!(|| {
                 set_block_size([8, 8, 1]);
                 let pixel = dispatch_id().xy();
                 let view = self.view.read();
@@ -347,15 +350,15 @@ impl CoreData {
                 let normal = self.world.get_normal_flat(hit, ray_dir);
                 self.normal.write(pixel, SphericalEncoder::encode(normal));
                 self.hit.write(self.pixel_to_linear(pixel), hit);
-            }),
-            self.screen_dispatch_size(),
-        )
-        .debug("Compute G-Buffer")
+            })))
+            .dispatch_async(self.screen_dispatch_size())
+            .debug("Compute G-Buffer")
     }
 }
 
 pub mod ddgi;
 pub mod dynamic_history;
+pub mod diffuse;
 mod light_grid;
 pub mod rc;
 pub mod ris;

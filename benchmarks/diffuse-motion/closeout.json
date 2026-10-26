@@ -1,0 +1,73 @@
+{
+  "date": "2026-10-26",
+  "base_commit": "bcd96d48e6f47a76e3fd6b33c264468b80f8b680",
+  "binary_sha256": "4eea22d579f2d5da17bc98dbf0448d7a7949b643f040809d148b6ed7f4944420",
+  "acceptance": {
+    "diffuse_appearance": "User confirmed the current indirect diffuse appearance is satisfactory and requested closeout.",
+    "performance": "Not rerun at explicit user request. No final performance budget claim.",
+    "full_image_matrix_on_final_binary": false
+  },
+  "regressions": {
+    "rust_passed": 31,
+    "rust_command": "./run-lighting-lab.ps1 -Test",
+    "rust_log": ".local\\diffuse-motion\\tests-camera-final.log",
+    "rust_log_sha256": "b7b6251088b2659a6586994f11152ced705dd6a2f1bb514aa0409e80e1f5d756",
+    "python_passed": 2,
+    "python_command": "python tools/test-diffuse-motion.py"
+  },
+  "camera_interaction": {
+    "native_right_drag_rotation_records": 23,
+    "native_f_look_rotation_records": 2,
+    "manual_look_stops_orbit": true,
+    "stationary_mouse_no_rotation_drift": true,
+    "idle_frames_observed": 5728,
+    "tab_hides_and_shows": true,
+    "right_drag_example": {
+      "frame": 22643,
+      "dt": 0.0056287,
+      "focused": true,
+      "position": [
+        520.0,
+        -800.0,
+        510.0
+      ],
+      "yaw": -0.5627273,
+      "pitch": 0.43423355,
+      "panel": true,
+      "look": false,
+      "mouse": [
+        0.003,
+        0.0
+      ],
+      "rmb": true,
+      "over_controls": false,
+      "orbit": false,
+      "keys": []
+    },
+    "f_look_example": {
+      "frame": 6655,
+      "dt": 0.0063117,
+      "focused": true,
+      "position": [
+        455.10477,
+        -845.269,
+        390.28036
+      ],
+      "yaw": 0.7011399,
+      "pitch": 0.5073631,
+      "panel": true,
+      "look": true,
+      "mouse": [
+        0.693,
+        0.036
+      ],
+      "rmb": false,
+      "over_controls": false,
+      "orbit": false,
+      "keys": []
+    },
+    "log": ".local\\diffuse-motion\\camera-fixed.jsonl",
+    "log_sha256": "5ad27773727f554fcf9ddfb1592602bc63889d874e5a725bf930f79e5ff77376"
+  },
+  "scope": "Diffuse GI and free-camera fix; no indirect specular or ReSTIR."
+}

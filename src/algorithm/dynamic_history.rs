@@ -1,8 +1,7 @@
 //! Reactive world-space history for changing geometry and illumination.
 //!
-//! Swept AABBs invalidate directional groups whose ray footprint can touch the
-//! moved geometry. A global, time-based decay handles changes in illumination
-//! and the indirect influence of moving shadows outside those AABBs.
+//! Swept AABBs reduce confidence in affected directional groups without erasing
+//! their normalized radiance. Lighting changes use a separate response window.
 use keter::graph::NodeConfigs;
 use keter::lang::types::vector::{Vec3, Vec4};
 use keter::prelude::*;
@@ -22,7 +21,7 @@ struct Region {
 
 pub struct DynamicHistory {
     regions: Buffer<Region>,
-    invalidate: Kernel<fn(u32, f32, u32)>,
+    invalidate: Kernel<fn(u32, f32, f32, u32)>,
     invalidate_hits: Kernel<fn(u32)>,
     hit_count: u32,
     _inverse_directions: Buffer<Vec3<f32>>,
@@ -45,8 +44,8 @@ impl DynamicHistory {
             inverse_directions.write(index, 1.0 / safe_dir);
         }));
         initialize.dispatch([inverse_directions.len() as u32, 1, 1]);
-        let invalidate =
-            DEVICE.create_kernel::<fn(u32, f32, u32)>(&track!(|count, retention, cascade| {
+        let invalidate = DEVICE.create_kernel::<fn(u32, f32, f32, u32)>(&track!(
+            |count, retention, motion_retention, cascade| {
                 // Neighbouring lanes cover adjacent directional bins, making
                 // the four-value cache updates coalesce within each probe.
                 set_block_size([4, 8, 1]);
@@ -66,7 +65,7 @@ impl DynamicHistory {
                     c0 * rc.cache.spacing(node.probe.position.w, 0)
                         * rc.length_scale.expr().powi(cascade.cast_i32())
                 };
-                let discard = false.var();
+                let affected = false.var();
                 for k in 0..4u32 {
                     let inv = inverse_directions.read(rc.cache.direction_index(cascade, group + k));
                     for r in 0u32.expr()..count {
@@ -77,36 +76,43 @@ impl DynamicHistory {
                         let far = keter::max(a, b);
                         let enter = keter::max(keter::max(near.x, near.y), keter::max(near.z, 0.0));
                         let leave = keter::min(keter::min(far.x, far.y), keter::min(far.z, end));
-                        *discard |= enter <= leave;
+                        *affected |= enter <= leave;
                         // OR reduction: once any ray footprint hits a moving
-                        // region the whole four-bin group is discarded.
-                        if discard { break; }
+                        // region the whole four-bin group loses confidence.
+                        if affected {
+                            break;
+                        }
                     }
-                    if discard { break; }
+                    if affected {
+                        break;
+                    }
                 }
-                let factor = discard.select(0.0.expr(), retention);
+                // A hash-cell centre is not the origin of its surface samples.
+                // Clearing it also erases valid estimates on moving surfaces.
+                let factor = affected.select(keter::min(retention, motion_retention), retention);
+                let cap = keter::max(
+                    16.0f32,
+                    trace.ray_count.read(node.index).cast_f32() * 8.0
+                        / rc.cache.get_encoder(cascade).linear_size().cast_f32(),
+                );
                 for k in 0..4u32 {
                     let index = node.data_offset + group + k;
-                    let weight = rc.cache.weights.read(index) * factor;
-                    // Stop very old, undersampled bins retaining their original ratio forever.
-                    if weight < 0.02 {
+                    let old_weight = rc.cache.weights.read(index);
+                    let weight =
+                        affected.select(keter::min(old_weight * factor, cap), old_weight * factor);
+                    if weight < 0.0001 {
                         rc.cache.weights.write(index, 0.0);
                         rc.cache.weighted_fluence.write(index, Vec4::splat(0.0));
                     } else {
                         rc.cache.weights.write(index, weight);
-                        rc.cache
-                            .weighted_fluence
-                            .write(index, rc.cache.weighted_fluence.read(index) * factor);
-                    }
-                    if **discard && cascade == 0 {
-                        rc.base_radiance.write(index, Vec3::splat(0.0));
+                        rc.cache.weighted_fluence.write(
+                            index,
+                            rc.cache.weighted_fluence.read(index) * (weight / old_weight),
+                        );
                     }
                 }
-                if discard {
-                    rc.radiance
-                        .write((node.data_offset + group) / 4, Vec3::splat(0.0));
-                }
-            }));
+            }
+        ));
         let invalidate_hits = DEVICE.create_kernel::<fn(u32)>(&track!(|count| {
             let i = dispatch_id().x;
             let hit = trace.traced_hits.read(i);
@@ -138,7 +144,19 @@ impl DynamicHistory {
         swept_bounds: &[Bounds],
         retention: f32,
     ) -> NodeConfigs<'static> {
+        self.update_with_dt(rc, swept_bounds, retention, 1.0 / 60.0)
+    }
+
+    pub fn update_with_dt(
+        &self,
+        rc: &RcData,
+        swept_bounds: &[Bounds],
+        retention: f32,
+        dt: f32,
+    ) -> NodeConfigs<'static> {
         assert!(retention.is_finite() && (0.0..=1.0).contains(&retention));
+        assert!(dt.is_finite() && dt > 0.0);
+        let motion_retention = 0.5f32.powf(dt / 0.100);
         assert!(
             swept_bounds
                 .iter()
@@ -178,6 +196,7 @@ impl DynamicHistory {
                             ],
                             &count,
                             &retention,
+                            &motion_retention,
                             &cascade,
                         )
                         .into_node_configs(),
@@ -185,5 +204,50 @@ impl DynamicHistory {
             }
         }
         commands.chain().debug("Dynamic history invalidation")
+    }
+}
+
+/// Direction edits recover quickly after dragging stops. Energy edits keep a
+/// short flushing window so old multiple-bounce energy can leave the cache.
+#[derive(Default)]
+pub struct LightingResponse {
+    direction_remaining: f32,
+    energy_remaining: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct HistoryResponse {
+    pub retention: f32,
+    pub primary_samples: u32,
+}
+
+impl LightingResponse {
+    pub fn update(
+        &mut self,
+        dt: f32,
+        direction_changed: bool,
+        energy_changed: bool,
+        multibounce: bool,
+    ) -> HistoryResponse {
+        assert!(dt.is_finite() && dt > 0.0);
+        let duration = if multibounce { 0.500 } else { 0.150 };
+        if direction_changed {
+            self.direction_remaining = duration;
+        }
+        if energy_changed {
+            self.energy_remaining = duration;
+        }
+        let energy_active = self.energy_remaining > 0.0;
+        let strength = if energy_active {
+            1.0
+        } else {
+            (self.direction_remaining / duration).clamp(0.0, 1.0)
+        };
+        self.direction_remaining = (self.direction_remaining - dt).max(0.0);
+        self.energy_remaining = (self.energy_remaining - dt).max(0.0);
+        HistoryResponse {
+            retention: 0.5f32.powf(dt * strength / if energy_active { 0.025 } else { 0.045 }),
+            primary_samples: if strength > 0.0 { 4 } else { 1 },
+        }
     }
 }

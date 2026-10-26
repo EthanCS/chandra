@@ -3,6 +3,10 @@ param(
     [switch]$Sponza,
     [switch]$Gallery,
     [switch]$Courtyard,
+    [switch]$WhiteRoom,
+    [switch]$GeometryOnly,
+    [switch]$SingleBounce,
+    [ValidateRange(256, 1048576)][int]$ProbeBudget = 65536,
     [switch]$IntelSponza,
     [string]$ScenePath,
     [switch]$SmokeTest,
@@ -15,7 +19,7 @@ param(
     [switch]$SingleFrame,
     [switch]$SplitSingleFrame,
     [switch]$Static,
-    [ValidateRange(0, 2)][int]$View = 0,
+    [ValidateRange(0, 3)][int]$View = 0,
     [ValidateRange(1, 16)][int]$PathDepth = 8,
     [ValidateRange(1, 64)][int]$Samples = 1,
     [ValidateRange(0, 256)][int]$MinProbeRays = 0,
@@ -29,6 +33,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 if ($SplitSingleFrame -and $SingleFrame) { throw 'Choose -SplitSingleFrame or the experimental -SingleFrame, not both.' }
+if ($PSBoundParameters.ContainsKey('ProbeBudget') -and ($ProbeBudget -band ($ProbeBudget - 1)) -ne 0) { throw '-ProbeBudget must be a power of two.' }
 Set-Location -LiteralPath $PSScriptRoot
 & (Join-Path $PSScriptRoot 'tools\prepare-luisa-frontend.ps1')
 $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
@@ -57,7 +62,7 @@ $buildArguments = @('build', '--locked', '--jobs', '12', '--bin', 'lighting_lab'
 if ($LASTEXITCODE -ne 0) { throw 'Chandra build failed.' }
 if ($BuildOnly) { return }
 if ($Test) {
-    & $cargoDriver test --locked --jobs 12 --lib --test dynamic_geometry --test dynamic_history --test gi_optimizations --test emissive_lighting -- --test-threads=1
+    & $cargoDriver test --locked --jobs 12 --lib --test dynamic_geometry --test dynamic_history --test gi_optimizations --test emissive_lighting --test cascade_merge --test probe_capacity --test white_room --test diffuse_reconstruction --test diffuse_sampling -- --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     return
 }
@@ -65,6 +70,10 @@ $arguments = @()
 if ($Sponza) { $arguments += '--sponza' }
 if ($Gallery) { $arguments += '--gallery' }
 if ($Courtyard) { $arguments += '--courtyard' }
+if ($WhiteRoom) { $arguments += '--white-room' }
+if ($GeometryOnly) { $arguments += '--geometry-only' }
+if ($SingleBounce) { $arguments += '--single-bounce' }
+if ($PSBoundParameters.ContainsKey('ProbeBudget')) { $arguments += @('--probe-budget', $ProbeBudget) }
 if ($IntelSponza) { $arguments += '--intel-sponza' }
 if ($ScenePath) { $arguments += @('--scene-path', $ScenePath) }
 if ($SmokeTest) { $arguments += '--smoke-test' }

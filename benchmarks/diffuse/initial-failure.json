@@ -1,0 +1,11 @@
+{
+  "binary_sha256": "b14d7b23dd19b8ab555a54b5acf57a765a648a40bd0a925f35b4f875ed6c42bb",
+  "source_sha256": "5ba000b0462bc8296f910c1a9a022c99f2cd2de4a5fc87a7d97e21a315bea400",
+  "failure": {
+    "name": "lights-off-40-frames",
+    "passed": false,
+    "remaining_energy_ratio": 0.013669125735759735
+  },
+  "surface_remaining_energy_ratio": 0.03456073,
+  "note": "First candidate. Original whole-frame metric included sky; surface-only measurement also failed the 1% threshold."
+}

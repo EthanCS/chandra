@@ -47,7 +47,8 @@ use yesod::camera::{Camera, View};
 use yesod::color::inferno;
 use yesod::printer::global::flush_printer;
 use yesod::rand::{pcg3df, r2};
-use yesod::utils::{dispatch0, offset_ray};
+use yesod::utils::dispatch0;
+use chandra::utils::offset_ray;
 use yesod::{device_println, host};
 
 const TARGET_QUALITY_MULTIPLIER: f32 = 10.0;

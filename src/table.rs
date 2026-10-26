@@ -65,6 +65,7 @@ impl HashTable {
         entry_capacity: u32,
         data_capacities: impl Iterator<Item = u32>,
     ) -> Self {
+        assert!(num_tables > 0 && entry_capacity > 0);
         let total_entry_capacity = entry_capacity * num_tables;
         let mut table_data_start = Vec::new();
         let mut total_data_capacity = 0;
@@ -111,33 +112,40 @@ impl HashTable {
     fn insert_entry_index(&self, key: Expr<Key>, table: Expr<u32>, index: Expr<u32>) {
         let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
-        loop {
+        let placed = false.var();
+        for _ in 0u32..self.entry_capacity {
             let entry = self.entries.atomic_ref(entry_index + offset);
             let prev = entry.key.compare_exchange(INVALID_KEY, key);
             if prev == key {
                 // already inserted, do nothing
                 device_println!("Error: duplicate key insertion should be impossible");
+                *placed = true;
                 break;
             } else if prev == INVALID_KEY {
                 entry.value.index.exchange(index);
+                *placed = true;
                 break;
             }
 
             *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
         }
+        if !placed { self.allocation_failures.atomic_ref(0u32).fetch_add(1u32); }
     }
     // Inserts a key into the table. It takes a while to get the index, so that has to be done later after synchronization.
     #[tracked]
     pub fn insert(&self, key: Expr<Key>, table: Expr<u32>, on_insert: impl Fn(Expr<u32>)) {
         let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
-        loop {
+        let placed = false.var();
+        for _ in 0u32..self.entry_capacity {
             let entry = self.entries.atomic_ref(offset + entry_index);
             let prev = entry.key.compare_exchange(INVALID_KEY, key);
             if prev == key {
                 // already inserted, do nothing
+                *placed = true;
                 break;
             } else if prev == INVALID_KEY {
+                *placed = true;
                 let slot = self.freelist_index.atomic_ref(table).fetch_add(1);
                 if slot < self.freelist_end.read(table) {
                     let index = self.freelist.read(slot);
@@ -155,13 +163,14 @@ impl HashTable {
             }
             *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
         }
+        if !placed { self.allocation_failures.atomic_ref(0u32).fetch_add(1u32); }
     }
     #[tracked]
     pub fn get(&self, key: Expr<Key>, table: Expr<u32>) -> Expr<u32> {
         let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         let result = u32::MAX.var();
-        loop {
+        for _ in 0u32..self.entry_capacity {
             let entry = self.entries.read(offset + entry_index);
             if entry.key == key {
                 *result = entry.value.index;
@@ -182,7 +191,7 @@ impl HashTable {
         let entry_index = (hash(key) % self.entry_capacity).var();
         let offset = self.entry_capacity * table;
         let cost = 0_u32.var();
-        loop {
+        for _ in 0u32..self.entry_capacity {
             let entry = self.entries.read(offset + entry_index);
             if entry.key == key {
                 break;
@@ -193,7 +202,7 @@ impl HashTable {
             *entry_index = (entry_index + self.probing_step()) % self.entry_capacity;
             *cost += 1;
         }
-        **cost
+        (cost >= self.entry_capacity).select(u32::MAX.expr(), **cost)
     }
     // remove: if true, then item is removed from the table
     #[tracked]

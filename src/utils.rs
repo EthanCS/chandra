@@ -6,6 +6,15 @@ use keter::prelude::*;
 use yesod::camera::View;
 use yesod::shapes::intersect_sphere;
 
+/// Offset in the renderer's centimetre coordinate system. Large integer-ULP
+/// offsets can jump through thin walls; eight relative float epsilons still
+/// move the origin off a surface at large coordinates.
+#[tracked]
+pub fn offset_ray(position: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+    let distance = keter::max(0.001f32, position.abs().reduce_max() * (8.0 * f32::EPSILON));
+    position + normal * distance
+}
+
 #[tracked]
 pub fn index_to_corner(i: Expr<u32>) -> Expr<Vec3<u32>> {
     Vec3::expr(i & 1, (i >> 1) & 1, i >> 2)

@@ -9,7 +9,7 @@ use keter::prelude::*;
 use yesod::utils::dispatch0;
 
 #[test]
-fn motion_discards_affected_radiance_and_secondary_hits_while_lighting_decays_history() {
+fn motion_preserves_normalized_radiance_and_reduces_confidence_but_discards_stale_hits() {
     let world = TriangleWorld::new(
         &[[0., 0., 0.], [2., 0., 0.], [0., 2., 0.]],
         &[[0, 1, 2]],
@@ -98,21 +98,21 @@ fn motion_discards_affected_radiance_and_secondary_hits_while_lighting_decays_hi
             .view(offset..offset + 32)
             .copy_to_vec()
             .iter()
-            .all(|&w| w == 0.)
+            .all(|&w| (w - 2.0 * 0.5f32.powf((1.0 / 60.0) / 0.100)).abs() < 1e-5)
     );
     assert!(
         rc.base_radiance
             .view(offset..offset + 32)
             .copy_to_vec()
             .iter()
-            .all(|v| v.x == 0. && v.y == 0. && v.z == 0.)
+            .all(|v| v.x == 2. && v.y == 2. && v.z == 2.)
     );
     assert!(
         rc.radiance
             .view(offset / 4..offset / 4 + 8)
             .copy_to_vec()
             .iter()
-            .all(|v| v.x == 0.)
+            .all(|v| v.x == 2.)
     );
     assert!(
         trace
@@ -120,6 +120,69 @@ fn motion_discards_affected_radiance_and_secondary_hits_while_lighting_decays_hi
             .copy_to_vec()
             .iter()
             .all(|h| h.position.x.is_infinite())
+    );
+    let weights = rc.cache.weights.view(offset..offset + 32).copy_to_vec();
+    let fluence = rc
+        .cache
+        .weighted_fluence
+        .view(offset..offset + 32)
+        .copy_to_vec();
+    for (weight, value) in weights.iter().zip(&fluence) {
+        assert!((value.x / weight - 2.0).abs() < 1e-5);
+    }
+    // Mature bins lose confidence immediately, without changing their energy.
+    rc.cache
+        .weights
+        .view(offset..offset + 32)
+        .copy_from(&[1024.; 32]);
+    rc.cache
+        .weighted_fluence
+        .view(offset..offset + 32)
+        .copy_from(&[Vec4::splat(2048.); 32]);
+    history
+        .update(
+            &rc,
+            &[Bounds {
+                min: glam::Vec3::splat(-1.),
+                max: glam::Vec3::splat(8.),
+            }],
+            1.,
+        )
+        .execute();
+    assert!(
+        rc.cache
+            .weights
+            .view(offset..offset + 32)
+            .copy_to_vec()
+            .iter()
+            .all(|&w| w == 16.)
+    );
+    assert!(
+        rc.cache
+            .weighted_fluence
+            .view(offset..offset + 32)
+            .copy_to_vec()
+            .iter()
+            .all(|v| v.x == 32.)
+    );
+    history
+        .update(
+            &rc,
+            &[Bounds {
+                min: glam::Vec3::splat(10000.),
+                max: glam::Vec3::splat(10008.),
+            }],
+            1.,
+        )
+        .execute();
+    assert!(
+        rc.cache
+            .weights
+            .view(offset..offset + 32)
+            .copy_to_vec()
+            .iter()
+            .all(|&w| w == 16.),
+        "Distant geometry motion globally decayed unrelated base bins"
     );
 
     // More than 16 independently moving objects must not merge into one giant
@@ -145,4 +208,36 @@ fn motion_discards_affected_radiance_and_secondary_hits_while_lighting_decays_hi
         "The 100th region was ignored"
     );
     assert_eq!(hits[1].position.x, 5000., "Separate bounds were collapsed");
+}
+
+#[test]
+fn lighting_response_recovers_and_energy_flush_outlasts_direction_recovery() {
+    use chandra::algorithm::dynamic_history::LightingResponse;
+    for multibounce in [false, true] {
+        let mut direction = LightingResponse::default();
+        let mut energy = LightingResponse::default();
+        let mut last_direction = 0.0;
+        let frames = if multibounce { 32 } else { 11 };
+        for frame in 0..frames {
+            let d = direction.update(1.0 / 60.0, frame == 0, false, multibounce);
+            let e = energy.update(1.0 / 60.0, false, frame == 0, multibounce);
+            assert!(d.retention >= last_direction);
+            assert!(d.retention + 1e-6 >= e.retention);
+            last_direction = d.retention;
+        }
+        let settled = direction.update(1.0 / 60.0, false, false, multibounce);
+        assert_eq!(settled.retention, 1.0);
+        assert_eq!(settled.primary_samples, 1);
+        assert_eq!(
+            energy
+                .update(1.0 / 60.0, false, false, multibounce)
+                .retention,
+            1.0
+        );
+    }
+    let mut at_60 = LightingResponse::default();
+    let mut at_120 = LightingResponse::default();
+    let a = at_60.update(1.0 / 60.0, false, true, true).retention;
+    let b = at_120.update(1.0 / 120.0, false, true, true).retention;
+    assert!((a - b * b).abs() < 1e-6);
 }

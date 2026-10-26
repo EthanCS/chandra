@@ -1,0 +1,50 @@
+{
+  "binary_sha256": "f1373182a3241cb2cd9fa47413cdbfbdb09e51e41ba343874aa6ab851f3fb764",
+  "source_sha256": "40fb85d7dc4305fb5f2daedc66204efaadb4f2a0e91b37b5e1849fa55edc8e85",
+  "hardware": "NVIDIA GeForce RTX 5070 Ti, 617.42, 16303 MiB",
+  "command": [
+    "target/debug/lighting_lab.exe",
+    "--scene-worker",
+    "--courtyard",
+    "--1080p",
+    "--profile",
+    "--profile-frames",
+    "240",
+    "--geometry-only",
+    "--output",
+    ".local/diffuse-acceptance/gpu-profile-v3"
+  ],
+  "warmup_frames": 200,
+  "measured_frames": 240,
+  "simulation_dt": "1/60 s",
+  "summary": [
+    {
+      "metric": "GI main",
+      "mean_gpu_ms": "2.537076",
+      "p95_gpu_ms": "3.026400",
+      "max_gpu_ms": "3.292000",
+      "samples": "240"
+    },
+    {
+      "metric": "GI including dynamic history",
+      "mean_gpu_ms": "2.920871",
+      "p95_gpu_ms": "3.404032",
+      "max_gpu_ms": "3.668736",
+      "samples": "240"
+    },
+    {
+      "metric": "Geometry total",
+      "mean_gpu_ms": "0.275288",
+      "p95_gpu_ms": "0.490432",
+      "max_gpu_ms": "1.040448",
+      "samples": "240"
+    }
+  ],
+  "scope": "CUDA event ranges include stream submission gaps; these are GI ranges, not full-frame FPS.",
+  "manual_checks": {
+    "Gallery_to_WhiteRoom": "Observed expected new scene and one renderer worker; earlier candidate before pointer-only correction.",
+    "sealed_and_slit_presets": "Observed black sealed room and lit slit fixture.",
+    "F1": "Not accepted: screenshot selection overlay appeared during key test.",
+    "full_keyboard_mouse_and_focus_matrix": "Not fully verified; pointer consumption, focus gating and speeds have CPU regressions."
+  }
+}

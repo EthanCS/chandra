@@ -370,8 +370,12 @@ impl TraceData {
         &self, core: &CoreData, rc: &RcData, tick: u32, c0_len: f32,
         multibounce: bool, path_depth: u32, samples: u32,
     ) -> NodeConfigs<'static> {
+        self.compute_rays_adaptive(core,rc,tick,c0_len,multibounce,path_depth,samples,None)
+    }
+    pub fn compute_rays_adaptive(&self,core:&CoreData,rc:&RcData,tick:u32,c0_len:f32,
+        multibounce:bool,path_depth:u32,samples:u32,budget:Option<&Buffer<u32>>)->NodeConfigs<'static> {
         assert!(samples > 0);
-        memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays), || {
+        memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays,budget.is_some()), || {
             DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 let pixel = if let Some(work) = &self.adaptive_work {
                     set_block_size([128,1,1]);
@@ -418,8 +422,17 @@ impl TraceData {
                         (first, (pixel_index + 1u32) * budget / pixels - first)
                     }
                 } else { (pixel_index, 1u32.expr()) };
-                for sample in 0u32.expr()..count * samples {
+                let effective_samples=if let Some(budget)=budget {budget.read(core.pixel_to_linear(pixel))} else {samples.expr()};
+                // A surface pixel is one transport observation regardless of
+                // its adaptive ray budget. Otherwise edge/disocclusion pixels
+                // dominate neighbouring probes and change their energy as the
+                // camera changes the 2/16/32/64 sample mixture.
+                let sample_weight=if path_depth==0 && self.frame_primary.is_none() {
+                    sample_weight/effective_samples.cast_f32()
+                } else {sample_weight};
+                for sample in 0u32.expr()..count * effective_samples {
                 let offset_index = if let Some(work) = &self.adaptive_work { work.read(dispatch_id().x).y * samples + sample }
+                    else if path_depth==0 && self.frame_primary.is_none() {offset+first+sample*104729u32}
                     else { (offset + first) * samples + sample };
 
                 let dir = project_line(
@@ -442,7 +455,7 @@ impl TraceData {
                     self.path_radiance(core, start, dir, hit, offset_index, path_depth)
                 };
 
-                if path_depth == 0 || self.frame_primary.is_some() { self.traced_hits.write(
+                if (path_depth == 0 || self.frame_primary.is_some()) && sample==0u32 { self.traced_hits.write(
                     core.pixel_to_linear(pixel),
                     if hit.miss() {
                         Hit::invalid().expr()

@@ -2,7 +2,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use keter::lang::functions::{
-    sync_block, thread_id, warp_active_count_bits, warp_prefix_count_bits, warp_read_lane_at,
+    sync_block, thread_id, warp_read_lane_at,
 };
 use parking_lot::Mutex;
 use yesod::utils::FetchAddVector;
@@ -104,6 +104,19 @@ pub enum MergeLevel {
     // First,
     Last,
     Middle(Expr<u32>),
+}
+
+/// Hide incomplete transport until two consecutive successful frames have
+/// warmed the cache. A failed frame immediately removes stale GI from display.
+#[derive(Default)]
+pub struct GiAvailability {
+    successful_frames: u32,
+}
+impl GiAvailability {
+    pub fn update(&mut self, success: bool) -> bool {
+        self.successful_frames = if success { self.successful_frames.saturating_add(1) } else { 0 };
+        self.successful_frames >= 2
+    }
 }
 
 #[repr(C)]
@@ -235,6 +248,7 @@ impl RcData {
             self.increased_base_resolution,
             self.quality_decay,
             self.min_direction_weight,
+            self.interpolation_exponent,
         );
         if cascade == self.last_cascade() {
             memo(key, || {
@@ -267,7 +281,6 @@ impl RcData {
 
         let probe = node.probe;
 
-        let n = 0_u32.var();
         let next_offsets = Shared::<u32>::new(8);
         let next_weights = Shared::<f32>::new(8);
 
@@ -281,28 +294,30 @@ impl RcData {
                 };
 
                 let next = self.cache.get(next_probe);
+                // Hash probing diverges. Keep each neighbour in its fixed slot
+                // instead of ranking lanes using a transient active warp mask.
+                next_offsets.write(i, 0u32);
+                next_weights.write(i, 0.0f32);
                 if next.loaded() {
-                    let index = warp_prefix_count_bits(true.expr());
-
-                    next_offsets.write(index, next.data_offset);
-                    next_weights.write(index, weight * self.get_quality_weight(next));
+                    next_offsets.write(i, next.data_offset);
+                    next_weights.write(i, weight * self.get_quality_weight(next));
                 }
-                *n = warp_active_count_bits(next.loaded());
             }
             sync_block();
         }
-        let n = warp_read_lane_at(**n, 0);
 
         let index = dispatch_id().y;
         let total_radiance = Vec4::splat(0.0_f32).var();
         if !matches!(merge_level, MergeLevel::Last) {
-            for i in 0.expr()..n {
+            for i in 0u32..if self.merge_nearest { 1 } else { 8 } {
+                let weight = next_weights.read(i);
+                if weight <= 0.0 { continue; }
                 let radiance = self.radiance.read(next_offsets.read(i) / 4 + index);
                 // necessary?
                 if radiance.is_finite().all() {
                     let value = if self.interpolation_exponent == 1.0 { radiance }
                         else { radiance.powf(self.interpolation_exponent) };
-                    *total_radiance += next_weights.read(i) * value.extend(1.0);
+                    *total_radiance += weight * value.extend(1.0);
                 }
             }
         }
@@ -518,6 +533,13 @@ impl RcData {
     }
 
     pub fn reset_table(&mut self, commands: &mut CommandList<'static>, total: bool) {
+        assert!(self.try_reset_table(commands, total),
+            "Radiance cache capacity exhausted; use recover_probe_capacity or increase base_probes.");
+    }
+
+    /// Flush queued allocation, rebuild the table, and report failures before
+    /// any transport consumer can use partially allocated probes.
+    pub fn try_reset_table(&mut self, commands: &mut CommandList<'static>, total: bool) -> bool {
         const ZEROS: [u32; 1024] = [0_u32; 1024];
 
         let table = &self.cache.table;
@@ -553,6 +575,7 @@ impl RcData {
         let last_occupied_index = Arc::new(Mutex::new(vec![0_u32; self.num_cascades as usize]));
         let allocation_failures = Arc::new(Mutex::new(vec![0u32]));
         *commands += table.allocation_failures.copy_to_shared(&allocation_failures);
+        commands.push(table.allocation_failures.copy_from_async(&[0u32]));
         *commands += self
             .cache
             .table
@@ -566,9 +589,6 @@ impl RcData {
 
         commands.execute();
 
-        assert_eq!(allocation_failures.lock()[0], 0,
-            "Radiance cache capacity exhausted. Increase RcConfig::base_probes for this scene/view.");
-
         self.num_probes = total_occupied.lock().to_vec();
 
         let last_occupied_index = last_occupied_index.lock();
@@ -579,7 +599,30 @@ impl RcData {
             .collect();
         // The hash table is now final for this frame. Resolve each parent once
         // per occupied probe, instead of millions of times during ray deposits.
-        self.update_parent_links().execute();
+        let success = allocation_failures.lock()[0] == 0;
+        if success { self.update_parent_links().execute(); }
+        success
+    }
+
+    /// First reclaim the old view, then coarsen the world-space allocation.
+    /// Secondary hits participate in every retry. The caller must skip all GI
+    /// consumers when this bounded recovery returns false.
+    pub fn recover_probe_capacity(&mut self, core: &CoreData, secondary: Option<&TraceData>,
+        commands: &mut CommandList<'static>) -> bool {
+        let initial_bias = self.cache.lod_bias.read_blocking();
+        for attempt in 0..4u32 {
+            let bias = (initial_bias + attempt).min(12);
+            commands.push(self.cache.lod_bias.write_host(bias));
+            self.try_reset_table(commands, true);
+            *commands += self.init_probes_base(core);
+            if let Some(trace) = secondary { *commands += self.init_probes_secondary(trace); }
+            for c in 1..self.num_cascades { *commands += self.init_probes(c); }
+            *commands += self.set_lifetime_base(core);
+            if let Some(trace) = secondary { *commands += self.set_lifetime_secondary(trace); }
+            for c in 1..self.num_cascades { *commands += self.set_lifetime(c); }
+            if self.try_reset_table(commands, false) { return true; }
+        }
+        false
     }
 
     pub fn init_probes_base(&self, core: &CoreData) -> NodeConfigs<'static> {
