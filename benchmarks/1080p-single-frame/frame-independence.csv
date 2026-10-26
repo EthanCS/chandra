@@ -1,0 +1,16 @@
+case,frame,prior_transport_poisoned,mae,max_error
+overview,1,True,0.0,0.0
+overview,2,False,0.0,0.0
+overview,16,True,0.0,0.0
+overview,64,True,0.0,0.0
+overview,200,False,0.0,0.0
+close,1,True,0.0,0.0
+close,2,False,0.0,0.0
+close,16,True,3.106744639325143e-09,5.840510129928589e-05
+close,64,True,3.106744639325143e-09,5.840510129928589e-05
+close,200,False,0.0,0.0
+night,1,True,0.0,0.0
+night,2,False,0.0,0.0
+night,16,True,0.0,0.0
+night,64,True,1.1408962316550308e-11,1.2561678886413574e-05
+night,200,False,0.0,0.0

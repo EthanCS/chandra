@@ -1,6 +1,5 @@
 use yesod::direction::project_line;
 use yesod::rand::{pcg3df, r2};
-use yesod::utils::dispatch2;
 use keter::lang::functions::{warp_active_count_bits, warp_is_first_active_lane, warp_prefix_count_bits, warp_read_first_active_lane};
 
 use super::*;
@@ -41,6 +40,25 @@ pub struct TraceData {
     pub next_traced_ray: Singleton<u32>,
     pub fused_deposit: bool,
     pub ray_capacity: u32,
+    pub stable_samples: Option<StableSamples>,
+    frame_primary: Option<Buffer<FrameRay>>,
+    pub min_probe_rays: u32,
+    adaptive_work: Option<Buffer<Vec2<u32>>>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Value)]
+struct FrameRay {
+    hit: crate::algorithm::Hit,
+    direction: Vec3<f32>,
+    direct: Vec3<f32>,
+}
+
+pub struct StableSamples {
+    pixels: Buffer<u32>,
+    ranks: Buffer<u32>,
+    offsets: Buffer<u32>,
+    pixel_counts: Buffer<u32>,
 }
 
 impl TraceData {
@@ -65,8 +83,123 @@ impl TraceData {
             next_traced_ray: Singleton::new(0),
             fused_deposit,
             ray_capacity: max_rays as u32,
+            stable_samples: None,
+            frame_primary: None,
+            min_probe_rays: 0,
+            adaptive_work: None,
             // used for debug
         }
+    }
+    pub fn enable_stable_samples(&mut self, core: &CoreData, rc: &RcData) {
+        self.stable_samples = Some(StableSamples {
+            pixels: DEVICE.create_buffer(core.num_pixels() as usize),
+            ranks: DEVICE.create_buffer(core.num_pixels() as usize),
+            offsets: DEVICE.create_buffer(rc.cache.total_probes() as usize),
+            pixel_counts: DEVICE.create_buffer(rc.cache.base_probes as usize),
+        });
+    }
+    /// Redistribute extra rays only to undersampled probes. Every original
+    /// surface pixel keeps at least one ray. Integer partitioning produces
+    /// exactly max(pixel_count, minimum) rays, without rounding up per pixel.
+    pub fn apply_probe_budget(&self, rc: &RcData) -> NodeConfigs<'static> {
+        let stable = self.stable_samples.as_ref().expect("Stable samples required");
+        dispatch0(track!(|| {
+            let i = dispatch_id().x;
+            if i == 0u32 { self.next_max_cascade_ray_direction.write(0u32); }
+            if i < rc.cache.base_probes {
+                let pixels = self.ray_count.read(i);
+                stable.pixel_counts.write(i, pixels);
+                self.ray_count.write(i, (pixels > 0u32).select(keter::max(pixels, self.min_probe_rays), 0u32.expr()));
+            } else { self.ray_count.write(i, 0u32); }
+        }), [rc.cache.total_probes(),1,1]).debug("Fill undersampled probe budgets")
+    }
+    pub fn enable_frame_cache(&mut self, core: &CoreData) {
+        self.frame_primary = Some(DEVICE.create_buffer(core.num_pixels() as usize));
+    }
+    pub fn enable_probe_budget(&mut self, core: &CoreData, rc: &RcData, minimum: u32) {
+        assert!(self.stable_samples.is_some() && minimum > 0 && minimum <= 256);
+        self.min_probe_rays = minimum;
+        self.adaptive_work = Some(DEVICE.create_buffer(core.num_pixels() as usize + rc.cache.base_probes as usize * minimum as usize));
+    }
+    pub fn prepare_probe_work(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
+        let work = self.adaptive_work.as_ref().expect("Probe work not enabled");
+        let stable = self.stable_samples.as_ref().unwrap();
+        dispatch0(track!(|| {
+            set_block_size([8,8,1]);
+            let pixel = dispatch_id().xy();
+            let pos = core.get_world_pos(pixel);
+            let node = rc.cache.get(rc.cache.quantize(pos, rc.cache.estimate_lod(pos), 0u32.expr()));
+            if node.invalid() { return; }
+            let rank = stable.ranks.read(core.pixel_to_linear(pixel));
+            let pixels = stable.pixel_counts.read(node.index);
+            let budget = self.ray_count.read(node.index);
+            let (first,end) = if pixels == budget { (rank, rank + 1u32) } else {
+                (rank * budget / pixels, (rank + 1u32) * budget / pixels)
+            };
+            let offset = self.ray_offset.read(node.index);
+            let seed = stable.offsets.read(node.index);
+            for i in first..end {
+                work.write(offset + i, Vec2::expr(core.pixel_to_linear(pixel), seed + i));
+            }
+        }), core.screen_dispatch_size()).debug("Compact adaptive ray work")
+    }
+    pub fn clear_frame_hits(&self) -> NodeConfigs<'static> {
+        dispatch0(track!(|| { self.traced_hits.write(dispatch_id().x, Hit::invalid()); }), [self.traced_hits.len() as u32,1,1]).debug("Clear frame hit points")
+    }
+
+    pub fn resolve_frame_primary(&self, core: &CoreData, rc: &RcData, c0_len: f32) -> NodeConfigs<'static> {
+        let rays = self.frame_primary.as_ref().expect("Frame cache not enabled");
+        dispatch1(track!(|c0_len| {
+            set_block_size([8,8,1]);
+            let pixel = dispatch_id().xy();
+            let world_pos = core.get_world_pos(pixel);
+            let ray = rays.read(core.pixel_to_linear(pixel));
+            let radiance = ray.direct.var();
+            if !ray.hit.miss() {
+                let position = core.world.get_position(ray.hit);
+                let normal = core.world.get_normal_flat(ray.hit, ray.direction);
+                *radiance += core.world.get_diffuse(ray.hit) * rc.sample_secondary(position, normal);
+            }
+            rc.cache.iter_lods(world_pos, |lod,_,_| {
+                self.compute_deposit_ray(rc, world_pos, lod, ray.direction, **radiance, ray.hit, c0_len);
+            });
+        }), core.screen_dispatch_size(), c0_len).debug("Resolve current-frame primary transport")
+    }
+
+    /// Atomic list insertion is only temporary storage. Rank by pixel ID so
+    /// CUDA execution order cannot change the ray assigned to a surface pixel.
+    /// Coarse-probe direction origins depend on spatial coordinates, not on
+    /// freelist allocation order. The hierarchical R2 intervals stay contiguous.
+    pub fn prepare_stable_samples(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
+        let stable = self.stable_samples.as_ref().expect("Stable samples not enabled");
+        let scatter = dispatch0(track!(|| {
+            set_block_size([8, 8, 1]);
+            let pixel = dispatch_id().xy();
+            let pos = core.get_world_pos(pixel);
+            let node = rc.cache.get(rc.cache.quantize(pos, rc.cache.estimate_lod(pos), 0u32.expr()));
+            if node.invalid() { return; }
+            let slot = self.ray_offset.read(node.index) + self.base_ray_index.atomic_ref(node.index).fetch_add(1u32);
+            stable.pixels.write(slot, core.pixel_to_linear(pixel));
+        }), core.screen_dispatch_size());
+        let rank = dispatch0(track!(|| {
+            set_block_size([1, 64, 1]);
+            let node = rc.cache.get_occupied(0u32.expr(), dispatch_id().x);
+            if node.invalid() { return; }
+            let offset = self.ray_offset.read(node.index);
+            let count = self.ray_count.read(node.index);
+            let lane = dispatch_id().y;
+            let i = lane.var();
+            while i < count {
+                let pixel = stable.pixels.read(offset + i);
+                let rank = 0u32.var();
+                for j in 0u32.expr()..count {
+                    *rank += (stable.pixels.read(offset + j) < pixel).cast_u32();
+                }
+                stable.ranks.write(pixel, **rank);
+                *i += 64u32;
+            }
+        }), [rc.max_probes[0], 64, 1]);
+        (scatter, rank).chain().debug("Stable surface sample ranks")
     }
     pub fn compute_ray_count_base(&self, core: &CoreData, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0(
@@ -128,6 +261,10 @@ impl TraceData {
                             .atomic()
                             .fetch_add(num_rays),
                     );
+                    if let Some(stable) = &self.stable_samples {
+                        let p = node.probe.position;
+                        stable.offsets.write(node.index, yesod::rand::pcg3d(p.xyz() + p.w * 7919u32).x);
+                    }
                 }),
                 [rc.cache.max_probes_at_cascade(cascade), 1, 1],
             )
@@ -149,9 +286,14 @@ impl TraceData {
                         }
                     }
                     let offset = self.ray_offset.read(node.index).var();
+                    let direction_offset = self.stable_samples.as_ref().map(|s| s.offsets.read(node.index).var());
                     for i in 0.expr()..**j {
                         self.ray_offset.write(lower_nodes.read(i).index, offset);
                         *offset += counts.read(i);
+                        if let (Some(stable), Some(direction_offset)) = (&self.stable_samples, &direction_offset) {
+                            stable.offsets.write(lower_nodes.read(i).index, ***direction_offset);
+                            **direction_offset += counts.read(i);
+                        }
                     }
                 }),
                 [rc.cache.max_probes_at_cascade(cascade + 1), 1, 1],
@@ -222,6 +364,148 @@ impl TraceData {
         .dispatch_async(core.screen_dispatch_size(), &tick, &c0_len)
         .debug("Compute Rays")
     }
+    /// Experimental frame-local path transport, still filtered by Split RC.
+    /// `path_depth == 0` selects the original temporal secondary-probe path.
+    pub fn compute_rays_mode(
+        &self, core: &CoreData, rc: &RcData, tick: u32, c0_len: f32,
+        multibounce: bool, path_depth: u32, samples: u32,
+    ) -> NodeConfigs<'static> {
+        assert!(samples > 0);
+        memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays), || {
+            DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
+                let pixel = if let Some(work) = &self.adaptive_work {
+                    set_block_size([128,1,1]);
+                    let i = dispatch_id().x;
+                    if i >= self.next_max_cascade_ray_direction.read() { return; }
+                    let pixel = work.read(i).x;
+                    Vec2::expr(pixel % core.screen_size().x, pixel / core.screen_size().x)
+                } else {
+                    set_block_size([8,8,1]);
+                    dispatch_id().xy()
+                };
+                let world_pos = core.get_world_pos(pixel);
+                let normal = core.read_normal(pixel);
+
+                let lod = rc.cache.estimate_lod(world_pos);
+                let probe = rc.cache.quantize(world_pos, lod, 0.expr());
+                let node = rc.cache.get(probe);
+
+                if node.invalid() {
+                    device_println!("Should be impossible!");
+                    return;
+                }
+
+                let offset = if let Some(stable) = &self.stable_samples { stable.offsets.read(node.index) }
+                    else { self.ray_offset.read(node.index) };
+
+                let pixel_index = if let Some(stable) = &self.stable_samples { stable.ranks.read(core.pixel_to_linear(pixel)) }
+                    else { self.base_ray_index.atomic_ref(node.index).fetch_add(1) };
+                let sample_weight = if self.min_probe_rays > 0 {
+                    let pixels = self.stable_samples.as_ref().unwrap().pixel_counts.read(node.index);
+                    let budget = self.ray_count.read(node.index);
+                    if budget == pixels { 1.0f32.expr() } else {
+                        let rays = (pixel_index + 1u32) * budget / pixels - pixel_index * budget / pixels;
+                        1.0 / rays.cast_f32()
+                    }
+                } else { 1.0f32.expr() };
+                let (first, count) = if self.adaptive_work.is_some() {
+                    (0u32.expr(), 1u32.expr())
+                } else if self.min_probe_rays > 0 {
+                    let pixels = self.stable_samples.as_ref().unwrap().pixel_counts.read(node.index);
+                    let budget = self.ray_count.read(node.index);
+                    if budget == pixels { (pixel_index, 1u32.expr()) } else {
+                        let first = pixel_index * budget / pixels;
+                        (first, (pixel_index + 1u32) * budget / pixels - first)
+                    }
+                } else { (pixel_index, 1u32.expr()) };
+                for sample in 0u32.expr()..count * samples {
+                let offset_index = if let Some(work) = &self.adaptive_work { work.read(dispatch_id().x).y * samples + sample }
+                    else { (offset + first) * samples + sample };
+
+                let dir = project_line(
+                    (r2(offset_index) + pcg3df(Vec3::expr(tick, 29, 968)).xy()).fract(),
+                );
+                let dir = dir * dir.dot(normal).signum();
+
+                let start = offset_ray(world_pos, normal);
+                let hit = core.world.trace_segment(
+                    start,
+                    dir,
+                    Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
+                );
+
+                let radiance = if self.frame_primary.is_some() {
+                    core.get_radiance(None, start, dir, hit)
+                } else if path_depth == 0 {
+                    core.get_radiance(multibounce.then_some(rc), start, dir, hit)
+                } else {
+                    self.path_radiance(core, start, dir, hit, offset_index, path_depth)
+                };
+
+                if path_depth == 0 || self.frame_primary.is_some() { self.traced_hits.write(
+                    core.pixel_to_linear(pixel),
+                    if hit.miss() {
+                        Hit::invalid().expr()
+                    } else {
+                        Hit::from_comps_expr(HitComps {
+                            position: core.hit_position(start, dir, hit),
+                            normal: core.world.get_normal_flat(hit, dir),
+                        })
+                    },
+                ); }
+
+                if let Some(rays) = &self.frame_primary {
+                    assert_eq!(samples, 1);
+                    rays.write(core.pixel_to_linear(pixel), FrameRay::from_comps_expr(FrameRayComps {
+                        hit, direction: dir, direct: radiance,
+                    }));
+                } else {
+                    rc.cache.iter_lods(world_pos, |lod, _, _| {
+                        self.compute_deposit_ray_weighted(rc, world_pos, lod, dir, radiance, hit, c0_len, sample_weight);
+                    });
+                }
+                }
+            }))
+        })
+        .dispatch_async(if let Some(work) = &self.adaptive_work { [work.len() as u32,1,1] } else { core.screen_dispatch_size() }, &tick, &c0_len)
+        .debug("Compute Rays")
+    }
+
+    #[tracked]
+    fn path_radiance(&self, core: &CoreData, start: Expr<Vec3<f32>>, direction: Expr<Vec3<f32>>,
+        first_hit: Expr<crate::algorithm::Hit>, seed: Expr<u32>, depth: u32) -> Expr<Vec3<f32>> {
+        let origin = start.var();
+        let direction = direction.var();
+        let hit = first_hit.var();
+        let throughput = Vec3::splat(1.0f32).var();
+        let radiance = Vec3::splat(0.0f32).var();
+        for bounce in 0u32..depth {
+            if hit.miss() {
+                *radiance += throughput * core.get_environment(**direction);
+                break;
+            }
+            let position = core.hit_position(**origin, **direction, **hit);
+            *radiance += throughput * core.get_emission(None, position, **hit, **direction);
+            if bounce + 1u32 == depth { break; }
+            let normal = core.world.get_normal_flat(**hit, **direction);
+            // Cosine-distributed deterministic hemisphere sample: diffuse/pdf
+            // cancels, so throughput remains bounded by the material albedo.
+            // Independent dimensions for later bounces. Reusing a translated
+            // copy of the primary R2 pair correlates successive path vertices
+            // and biases transport. This seed never depends on frame number.
+            let u = pcg3df(Vec3::expr(seed, bounce, 941)).xy();
+            let helper: Expr<Vec3<f32>> = (normal.z.abs() < 0.999).select(Vec3::new(0.0f32, 0., 1.).expr(), Vec3::new(0.0f32, 1., 0.).expr());
+            let tangent = helper.cross(normal).normalize();
+            let bitangent = normal.cross(tangent);
+            let angle = u.y * (2.0 * std::f32::consts::PI);
+            let radius = u.x.sqrt();
+            *direction = tangent * (radius * angle.cos()) + bitangent * (radius * angle.sin()) + normal * (1.0 - u.x).sqrt();
+            *throughput *= core.world.get_diffuse(**hit);
+            *origin = offset_ray(position, normal);
+            *hit = core.world.trace(**origin, **direction);
+        }
+        **radiance
+    }
     pub fn compute_secondary_rays(
         &self,
         core: &CoreData,
@@ -230,7 +514,10 @@ impl TraceData {
         c0_len: f32,
         multibounce: bool,
     ) -> NodeConfigs<'static> {
-        memo((multibounce, self.fused_deposit), || {
+        self.compute_secondary_mode(core, rc, tick, c0_len, multibounce, 0)
+    }
+    pub fn compute_secondary_mode(&self, core: &CoreData, rc: &RcData, tick: u32, c0_len: f32, multibounce: bool, path_depth: u32) -> NodeConfigs<'static> {
+        memo((multibounce, self.fused_deposit, path_depth), || {
             DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 let hit = self.traced_hits.read(dispatch_id().x);
                 if !hit.valid() {
@@ -257,7 +544,8 @@ impl TraceData {
                     Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
                 );
 
-                let radiance = core.get_radiance(multibounce.then_some(rc), start, dir, hit);
+                let radiance = if path_depth == 0 { core.get_radiance(multibounce.then_some(rc), start, dir, hit) }
+                    else { self.path_radiance(core, start, dir, hit, dispatch_id().x, path_depth) };
 
                 self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);
             }))
@@ -277,6 +565,12 @@ impl TraceData {
         hit: Expr<crate::algorithm::Hit>,
         c0_len: Expr<f32>,
     ) {
+        self.compute_deposit_ray_weighted(rc, world_pos, lod, dir, radiance, hit, c0_len, 1.0f32.expr());
+    }
+    #[tracked]
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_deposit_ray_weighted(&self, rc: &RcData, world_pos: Expr<Vec3<f32>>, lod: Expr<u32>,
+        dir: Expr<Vec3<f32>>, radiance: Expr<Vec3<f32>>, hit: Expr<crate::algorithm::Hit>, c0_len: Expr<f32>, weight: Expr<f32>) {
         let probe = rc.cache.quantize(world_pos, lod, 0.expr());
 
         // Reserve one contiguous range per active warp instead of contending
@@ -313,7 +607,7 @@ impl TraceData {
             dir: SphericalEncoder::encode(dir),
         });
         if self.fused_deposit {
-            rc.deposit_ray_linked(ray);
+            rc.deposit_ray_linked_weighted(ray, weight);
         } else {
             self.traced_rays.write(ray_index, ray);
         }

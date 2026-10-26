@@ -6,7 +6,7 @@ use keter::graph::NodeConfigs;
 use keter::lang::types::vector::{Vec3 as GpuVec3, Vec4 as GpuVec4};
 
 use crate::algorithm::{CommandList, PointLight, WorldData};
-use crate::dynamic::{Bounds, RigidBatch, SkinBinding, SkinWeights};
+use crate::dynamic::{Bounds, RigidBatch, SkinBatch, SkinBinding, SkinWeights};
 use crate::world::TriangleWorld;
 
 pub const COUNT: usize = 30;
@@ -422,6 +422,7 @@ pub struct GalleryAnimation {
     rigid: RigidBatch,
     centers: Vec<Vec3>,
     skins: Vec<(SkinBinding, Vec3)>,
+    skin_batch: Option<SkinBatch>,
     previous: Vec<Bounds>,
     rigid_time: f32,
     skin_time: f32,
@@ -434,6 +435,10 @@ pub struct GalleryUpdate {
 }
 
 pub fn create() -> (WorldData, GalleryAnimation) {
+    create_with_batching(true)
+}
+
+pub fn create_with_batching(batched: bool) -> (WorldData, GalleryAnimation) {
     let Layout {
         mesh: b,
         rigids,
@@ -461,6 +466,11 @@ pub fn create() -> (WorldData, GalleryAnimation) {
     );
     world.set_material_emission(&b.emission);
     let rigid = RigidBatch::new(&mut world, &rigids).unwrap();
+    if batched {
+        let meshes: Vec<_> = skins.iter().map(|s| s.mesh).collect();
+        let groups: Vec<_> = meshes.chunks(3).map(|s| s.to_vec()).collect();
+        world.group_deforming_meshes(&groups).unwrap();
+    }
     let skins: Vec<_> = skins
         .into_iter()
         .map(|s| {
@@ -473,6 +483,7 @@ pub fn create() -> (WorldData, GalleryAnimation) {
             )
         })
         .collect();
+    let skin_batch = batched.then(|| SkinBatch::new(&world, &skins.iter().map(|s| &s.0).collect::<Vec<_>>()));
     let previous = rigid
         .bind_bounds()
         .iter()
@@ -492,6 +503,7 @@ pub fn create() -> (WorldData, GalleryAnimation) {
             rigid,
             centers,
             skins,
+            skin_batch,
             previous,
             rigid_time: 0.,
             skin_time: 0.,
@@ -552,6 +564,7 @@ impl GalleryAnimation {
         if skin {
             self.skin_time += dt;
             let t = self.skin_time;
+            let mut all_joints = Vec::with_capacity(COUNT * JOINTS);
             for (i, (binding, root)) in self.skins.iter().enumerate() {
                 let phase = i as f32 * 1.73;
                 let shift = Vec3::new(
@@ -572,13 +585,20 @@ impl GalleryAnimation {
                             );
                     palette.push(joint);
                 }
-                let (update, b) = binding.update(&palette).unwrap();
-                vertices += update;
+                let b = if self.skin_batch.is_some() {
+                    all_joints.extend_from_slice(&palette);
+                    binding.transformed_bounds(&palette)
+                } else {
+                    let (update, b) = binding.update(&palette).unwrap();
+                    vertices += update;
+                    b
+                };
                 let k = COUNT * 2 + i;
                 swept.push(self.previous[k].union(b));
                 self.previous[k] = b;
                 changed.push(binding.mesh);
             }
+            if let Some(batch) = &self.skin_batch { vertices += batch.update(&all_joints).unwrap(); }
         }
         GalleryUpdate {
             vertices,

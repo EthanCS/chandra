@@ -78,7 +78,11 @@ impl DynamicHistory {
                         let enter = keter::max(keter::max(near.x, near.y), keter::max(near.z, 0.0));
                         let leave = keter::min(keter::min(far.x, far.y), keter::min(far.z, end));
                         *discard |= enter <= leave;
+                        // OR reduction: once any ray footprint hits a moving
+                        // region the whole four-bin group is discarded.
+                        if discard { break; }
                     }
+                    if discard { break; }
                 }
                 let factor = discard.select(0.0.expr(), retention);
                 for k in 0..4u32 {

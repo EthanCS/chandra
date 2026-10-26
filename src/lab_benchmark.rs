@@ -194,6 +194,8 @@ fn difference(a: &[[u8; 4]], b: &[[u8; 4]], size: [u32; 2]) -> f64 {
 pub struct StressTest {
     last_frame: Instant,
     timings: Vec<f64>,
+    render_timings: Vec<f64>,
+    intervals_csv: String,
     directory: String,
 }
 
@@ -202,6 +204,8 @@ impl StressTest {
         Self {
             last_frame: Instant::now(),
             timings: Vec::new(),
+            render_timings: Vec::new(),
+            intervals_csv: "frame,interval_ms,includes_png_capture\n".into(),
             directory: output
                 .unwrap_or_else(|| format!(".local/{scene}-stress-test-{}x{}", size[0], size[1])),
         }
@@ -211,6 +215,9 @@ impl StressTest {
         self.last_frame = Instant::now();
         if frame > 120 {
             self.timings.push(elapsed);
+            let capture = matches!(frame, 1201 | 2401);
+            if !capture { self.render_timings.push(elapsed); }
+            self.intervals_csv.push_str(&format!("{frame},{elapsed:.6},{capture}\n"));
         }
     }
     pub fn end_frame(&mut self, frame: u32, rt: &Runtime, size: [u32; 2], nonfinite: u32) -> bool {
@@ -234,14 +241,17 @@ impl StressTest {
             return false;
         }
         let (mean, p95, worst) = statistics(&self.timings);
-        let report = format!(
+        let mut report = format!(
             "Combined motion stress test PASS\n3600 frames / 60 seconds simulated time / {}x{}\nNo nonfinite rendered pixels or ray-buffer overflow.\nUncapped end-to-end frame timing (first 120 frames excluded):\nMean {mean:.3} ms, p95 {p95:.3} ms, max {worst:.3} ms, {:.1} FPS\n",
             size[0],
             size[1],
             1000. / mean
         );
+        let (mean, p95, worst) = statistics(&self.render_timings);
+        report.push_str(&format!("Excluding only the two known PNG readback/encoding intervals (all other outliers retained):\nMean {mean:.3} ms, p95 {p95:.3} ms, max {worst:.3} ms, {:.1} FPS\n", 1000. / mean));
         println!("{report}");
         std::fs::write(format!("{}/results.txt", self.directory), report).unwrap();
+        std::fs::write(format!("{}/intervals.csv", self.directory), &self.intervals_csv).unwrap();
         true
     }
 }

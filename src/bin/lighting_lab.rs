@@ -100,7 +100,26 @@ impl Controls {
 
 fn main() {
     let args: Vec<_> = std::env::args().collect();
+    let single_frame = args.iter().any(|a| a == "--single-frame");
+    let integer_option = |name: &str, default: u32| args.iter().position(|a| a == name)
+        .map(|i| args.get(i + 1).expect("Missing option value").parse::<u32>().expect("Invalid integer option"))
+        .unwrap_or(default);
+    let path_depth = integer_option("--path-depth", 8);
+    let samples = integer_option("--samples", 1);
+    let min_probe_rays = integer_option("--min-probe-rays", 0);
+    let quality_check = args.iter().any(|a| a == "--quality-check");
+    let quality_frames = integer_option("--quality-frames", 200);
+    let camera_preset = integer_option("--view", 0) as usize;
+    let quality_motion = args.iter().any(|a| a == "--quality-motion");
+    let frame_cache = args.iter().any(|a| a == "--frame-cache");
+    assert!(min_probe_rays <= 256 && (min_probe_rays == 0 || (single_frame && !frame_cache)));
+    assert!(min_probe_rays == 0 || !args.iter().any(|a| a == "--unfused"), "Weighted adaptive rays require fused deposit");
+    assert!(!frame_cache || (single_frame && samples == 1 && path_depth >= 2 && !args.iter().any(|a| a == "--unfused")), "--frame-cache needs --single-frame, depth >= 2, samples=1 and fused deposit");
+    assert!(camera_preset < 3 && quality_frames <= 36000);
+    assert!((1..=16).contains(&path_depth) && (1..=64).contains(&samples));
+    assert!(single_frame || samples == 1, "--samples requires --single-frame");
     if args.iter().any(|a| a == "--help") {
+        println!("Experimental transport:\n  --single-frame  Clear GI transport each frame; no prior-frame hits or radiance\n  --path-depth N  Frame-local path depth (default 8, experimental)\n  --samples N     Samples per pixel within the same frame (default 1)\n  --min-probe-rays N  Fill undersampled probes within this frame (default 0)\n  --frame-cache   Experimental current-frame secondary spatial cache\n  --unbatched-skin  Reference separate skeleton dispatches and BLASes\n  --no-light-grid Reference full local-light loop\n  --view N        Camera preset 0..2\n  --indirect-only Show indirect light\n  --quality-check Export current-frame linear RGBA32F; alpha is surface mask\n  --quality-frames N End quality check at frame N (default 200)\n  --quality-motion Keep animations on during the quality check");
         println!(
             "Chandra lighting lab\n  --sponza       Load assets/sponza.obj\n  --intel-sponza Load an external Intel Sponza asset (--scene-path required)\n  --scene-path   Override the Intel Sponza glTF path\n  --smoke-test   Verify two light directions and save PNGs, then exit\n  --benchmark    Deterministic scenarios and convergence checks\n  --stress-test  3600 frames with rigid, skin, sun and camera motion\n  --profile      Collect CUDA event timings after 200 warmup frames\n  --output DIR   Benchmark, stress or profiler output directory\n  --unfused      Use the separate ray-deposit queue for comparison\n  --static       Start with all animations paused\n  --1080p        Render at 1920 x 1080\n  --small        Render at 960 x 600 (default: 1280 x 800)\n\nRendering is uncapped. Mouse sliders change sunlight live. WASD moves; arrows/right drag look; Space/Shift move vertically. R resets the camera."
         );
@@ -253,6 +272,7 @@ fn main() {
         rigid_refit,
         emissive_cubes,
         gallery,
+        args.iter().any(|a| a == "--unbatched-skin"),
     );
     println!(
         "Rigid update path: {}",
@@ -265,33 +285,51 @@ fn main() {
     let mut animation = lab_scene.animation;
     let mut core = CoreData::new(size, lab_scene.world);
     if gallery {
-        core.set_point_lights(&chandra::gallery::lights(0., 1.));
+        core.set_point_lights_grid(&chandra::gallery::lights(0., 1.), !args.iter().any(|a| a == "--no-light-grid"));
     }
     let mut rc = RcData::new(RcConfig {
         base_grid_size: if sponza || intel || gallery { 10. } else { 6. },
         // The gallery exposes more coarse-cascade cells than the narrow Intel
         // courtyard view. Reserve headroom without reducing spatial resolution.
         base_probes: if gallery { 1 << 17 } else { 1 << 16 },
-        quality_decay: 0.90,
+        quality_decay: if single_frame { 1.0 } else { 0.90 },
         ..Default::default()
     });
-    let trace = if args.iter().any(|a| a == "--unfused") {
-        TraceData::new(&core, &rc, (size[0] * size[1] * 3) as usize)
+    let ray_capacity = ((size[0] as u64 * size[1] as u64 + rc.cache.base_probes as u64 * min_probe_rays as u64) * 3 * samples as u64) as usize;
+    let mut trace = if args.iter().any(|a| a == "--unfused") {
+        TraceData::new(&core, &rc, ray_capacity)
     } else {
-        TraceData::new_fused(&core, &rc, (size[0] * size[1] * 3) as usize)
+        TraceData::new_fused(&core, &rc, ray_capacity)
     };
+    if single_frame { trace.enable_stable_samples(&core, &rc); }
+    if min_probe_rays > 0 { trace.enable_probe_budget(&core, &rc, min_probe_rays); }
+    if frame_cache { trace.enable_frame_cache(&core); }
     let splat = SplatData::new(&core, &rc, 1.0);
     let history_regions = animation.as_ref().map_or(16, |a| a.moving_meshes().max(16));
     let history = DynamicHistory::with_region_capacity(&rc, &trace, history_regions);
+    let poison_transport = (quality_check && single_frame).then(|| DEVICE.create_kernel::<fn()>(&track!(|| {
+        let i = dispatch_id().x;
+        // A conspicuous finite poison also works with backends that reject
+        // NaN literals during shader code generation.
+        rc.cache.weights.write(i, 65536.0f32);
+        rc.cache.weighted_fluence.write(i, Vec4::splat(1e12f32));
+        rc.base_radiance.write(i, Vec3::splat(1e12f32));
+        if i < rc.radiance.len() as u32 { rc.radiance.write(i, Vec3::splat(1e12f32)); }
+        if i < rc.probe_quality.len() as u32 { rc.probe_quality.write(i, 65536.0f32); }
+        if i < trace.traced_hits.len() as u32 { trace.traced_hits.write(i, chandra::algorithm::trace::Hit::invalid()); }
+    })));
     println!("Dynamic history capacity: {history_regions} independent swept regions");
     let invalid_pixels = Singleton::new(0u32);
+    let linear_output = quality_check.then(|| DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize));
     let draw = DEVICE.create_kernel::<fn(View, u32, f32)>(&track!(|view, mode, exposure| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
         let direction = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
         let depth = core.read_depth(pixel);
         if depth == 0.0 {
-            app.set_pixel(pixel.cast_i32(), core.get_environment(direction) * exposure);
+            let color = core.get_environment(direction) * exposure;
+            if let Some(output) = &linear_output { output.write(core.pixel_to_linear(pixel), color.extend(0.0)); }
+            app.set_pixel(pixel.cast_i32(), color);
             return;
         }
         let index = core.pixel_to_linear(pixel);
@@ -317,6 +355,7 @@ fn main() {
         if !color.is_finite().all() {
             invalid_pixels.atomic().fetch_add(1u32);
         }
+        if let Some(output) = &linear_output { output.write(index, (color * exposure).extend(1.0)); }
         app.set_pixel(pixel.cast_i32(), color * exposure);
     }));
 
@@ -334,10 +373,11 @@ fn main() {
         overlay.write(p, rgb.extend(rgba.w));
     }));
     let mut controls = Controls::for_scene(intel, gallery);
+    if args.iter().any(|a| a == "--indirect-only") { controls.mode = 2; }
     if emissive_cubes {
         controls.emissive_preset(emissive_night, emission_strength);
     }
-    if smoke || args.iter().any(|a| a == "--static") {
+    if smoke || (quality_check && !quality_motion) || args.iter().any(|a| a == "--static") {
         controls.animate = false;
         controls.rigid_motion = false;
         controls.skin_motion = false;
@@ -350,7 +390,7 @@ fn main() {
     }
     let mut camera_time = 0.0f32;
     let mut light_time = 0.0f32;
-    let mut camera = scene::camera(0, size, sponza, intel, gallery);
+    let mut camera = scene::camera(camera_preset, size, sponza, intel, gallery);
     let mut last_pointer = egui::Pos2::ZERO;
     let mut last_left_down = false;
     let start = Instant::now();
@@ -374,7 +414,7 @@ fn main() {
             output_dir.clone(),
         )
     });
-    if stressing || profiling {
+    if (stressing || profiling) && !quality_check && !args.iter().any(|a| a == "--static") {
         controls.rigid_motion = true;
         controls.skin_motion = !intel;
         controls.animate = true;
@@ -410,6 +450,8 @@ fn main() {
         }
     );
     println!("Lighting setup: {lighting_metadata}");
+    let transport_metadata = format!("single_frame={single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
+    println!("Transport: {transport_metadata}");
     let scene_counts = if gallery {
         "30 point lights; 30 rigid; 30 emissive; 30 skinned".to_string()
     } else if intel {
@@ -422,7 +464,7 @@ fn main() {
     {
         std::fs::create_dir_all(directory).unwrap();
         std::fs::write(format!("{directory}/configuration.txt"), format!(
-            "{}x{}; {scene_counts}; rigid-only={rigid_only}; rigid-refit={rigid_refit}; {history_regions} history regions; multiple bounces={}; uncapped; simulation dt=1/60s; {lighting_metadata}\n",
+            "{}x{}; {scene_counts}; rigid-only={rigid_only}; rigid-refit={rigid_refit}; {history_regions} history regions; multiple bounces={}; uncapped; simulation dt=1/60s; {lighting_metadata}; {transport_metadata}\n",
             size[0], size[1], controls.bounces)).unwrap();
     }
     println!(
@@ -439,7 +481,7 @@ fn main() {
     );
 
     app.run(|rt| {
-        let dt = if benchmarking || stressing || profiling { 1.0 / 60.0 } else { rt.frame_time().clamp(0.001, 0.05) };
+        let dt = if benchmarking || stressing || profiling || quality_check { 1.0 / 60.0 } else { rt.frame_time().clamp(0.001, 0.05) };
         if let Some(stress) = &mut stress { stress.begin_frame(rt.tick); }
         if let Some(benchmark) = &mut benchmark {
             let [rigid, skin, sun, orbit] = benchmark.begin_frame(rt.tick);
@@ -553,9 +595,11 @@ fn main() {
                 ui.radio_value(&mut controls.mode, 1, "Direct light only");
                 ui.radio_value(&mut controls.mode, 2, "Indirect light only");
                 ui.radio_value(&mut controls.mode, 3, "Surface normals");
-                ui.checkbox(&mut controls.bounces, "Multiple indirect bounces");
+                if single_frame {
+                    ui.label(format!("Experimental single frame: {path_depth} path vertices, {samples} spp"));
+                } else { ui.checkbox(&mut controls.bounces, "Multiple indirect bounces"); }
                 ui.add(egui::Slider::new(&mut controls.exposure, -3.0..=3.).text("Exposure").suffix(" EV"));
-                if ui.button("Clear GI history").clicked() { needs_reset = true; }
+                if ui.button(if single_frame { "Rebuild GI allocation" } else { "Clear GI history" }).clicked() { needs_reset = true; }
                 ui.separator();
                 ui.strong("CAMERA / TEST VIEWS");
                 ui.horizontal(|ui| {
@@ -567,7 +611,8 @@ fn main() {
                 ui.label("Space / Shift: up / down  |  Ctrl: slow");
                 ui.label("R: reset camera  |  Esc: close");
                 ui.add_space(8.);
-                ui.small("Drag the sun sliders to move shadows. Switch to Indirect light to inspect color bleeding on white surfaces. GI settles over several frames after a change.");
+                ui.small(if single_frame { "Frame-local GI. Fixed sampling removes temporal random jitter; spatial sampling error remains experimental." }
+                    else { "Drag the sun sliders to move shadows. Switch to Indirect light to inspect color bleeding on white surfaces. GI settles over several frames after a change." });
                 ui.add_space(8.);
                 ui.small(format!("{} probes  /  {} cascades", rc.num_probes.iter().sum::<u32>(), rc.num_cascades));
               });
@@ -626,8 +671,10 @@ fn main() {
             || controls.emission != previous.emission || controls.point_intensity != previous.point_intensity
             || (gallery && controls.animate);
         let retention = if !swept.is_empty() || light_changed { 0.5f32.powf(dt / 0.045) } else { 1.0 };
-        commands += history.update(&rc, &swept, retention);
-        profiler.checkpoint("Dynamic history", &mut commands);
+        if !single_frame {
+            commands += history.update(&rc, &swept, retention);
+            profiler.checkpoint("Dynamic history", &mut commands);
+        }
         commands += core.lighting.write_host(controls.lighting());
         commands += core.view.write_host(camera.view());
         commands += core.compute_gbuffer();
@@ -635,10 +682,10 @@ fn main() {
         commands += rc.cache.set_view(camera.view());
         commands += rc.init_probes_base(&core);
         // Secondary ray buffers have no valid data before the first trace.
-        if controls.bounces && rt.tick > 0 { commands += rc.init_probes_secondary(&trace); }
+        if !single_frame && controls.bounces && rt.tick > 0 { commands += rc.init_probes_secondary(&trace); }
         for c in 1..rc.num_cascades { commands += rc.init_probes(c); }
         commands += rc.set_lifetime_base(&core);
-        if controls.bounces && rt.tick > 0 { commands += rc.set_lifetime_secondary(&trace); }
+        if !single_frame && controls.bounces && rt.tick > 0 { commands += rc.set_lifetime_secondary(&trace); }
         for c in 1..rc.num_cascades { commands += rc.set_lifetime(c); }
         profiler.checkpoint("Probe init and lifetime", &mut commands);
         if debug_sync {
@@ -648,18 +695,50 @@ fn main() {
         let timer = profiler.begin("Cache freelists and readback");
         rc.reset_table(&mut commands, false);
         profiler.end(timer);
+        if single_frame {
+            if [1,16,64].contains(&rt.tick) && let Some(poison) = &poison_transport {
+                commands.push(poison.dispatch_async([rc.cache.weights.len() as u32,1,1]));
+            }
+            commands += rc.clear_transport();
+            profiler.checkpoint("Clear frame transport", &mut commands);
+        }
         // Split ray tracing starts at G-buffer surface points. Average probe
         // positions are used only by the alternate trace_deposit renderer.
         commands += trace.reset();
         commands += trace.compute_ray_count_base(&core, &rc);
         for c in 1..rc.num_cascades { commands += trace.compute_ray_count(&rc, c); }
         for c in (0..rc.num_cascades).rev() { commands += trace.compute_ray_offset(&rc, c); }
+        if single_frame { commands += trace.prepare_stable_samples(&core, &rc); }
+        if min_probe_rays > 0 {
+            commands += trace.apply_probe_budget(&rc);
+            for c in 1..rc.num_cascades { commands += trace.compute_ray_count(&rc, c); }
+            for c in (0..rc.num_cascades).rev() { commands += trace.compute_ray_offset(&rc, c); }
+            commands += trace.prepare_probe_work(&core, &rc);
+        }
         profiler.checkpoint("Ray scheduling", &mut commands);
         let c0_len = ((2 * rc.base_angular_resolution.pow(2)) as f32 / (4. * std::f32::consts::PI)).sqrt();
-        if controls.bounces && rt.tick > 0 { commands += trace.compute_secondary_rays(&core, &rc, rt.tick, c0_len, true); }
+        if !single_frame && controls.bounces && rt.tick > 0 { commands += trace.compute_secondary_rays(&core, &rc, rt.tick, c0_len, true); }
         profiler.checkpoint("GI secondary rays", &mut commands);
-        commands += trace.compute_rays(&core, &rc, rt.tick, c0_len, controls.bounces);
+        if frame_cache { commands += trace.clear_frame_hits(); }
+        commands += if single_frame { trace.compute_rays_mode(&core, &rc, 0, c0_len, false, path_depth, samples) }
+            else { trace.compute_rays(&core, &rc, rt.tick, c0_len, controls.bounces) };
         profiler.checkpoint("GI primary rays", &mut commands);
+        if frame_cache {
+            let timer = profiler.begin("Frame secondary probe init");
+            commands += rc.init_probes_secondary(&trace);
+            for c in 1..rc.num_cascades { commands += rc.init_probes(c); }
+            commands += rc.set_lifetime_base(&core);
+            commands += rc.set_lifetime_secondary(&trace);
+            for c in 1..rc.num_cascades { commands += rc.set_lifetime(c); }
+            rc.reset_table(&mut commands, false);
+            profiler.end(timer);
+            commands += trace.compute_secondary_mode(&core, &rc, 0, c0_len, false, path_depth - 1);
+            profiler.checkpoint("Frame secondary paths", &mut commands);
+            for c in (0..rc.num_cascades).rev() { commands += rc.merge_cache(c); }
+            profiler.checkpoint("Frame secondary merge", &mut commands);
+            commands += trace.resolve_frame_primary(&core, &rc, c0_len);
+            profiler.checkpoint("Frame primary resolve", &mut commands);
+        }
         if !trace.fused_deposit {
             commands.execute();
             let rays = trace.next_traced_ray.read_blocking();
@@ -680,6 +759,20 @@ fn main() {
         commands.push(draw.dispatch_async([size[0], size[1], 1], &camera.view(), &controls.mode, &2_f32.powf(controls.exposure)));
         profiler.checkpoint("Direct and compose", &mut commands);
         commands.execute();
+
+        if quality_check && ([0, 1, 2, 16, 64, 200].contains(&rt.tick) || rt.tick == quality_frames) {
+            let directory = output_dir.as_deref().unwrap_or(".local/quality-check");
+            std::fs::create_dir_all(directory).unwrap();
+            let pixels = linear_output.as_ref().unwrap().copy_to_vec();
+            if rt.tick == 0 {
+                std::fs::write(format!("{directory}/probe-pixel-counts.u32"), bytemuck::cast_slice(&trace.ray_count.view(..rc.cache.base_probes as usize).copy_to_vec())).unwrap();
+            }
+            let pixels: Vec<[f32;4]> = pixels.into_iter().map(|p| [p.x,p.y,p.z,p.w]).collect();
+            std::fs::write(format!("{directory}/frame-{:03}.rgba32f", rt.tick), bytemuck::cast_slice(&pixels)).unwrap();
+            let motion_description = if quality_motion { "animated scene, lights and camera" } else { "static scene, lights and camera" };
+            std::fs::write(format!("{directory}/quality.txt"), format!("{size:?}; {transport_metadata}; {lighting_metadata}; linear RGBA32F little endian, current-frame output after exposure before presentation; {motion_description}; frame 0 is cold; single-frame mode poisons prior transport at frames 1/16/64; display_mode={}\n", controls.mode)).unwrap();
+            if rt.tick == quality_frames { rt.exit(); }
+        }
 
         ui_pixels.fill([0; 4]);
         let primitives = ui_context.tessellate(output.shapes, output.pixels_per_point);

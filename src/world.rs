@@ -33,6 +33,15 @@ pub struct TriangleWorld {
     pub material_diffuse: Buffer<Vec3<f32>>,
     material_emission: Option<Buffer<Vec3<f32>>>,
     diffuse_textures: Option<DiffuseTextures>,
+    deformation_groups: Vec<DeformationGroup>,
+    grouped_meshes: Vec<Option<usize>>,
+    group_hit_offsets: Option<Buffer<u32>>,
+    group_hit_meshes: Option<Buffer<[u32; 2]>>,
+}
+
+struct DeformationGroup {
+    mesh: Mesh,
+    _indices: Buffer<[u32; 3]>,
 }
 
 struct DiffuseTextures {
@@ -136,6 +145,7 @@ impl TriangleWorld {
         accel.build(AccelBuildRequest::ForceBuild);
 
         let offsets = DEVICE.create_buffer_from_slice(offsets);
+        let mesh_count = offsets.len();
 
         Self {
             accel,
@@ -152,7 +162,57 @@ impl TriangleWorld {
             material_diffuse,
             material_emission: None,
             diffuse_textures: None,
+            deformation_groups: Vec::new(),
+            grouped_meshes: vec![None; mesh_count],
+            group_hit_offsets: None,
+            group_hit_meshes: None,
         }
+    }
+
+    /// Combine nearby deforming meshes into BLASes without changing any triangle,
+    /// skin palette, material, or shading identity. Closest hits are remapped to
+    /// their original mesh/primitive before reaching any material code.
+    pub fn group_deforming_meshes(&mut self, groups: &[Vec<usize>]) -> Result<(), String> {
+        if !self.deformation_groups.is_empty() { return Err("Deformation groups already configured".into()); }
+        let mut seen = std::collections::HashSet::new();
+        for group in groups {
+            if group.is_empty() { return Err("Empty deformation group".into()); }
+            for &i in group {
+                if i >= self.meshes.len() || self.bind_positions[i].is_empty()
+                    || self.is_rigid_instance(i) || !seen.insert(i) {
+                    return Err("Groups require distinct deforming meshes".into());
+                }
+            }
+        }
+        let source_indices = self.indices.copy_to_vec();
+        let mut offsets = Vec::new();
+        let mut identities = Vec::new();
+        for (group_index, group) in groups.iter().enumerate() {
+            offsets.push(identities.len() as u32);
+            let mut triangles = Vec::new();
+            for &i in group {
+                let first_vertex = self.mesh_vertex_ranges[i].start as u32;
+                for (primitive, triangle) in source_indices[self.mesh_index_ranges[i].clone()].iter().enumerate() {
+                    triangles.push(triangle.map(|v| v + first_vertex));
+                    identities.push([i as u32, primitive as u32]);
+                }
+                self.grouped_meshes[i] = Some(group_index);
+                self.accel.set_mesh(i, &self.meshes[i], Mat4::identity(), 0, true);
+            }
+            let indices = DEVICE.create_buffer_from_slice(&triangles);
+            let mesh = DEVICE.create_mesh(self.positions.view(..), indices.view(..), AccelOption {
+                hint: AccelUsageHint::FastTrace, allow_compaction: false, allow_update: true,
+            });
+            mesh.build(AccelBuildRequest::ForceBuild);
+            self.accel.push_mesh(&mesh, Mat4::identity(), 0xFF, true);
+            self.deformation_groups.push(DeformationGroup { mesh, _indices: indices });
+        }
+        if !groups.is_empty() {
+            self.group_hit_offsets = Some(DEVICE.create_buffer_from_slice(&offsets));
+            self.group_hit_meshes = Some(DEVICE.create_buffer_from_slice(&identities));
+            self.accel.build(AccelBuildRequest::ForceBuild);
+        }
+        Ok(())
     }
 
     pub(crate) fn is_rigid_instance(&self, mesh: usize) -> bool {
@@ -251,14 +311,20 @@ impl TriangleWorld {
             AccelBuildRequest::PreferUpdate
         };
         let mut commands = Vec::new();
+        let mut groups = vec![false; self.deformation_groups.len()];
         for &index in changed_meshes {
             assert!(
                 index < self.meshes.len() && !self.bind_positions[index].is_empty(),
                 "Mesh was not created as dynamic"
             );
-            if !self.is_rigid_instance(index) {
+            if let Some(group) = self.grouped_meshes[index] {
+                groups[group] = true;
+            } else if !self.is_rigid_instance(index) {
                 commands.push(self.meshes[index].build_async(request).into_node_configs());
             }
+        }
+        for (group, changed) in self.deformation_groups.iter().zip(groups) {
+            if changed { commands.push(group.mesh.build_async(request).into_node_configs()); }
         }
         // Keter's chain connects adjacent children only. An empty Multiple
         // would sever the dependency between vertex updates and later tracing.
@@ -339,7 +405,7 @@ impl TriangleWorld {
         ray_dir: Expr<Vec3<f32>>,
         interval: Expr<Vec2<f32>>,
     ) -> Expr<SurfaceHit> {
-        self.accel.intersect(
+        let hit = self.accel.intersect(
             Ray::new_expr(
                 Expr::<[f32; 3]>::from(ray_start),
                 interval.x,
@@ -350,7 +416,15 @@ impl TriangleWorld {
                 mask: 0xFF.expr(),
                 ..Default::default()
             },
-        )
+        ).var();
+        if let (Some(offsets), Some(identities)) = (&self.group_hit_offsets, &self.group_hit_meshes) {
+            if !hit.miss() && hit.inst >= self.meshes.len() as u32 {
+                let id = identities.read(offsets.read(hit.inst - self.meshes.len() as u32) + hit.prim);
+                *hit.inst = id[0];
+                *hit.prim = id[1];
+            }
+        }
+        **hit
     }
 
     #[tracked]

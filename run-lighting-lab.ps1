@@ -12,6 +12,10 @@ param(
     [switch]$Small,
     [switch]$FullHD,
     [switch]$ProfileGpu,
+    [switch]$SingleFrame,
+    [ValidateRange(1, 16)][int]$PathDepth = 8,
+    [ValidateRange(1, 64)][int]$Samples = 1,
+    [ValidateRange(0, 256)][int]$MinProbeRays = 0,
     [ValidateRange(1, 100)][int]$Cubes = 1,
     [switch]$RigidOnly,
     [switch]$RigidRefit,
@@ -65,6 +69,7 @@ if ($Benchmark) { $arguments += '--benchmark' }
 if ($StressTest) { $arguments += '--stress-test' }
 if ($FullHD) { $arguments += '--1080p' }
 if ($ProfileGpu) { $arguments += '--profile' }
+if ($SingleFrame) { $arguments += @('--single-frame', '--path-depth', $PathDepth, '--samples', $Samples, '--min-probe-rays', $MinProbeRays) }
 if ($Cubes -ne 1) { $arguments += @('--cubes', $Cubes) }
 if ($RigidOnly) { $arguments += '--rigid-only' }
 if ($RigidRefit) { $arguments += '--rigid-refit' }

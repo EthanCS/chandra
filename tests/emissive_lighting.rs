@@ -4,6 +4,40 @@ use keter::lang::types::vector::{Vec3, Vec4};
 use keter::prelude::*;
 
 #[test]
+fn current_frame_light_grid_matches_full_loop_across_moves_and_range_changes() {
+    let make = || CoreData::new([1,1], WorldData {
+        world: TriangleWorld::new(&[[-2000.,-2000.,0.],[6000.,-2000.,0.],[-2000.,6000.,0.]],
+            &[[0,1,2]], &[[0,0]], &[0], &[Vec3::splat(0.7)]),
+        envmap: image::Rgb32FImage::new(1,1), envmap_scale: 0., sun_dir: Vec3::new(0.,0.,1.),
+        sun_color: Vec3::splat(0.), custom_emitters: vec![],
+    });
+    let lights = |step: f32| (0..32).map(|i| PointLight {
+        position_range: Vec4::new((i % 8) as f32 * 200. - 600. + step * 71., (i / 8) as f32 * 230. - 500., 130. + step * 11., 220. + (i % 5) as f32 * 90. + step * 5.),
+        intensity: Vec4::new(2000. * i as f32, 10000., 3000., 0.),
+    }).collect::<Vec<_>>();
+    let mut reference = make();
+    let mut accelerated = make();
+    reference.set_point_lights_grid(&lights(0.), false);
+    accelerated.set_point_lights(&lights(0.));
+    let errors = Singleton::new(0u32);
+    let compare = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let i = dispatch_id().x;
+        let origin = Vec3::expr((i % 128u32).cast_f32() * 20. - 1200., (i / 128u32).cast_f32() * 20. - 1200., 100.0f32);
+        let direction = Vec3::new(0.,0.,-1.).expr();
+        let hit = reference.world.trace(origin, direction);
+        if hit.miss() { return; }
+        let a = reference.get_radiance(None, origin, direction, hit);
+        let b = accelerated.get_radiance(None, origin, direction, hit);
+        if (a - b).abs().reduce_max() > 1e-6f32 { errors.atomic().fetch_add(1u32); }
+    }));
+    for step in [-4.,0.,1.,9.] {
+        (reference.update_point_lights(lights(step)), accelerated.update_point_lights(lights(step))).chain().execute();
+        compare.dispatch([128*128,1,1]);
+        assert_eq!(errors.read_blocking(), 0, "Light culling changed shading at step {step}");
+    }
+}
+
+#[test]
 fn moving_point_lights_use_finite_shadow_segments_and_range_cutoff() {
     let world = TriangleWorld::new(
         &[

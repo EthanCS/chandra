@@ -1,0 +1,30 @@
+Validation on 2026-10-26, RTX 5070 Ti / Windows
+Command: ./run-lighting-lab.ps1 -Test
+Result: 17 passed, 0 failed
+
+Library: 4 passed
+  rotated_swept_bounds_include_old_and_new_vertices
+  skin_weights_are_normalized_and_bad_data_rejected
+  all_ninety_gallery_meshes_move_and_stay_inside_history_bounds
+  gallery_has_exact_groups_valid_topology_and_animated_lights
+Geometry: 6 passed
+  batched_skeletons_and_grouped_blas_preserve_geometry_and_hit_identity
+  gpu_skinning_matches_cpu_and_refitted_rays_over_multiple_poses
+  hundred_rigid_instances_preserve_hits_normals_and_static_and_skinned_meshes
+  rigid_only_pipeline_keeps_order_across_empty_blas_stage
+  rigid_refit_updates_vertices_hits_and_normals_without_recompilation
+  textured_diffuse_samples_and_blends_the_expected_mip_levels
+History: 1 passed
+  motion_discards_affected_radiance_and_secondary_hits_while_lighting_decays_history
+Lighting: 3 passed
+  current_frame_light_grid_matches_full_loop_across_moves_and_range_changes
+  hundred_emissive_materials_feed_gi_rays_without_diffuse_or_external_light
+  moving_point_lights_use_finite_shadow_segments_and_range_cutoff
+GI: 3 passed
+  exhausted_probe_pool_reports_failure_without_cross_cascade_writes
+  fused_transport_matches_reference_and_divergent_ray_queue_has_no_lost_samples
+  opaque_any_hit_agrees_with_closest_hit_visibility_for_both_faces_and_misses
+
+The tests establish the listed invariants; they do not establish unchanged
+perceptual quality or absence of spatial sampling error for the single-frame
+experimental transport. See quality.csv and README.md for those limitations.

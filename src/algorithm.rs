@@ -64,6 +64,7 @@ pub struct CoreData {
     constant_environment: Option<Vec3<f32>>,
     pub custom_emitters: Vec<(u32, Vec3<f32>)>,
     point_lights: Option<Buffer<PointLight>>,
+    light_grid: Option<light_grid::LightGrid>,
 }
 impl CoreData {
     pub fn new(
@@ -120,16 +121,23 @@ impl CoreData {
             constant_environment,
             custom_emitters,
             point_lights: None,
+            light_grid: None,
         }
     }
     pub fn set_point_lights(&mut self, lights: &[PointLight]) {
+        self.set_point_lights_grid(lights, true);
+    }
+    pub fn set_point_lights_grid(&mut self, lights: &[PointLight], use_grid: bool) {
         assert!(!lights.is_empty());
         self.point_lights = Some(DEVICE.create_buffer_from_slice(lights));
+        self.light_grid = (use_grid && (8..=32).contains(&lights.len())).then(|| light_grid::LightGrid::new(lights));
     }
     pub fn update_point_lights(&self, lights: Vec<PointLight>) -> NodeConfigs<'static> {
         let buffer = self.point_lights.as_ref().expect("Point lights were not configured");
         assert_eq!(buffer.len(), lights.len());
-        buffer.copy_from_vec(lights)
+        if let Some(grid) = &self.light_grid {
+            (grid.update(&lights), buffer.copy_from_vec(lights)).chain()
+        } else { buffer.copy_from_vec(lights) }
     }
     pub fn screen_size(&self) -> Vec2<u32> {
         Vec2::new(self.normal.width(), self.normal.height())
@@ -185,7 +193,14 @@ impl CoreData {
         }
 
         if let Some(lights) = &self.point_lights {
-            for i in 0..lights.len() as u32 {
+            let candidates = self.light_grid.as_ref().map(|grid| grid.candidates(pos).var());
+            for step in 0..lights.len() as u32 {
+                let i = if let Some(mask) = &candidates {
+                    if ***mask == 0u32 { break; }
+                    let index = mask.trailing_zeros();
+                    **mask &= ***mask - 1u32;
+                    index
+                } else { step };
                 let light = lights.read(i);
                 let delta = light.position_range.xyz() - pos;
                 let d2 = delta.dot(delta);
@@ -341,6 +356,7 @@ impl CoreData {
 
 pub mod ddgi;
 pub mod dynamic_history;
+mod light_grid;
 pub mod rc;
 pub mod ris;
 pub mod splat;

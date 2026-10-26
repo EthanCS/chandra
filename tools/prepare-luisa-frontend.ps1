@@ -54,6 +54,11 @@ $rtx = $rtx.Replace($anchor, (Get-Content -LiteralPath $patch -Raw) + "`n" + $an
 $oldFlags = "        let mut flags = api::AccelBuildModificationFlags::PRIMITIVE;`n        dbg!(flags);"
 if (-not $rtx.Contains($oldFlags)) { throw 'Pinned transform-flag patch context changed.' }
 $rtx = $rtx.Replace($oldFlags, '        let mut flags = api::AccelBuildModificationFlags::PRIMITIVE | api::AccelBuildModificationFlags::TRANSFORM;')
+# Appending after an earlier build must use the instance count. The pending
+# modification map was drained by that build and is not an instance index.
+$oldIndex = '        let index = modifications.len() as u32;'
+if (-not $rtx.Contains($oldIndex)) { throw 'Pinned append-index patch context changed.' }
+$rtx = $rtx.Replace($oldIndex, '        let index = instance_handles.len() as u32;')
 [IO.File]::WriteAllText($rtxPath, $rtx)
 [IO.File]::WriteAllText($stampFile, $stamp)
 Write-Host 'Prepared project-local Luisa instance-transform support.'

@@ -1,0 +1,7 @@
+Combined motion stress test PASS
+3600 frames / 60 seconds simulated time / 1920x1080
+No nonfinite rendered pixels or ray-buffer overflow.
+Uncapped end-to-end frame timing (first 120 frames excluded):
+Mean 6.959 ms, p95 7.661 ms, max 26.413 ms, 143.7 FPS
+Excluding only the two known PNG readback/encoding intervals (all other outliers retained):
+Mean 6.949 ms, p95 7.660 ms, max 9.102 ms, 143.9 FPS

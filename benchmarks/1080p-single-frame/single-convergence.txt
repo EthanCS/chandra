@@ -1,0 +1,5 @@
+Same-pose RGB MAE versus the image after 600 stationary frames (0..255), excluding control panel:
+At motion stop: 0.0000
+After 20 stationary frames: 0.0000
+After 120 stationary frames: 0.0000
+All cases: no nonfinite rendered pixels.

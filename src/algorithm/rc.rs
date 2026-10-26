@@ -155,6 +155,26 @@ impl RcData {
     pub fn last_cascade(&self) -> u32 {
         self.cache.num_cascades - 1
     }
+    /// Clear transport every frame while retaining only the spatial allocation.
+    /// No radiance, directional weights or quality from earlier frames survives.
+    pub fn clear_transport(&self) -> NodeConfigs<'static> {
+        let mut commands = Vec::new();
+        for cascade in 0..self.num_cascades {
+            commands.push(dispatch1(track!(|cascade| {
+                set_block_size([1, 32, 1]);
+                let node = self.cache.get_occupied(cascade, dispatch_id().x);
+                if node.invalid() { return; }
+                let direction = dispatch_id().y;
+                let index = node.data_offset + direction;
+                self.cache.weights.write(index, 0.0f32);
+                self.cache.weighted_fluence.write(index, Vec4::splat(0.0f32));
+                if direction == 0 { self.probe_quality.write(node.index, 0.0f32); }
+                // Merged radiance is fully overwritten, top cascade first,
+                // before any consumer. The frame-local tracer never reads it.
+            }), [self.max_probes[cascade as usize], self.cache.directions_per_probe(cascade), 1], cascade));
+        }
+        commands.chain().debug("Clear frame transport")
+    }
     pub fn get_quality_weight(&self, node: Expr<LoadedNode>) -> Expr<f32> {
         if self.use_quality_weight {
             self.probe_quality.read(node.index)
@@ -426,15 +446,19 @@ impl RcData {
     /// tracing samples base_radiance, which stays immutable until the merge pass.
     #[tracked]
     pub fn deposit_ray(&self, ray: Expr<Ray>) {
-        self.deposit_ray_impl(ray, false);
+        self.deposit_ray_impl(ray, false, 1.0f32.expr());
     }
     /// Parent links are refreshed by reset_table before any frame tracing.
     #[tracked]
     pub fn deposit_ray_linked(&self, ray: Expr<Ray>) {
-        self.deposit_ray_impl(ray, true);
+        self.deposit_ray_impl(ray, true, 1.0f32.expr());
     }
     #[tracked]
-    fn deposit_ray_impl(&self, ray: Expr<Ray>, linked: bool) {
+    pub fn deposit_ray_linked_weighted(&self, ray: Expr<Ray>, weight: Expr<f32>) {
+        self.deposit_ray_impl(ray, true, weight);
+    }
+    #[tracked]
+    fn deposit_ray_impl(&self, ray: Expr<Ray>, linked: bool, weight: Expr<f32>) {
         let probe = ray.base_probe;
         let parent = u32::MAX.var();
         if linked { *parent = self.cache.get(probe).index; }
@@ -460,14 +484,14 @@ impl RcData {
                     // Transmission contributes only alpha; the hit endpoint
                     // contributes only RGB. Do not issue atomics adding zero.
                     if cascade >= ray.cascade {
-                        fluence.x.fetch_add(ray.radiance.x);
-                        fluence.y.fetch_add(ray.radiance.y);
-                        fluence.z.fetch_add(ray.radiance.z);
+                        fluence.x.fetch_add(ray.radiance.x * weight);
+                        fluence.y.fetch_add(ray.radiance.y * weight);
+                        fluence.z.fetch_add(ray.radiance.z * weight);
                     } else {
-                        fluence.w.fetch_add(1.0f32);
+                        fluence.w.fetch_add(weight);
                     }
-                    self.cache.weights.atomic_ref(index).fetch_add(1.0f32);
-                    self.probe_quality.atomic_ref(node.index).fetch_add(1.0);
+                    self.cache.weights.atomic_ref(index).fetch_add(weight);
+                    self.probe_quality.atomic_ref(node.index).fetch_add(weight);
                     if linked { *parent = self.parent_indices.read(node.index); }
         }
     }

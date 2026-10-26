@@ -19,6 +19,7 @@ pub struct SplatData {
     pub interpolation_exponent: f32,
     pub irradiance_resolution: u32,
     pub irradiance_dims: Vec2<u32>,
+    irradiance_weights: Buffer<f32>,
 }
 
 impl SplatData {
@@ -42,6 +43,16 @@ impl SplatData {
             },
         );
         BINDLESS.update();
+        let irradiance_weights = DEVICE.create_buffer::<f32>((32 * resolution * resolution) as usize);
+        let initialize_weights = DEVICE.create_kernel::<fn()>(&track!(|| {
+            let normal_index = dispatch_id().x;
+            let direction_index = dispatch_id().y;
+            let uv = (Vec2::expr(normal_index % resolution, normal_index / resolution).cast_f32() + 0.5) / resolution as f32;
+            let normal = OctahedralEncoder::decode(uv);
+            let direction = rc.cache.get_encoder(0u32.expr()).linear_to_dir(direction_index);
+            irradiance_weights.write(direction_index * resolution * resolution + normal_index, keter::max(normal.dot(direction), 0.0));
+        }));
+        initialize_weights.dispatch([resolution * resolution, 32, 1]);
         Self {
             radiance: DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize),
             depth: DEVICE.create_buffer::<f32>(core.num_pixels() as usize),
@@ -50,6 +61,7 @@ impl SplatData {
             interpolation_exponent,
             irradiance_resolution: resolution,
             irradiance_dims: Vec2::new(x_size, y_size),
+            irradiance_weights,
         }
     }
     fn irradiance_size(&self) -> u32 {
@@ -57,6 +69,31 @@ impl SplatData {
     }
     // could switch to gather instead.
     pub fn calculate_irradiance(&self, rc: &RcData) -> NodeConfigs<'static> {
+        dispatch0(track!(|| {
+            set_block_size([1, 64, 1]);
+            assert!(rc.increased_base_resolution);
+            assert_eq!(rc.base_angular_resolution, 4);
+            let node = rc.cache.get_occupied(0u32.expr(), dispatch_id().x);
+            if node.invalid() { return; }
+            let lane = dispatch_id().y;
+            let values = Shared::<Vec4<f32>>::new(32);
+            if lane < 32u32 {
+                let r = rc.base_radiance.read(node.data_offset + lane);
+                values.write(lane, r.is_finite().all().select(r.extend(1.0), Vec4::splat_expr(0.0)));
+            }
+            sync_block();
+            let normals = self.irradiance_resolution.pow(2);
+            if lane >= normals { return; }
+            let sum = Vec4::splat(0.0f32).var();
+            for direction in 0..32u32 {
+                *sum += values.read(direction) * self.irradiance_weights.read(direction * normals + lane);
+            }
+            let tile = Vec2::expr(dispatch_id().x % self.irradiance_dims.x, dispatch_id().x / self.irradiance_dims.x);
+            let uv = tile * self.irradiance_size() + Vec2::expr(lane % self.irradiance_resolution, lane / self.irradiance_resolution) + 1u32;
+            self.irradiance.write(uv, **sum);
+        }), [rc.max_probes[0], 64, 1]).debug("Calculate Irradiance (shared angular quadrature)")
+    }
+    pub fn calculate_irradiance_reference(&self, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0(
             track!(|| {
                 set_block_size([1, 32, 1]);
@@ -120,7 +157,9 @@ impl SplatData {
                     let texture_offset = probe_pos * size;
 
                     let write_index = dispatch_id().y + 1;
-                    let read_index = res + 2 - write_index;
+                    // Reverse the six INTERIOR texels (1..=res). Reading
+                    // res+1 accidentally samples last frame's border texture.
+                    let read_index = res + 1 - write_index;
                     let side = dispatch_id().z;
                     let near = side % 2 == 0;
                     let write_pos = Vec2::expr(
@@ -149,7 +188,7 @@ impl SplatData {
                     let corner = Vec2::expr(dispatch_id().y % 2, dispatch_id().y / 2);
                     // Irradiance
                     let write_pos = corner * (self.irradiance_resolution + 1);
-                    let read_pos = (1 - corner) * (self.irradiance_resolution) + 1;
+                    let read_pos = (1 - corner) * (self.irradiance_resolution - 1) + 1;
                     let value = self
                         .irradiance
                         .read(probe_pos * self.irradiance_size() + read_pos);

@@ -132,6 +132,17 @@ fn fused_transport_matches_reference_and_divergent_ray_queue_has_no_lost_samples
     assert_eq!(rc.cache.weights.copy_to_vec(), expected_weights);
     assert_eq!(rc.probe_quality.copy_to_vec(), expected_quality);
 
+    clear.dispatch([rc.cache.weights.len() as u32, 1, 1]);
+    let weighted = DEVICE.create_kernel::<fn()>(&track!(|| {
+        rc.deposit_ray_linked_weighted(rays.read(dispatch_id().x), 0.25f32.expr());
+    }));
+    weighted.dispatch([96,1,1]);
+    for (a,b) in expected_fluence.iter().zip(rc.cache.weighted_fluence.copy_to_vec()) {
+        assert_eq!([a.x*0.25,a.y*0.25,a.z*0.25,a.w*0.25], [b.x,b.y,b.z,b.w]);
+    }
+    assert_eq!(rc.cache.weights.copy_to_vec(), expected_weights.iter().map(|v| v*0.25).collect::<Vec<_>>());
+    assert_eq!(rc.probe_quality.copy_to_vec(), expected_quality.iter().map(|v| v*0.25).collect::<Vec<_>>());
+
     let trace = TraceData::new(&core, &rc, 256);
     let miss = DEVICE.create_buffer_from_slice(&[SurfaceHit {
         inst: u32::MAX,
@@ -189,6 +200,60 @@ fn fused_transport_matches_reference_and_divergent_ray_queue_has_no_lost_samples
         check.dispatch([rc.cache.directions_per_probe(cascade), 1, 1], &cascade);
     }
     assert!(direction_error.copy_to_vec().iter().all(|&e| e <= 1e-7));
+
+    // The gather implementation evaluates every original angular term; only
+    // the floating-point reduction order changes before Half4 storage.
+    let splat = chandra::algorithm::splat::SplatData::new(&core, &rc, 1.0);
+    let initialize_radiance = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let i = dispatch_id().x;
+        rc.base_radiance.write(i, Vec3::expr((i % 17u32).cast_f32() * 0.125, (i % 7u32).cast_f32() * 0.0625, (i % 13u32).cast_f32() * 0.03125));
+    }));
+    initialize_radiance.dispatch([rc.base_radiance.len() as u32,1,1]);
+    let values = DEVICE.create_buffer::<Vec4<f32>>((rc.max_probes[0] * 36) as usize);
+    let read_irradiance = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let index = dispatch_id().x;
+        let probe = index / 36u32;
+        let local = index % 36u32;
+        let tile = keter::lang::types::vector::Vec2::expr(probe % splat.irradiance_dims.x, probe / splat.irradiance_dims.x);
+        let uv = tile * 8u32 + keter::lang::types::vector::Vec2::expr(local % 6u32, local / 6u32) + 1u32;
+        values.write(index, splat.irradiance.read(uv));
+    }));
+    splat.calculate_irradiance_reference(&rc).execute();
+    read_irradiance.dispatch([values.len() as u32,1,1]);
+    let expected = values.copy_to_vec();
+    splat.calculate_irradiance(&rc).execute();
+    read_irradiance.dispatch([values.len() as u32,1,1]);
+    for (a,b) in expected.iter().zip(values.copy_to_vec()) {
+        for (a,b) in [a.x,a.y,a.z,a.w].into_iter().zip([b.x,b.y,b.z,b.w]) {
+            assert!((a-b).abs() <= 0.0011 * a.abs().max(1.), "Angular quadrature differs: {a} vs {b}");
+        }
+    }
+
+    // Border and corner copies must only read this frame's interior texels.
+    // Poison all old borders so an off-by-one cannot silently add history.
+    let seed_border = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let p = dispatch_id().xy();
+        let interior = p.x > 0u32 && p.x < 7u32 && p.y > 0u32 && p.y < 7u32;
+        let v = interior.select((p.x + p.y * 100u32).cast_f32(), (-10000.0f32).expr());
+        splat.irradiance.write(p, Vec4::splat_expr(v));
+    }));
+    let border = DEVICE.create_buffer::<Vec4<f32>>(64);
+    let read_border = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let i = dispatch_id().x;
+        border.write(i, splat.irradiance.read(Vec2::expr(i % 8u32, i / 8u32)));
+    }));
+    seed_border.dispatch([8,8,1]);
+    splat.copy_irradiance_borders(&rc).execute();
+    read_border.dispatch([64,1,1]);
+    for (i,p) in border.copy_to_vec().iter().enumerate() {
+        let (x,y) = (i % 8, i / 8);
+        let (sx,sy) = match (x,y) {
+            (0,0) => (6,6), (7,0) => (1,6), (0,7) => (6,1), (7,7) => (1,1),
+            (0,y) => (1,7-y), (7,y) => (6,7-y), (x,0) => (7-x,1), (x,7) => (7-x,6),
+            _ => (x,y),
+        };
+        assert_eq!(p.x, (sx+sy*100) as f32, "Stale irradiance border at {x},{y}");
+    }
 }
 
 #[test]

@@ -391,6 +391,69 @@ impl SkinBinding {
     }
 }
 
+/// One upload and one dispatch for many independent skeletons. Bone transforms
+/// and all four influences are identical to SkinBinding's reference path.
+pub struct SkinBatch {
+    palette: Buffer<Mat4>,
+    deform: Kernel<fn()>,
+    count: u32,
+    inverse_bind: Vec<HostMat4>,
+    _bind: Buffer<[f32; 3]>,
+    _weights: Buffer<GpuSkinWeights>,
+    _destinations: Buffer<u32>,
+}
+
+impl SkinBatch {
+    pub fn new(world: &TriangleWorld, bindings: &[&SkinBinding]) -> Self {
+        assert!(!bindings.is_empty());
+        let mut vertices = Vec::new();
+        let mut weights = Vec::new();
+        let mut destinations = Vec::new();
+        let mut inverse_bind = Vec::new();
+        for binding in bindings {
+            let base = inverse_bind.len() as u32;
+            vertices.extend(binding._bind.copy_to_vec());
+            weights.extend(binding._weights.copy_to_vec().into_iter().map(|mut w| {
+                w.joints = Vec4::new(w.joints.x + base, w.joints.y + base, w.joints.z + base, w.joints.w + base);
+                w
+            }));
+            destinations.extend(world.mesh_vertex_ranges[binding.mesh].clone().map(|i| i as u32));
+            inverse_bind.extend_from_slice(&binding.inverse_bind);
+        }
+        let count = vertices.len() as u32;
+        let bind = DEVICE.create_buffer_from_slice(&vertices);
+        let weights = DEVICE.create_buffer_from_slice(&weights);
+        let destinations = DEVICE.create_buffer_from_slice(&destinations);
+        let palette = DEVICE.create_buffer_from_fn(inverse_bind.len(), |_| Mat4::identity());
+        let deform = DEVICE.create_kernel::<fn()>(&track!(|| {
+            let i = dispatch_id().x;
+            let p = Expr::<Vec3<f32>>::from(bind.read(i)).extend(1.0);
+            let skin = weights.read(i);
+            let position = Vec3::splat(0.0f32).var();
+            for k in 0..4u32 {
+                *position += (palette.read(skin.joints[k]) * p).xyz() * skin.weights[k];
+            }
+            world.positions.write(destinations.read(i), Expr::<[f32; 3]>::from(**position));
+        }));
+        Self { palette, deform, count, inverse_bind, _bind: bind, _weights: weights, _destinations: destinations }
+    }
+
+    pub fn update(&self, joints: &[HostMat4]) -> Result<NodeConfigs<'static>, String> {
+        if joints.len() != self.inverse_bind.len() || joints.iter().any(|m| !m.is_finite()) {
+            return Err("Joint palette has the wrong size or nonfinite transforms".into());
+        }
+        let matrices = joints.iter().zip(&self.inverse_bind).map(|(j, inv)| Mat4::from(*j * *inv)).collect();
+        Ok((self.palette.copy_from_vec(matrices), self.deform.dispatch_async([self.count, 1, 1])).chain().debug("Batched GPU skinning"))
+    }
+}
+
+impl SkinBinding {
+    pub fn transformed_bounds(&self, joints: &[HostMat4]) -> Bounds {
+        assert_eq!(joints.len(), self.joint_bounds.len());
+        self.joint_bounds.iter().zip(joints).filter_map(|(b, m)| b.map(|b| b.transformed(*m))).reduce(Bounds::union).unwrap()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

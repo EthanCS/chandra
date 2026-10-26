@@ -1,8 +1,76 @@
-use chandra::dynamic::{RigidBatch, RigidBinding, SkinBinding, SkinWeights};
+use chandra::dynamic::{RigidBatch, RigidBinding, SkinBatch, SkinBinding, SkinWeights};
 use chandra::world::TriangleWorld;
 use glam::{Mat4 as HostMat4, Vec3 as HostVec3};
 use keter::lang::types::vector::{Vec3, Vec4};
 use keter::prelude::*;
+
+#[test]
+fn batched_skeletons_and_grouped_blas_preserve_geometry_and_hit_identity() {
+    let positions: Vec<_> = (0..8).flat_map(|i| {
+        let x = i as f32 * 4.;
+        [[x, 0., 0.], [x + 1., 0., 0.], [x, 1., 0.], [x + 1., 1., 0.]]
+    }).collect();
+    let offsets: Vec<_> = (0..8).map(|i| [i * 2, i * 4]).collect();
+    let triangles: Vec<_> = (0..8).flat_map(|_| [[0, 1, 2], [1, 3, 2]]).collect();
+    let materials: Vec<_> = (0..8).map(|i| (7 - i) as u32).collect();
+    let colors: Vec<_> = (0..8).map(|i| Vec3::new(i as f32 / 8., 0.3, 0.5)).collect();
+    let make = || TriangleWorld::new_dynamic(&positions, &triangles, &offsets, &materials, &colors, &[1,2,3,4,5,6]);
+    let reference = make();
+    let mut grouped = make();
+    grouped.set_material_emission(&colors);
+    grouped.group_deforming_meshes(&[vec![1,2,3], vec![4,5,6]]).unwrap();
+    let weights = [SkinWeights { joints: [0,1,0,0], weights: [0.7,0.3,0.,0.] }; 4];
+    let bindings = |world: &TriangleWorld| (1..7).map(|i| SkinBinding::new(world, i, &weights,
+        &[HostMat4::IDENTITY, HostMat4::IDENTITY]).unwrap()).collect::<Vec<_>>();
+    let reference_skins = bindings(&reference);
+    let grouped_skins = bindings(&grouped);
+    let batch = SkinBatch::new(&grouped, &grouped_skins.iter().collect::<Vec<_>>());
+    let origins = DEVICE.create_buffer::<Vec3<f32>>(16);
+    let errors = Singleton::new(0u32);
+    let compare = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let i = dispatch_id().x;
+        let origin = origins.read(i);
+        let direction = Vec3::new(0.0f32, 0., -1.).expr();
+        let a = reference.trace(origin, direction);
+        let b = grouped.trace(origin, direction);
+        if a.miss() || b.miss() || a.inst != b.inst || a.prim != b.prim {
+            errors.atomic().fetch_add(1u32); return;
+        }
+        let delta = reference.get_position(a) - grouped.get_position(b);
+        if delta.abs().reduce_max() > 1e-5 || (reference.get_diffuse(a) != grouped.get_diffuse(b)).any()
+            || (grouped.get_emission(b) != grouped.get_diffuse(b)).any()
+            || reference.occluded(origin, direction) != grouped.occluded(origin, direction) {
+            errors.atomic().fetch_add(1u32);
+        }
+    }));
+    for frame in 0..12 {
+        let mut all = Vec::new();
+        let mut commands = chandra::algorithm::CommandList::new();
+        for (i, skin) in reference_skins.iter().enumerate() {
+            let joints = [HostMat4::from_translation(HostVec3::Z * (frame as f32 * 0.1)),
+                HostMat4::from_translation(HostVec3::new(0.1 * i as f32, 0., 0.4))];
+            commands += skin.update(&joints).unwrap().0;
+            all.extend(joints);
+        }
+        commands += batch.update(&all).unwrap();
+        commands += reference.update_acceleration(&[1,2,3,4,5,6], frame == 6);
+        commands += grouped.update_acceleration(&[1,2,3,4,5,6], frame == 6);
+        commands.execute();
+        let expected = reference.positions.copy_to_vec();
+        assert_eq!(expected, grouped.positions.copy_to_vec());
+        let mut rays = Vec::new();
+        for i in 0..8 {
+            for p in 0..2 {
+                let tri = triangles[i * 2 + p];
+                let center = tri.map(|v| HostVec3::from(expected[i * 4 + v as usize])).into_iter().sum::<HostVec3>() / 3.;
+                rays.push(Vec3::from(center + HostVec3::Z * 4.));
+            }
+        }
+        origins.copy_from(&rays);
+        compare.dispatch([16,1,1]);
+        assert_eq!(errors.read_blocking(), 0, "Grouped hit mismatch at frame {frame}");
+    }
+}
 
 #[test]
 fn hundred_rigid_instances_preserve_hits_normals_and_static_and_skinned_meshes() {

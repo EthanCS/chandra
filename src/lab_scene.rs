@@ -265,9 +265,10 @@ pub fn world(
     rigid_refit: bool,
     emissive_cubes: bool,
     gallery: bool,
+    unbatched_skin: bool,
 ) -> LabScene {
     if gallery {
-        let (world, animation) = chandra::gallery::create();
+        let (world, animation) = chandra::gallery::create_with_batching(!unbatched_skin);
         return LabScene {
             world,
             animation: Some(Animation {
