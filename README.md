@@ -2,7 +2,9 @@
 
 A dynamic-scene extension of [entropylost/chandra](https://github.com/entropylost/chandra), the reference implementation of [Split Radiance Cascades](https://arxiv.org/abs/2607.20384). The original research renderer is retained. This fork adds an interactive lighting lab, rigid instancing, GPU skinning, emissive materials, moving local lights, dynamic history invalidation and GPU timing tools.
 
-**2026-10-27 / PICA PICA 收尾版本：** 保留 GGX／RC／RT 间接高光和完整材质，已移除 LTC 试验。相机运动时的漫反射全屏采样倍增已修复，反射使用短射线任务与实际队列长度调度。RTX 5070 Ti / 1080p 实测约 **56.5 FPS 静止、37.2 FPS 相机和光源同时运动**；间接高光阶段为 9.48 / 12.07 ms。详见 [当前性能和连续帧验证](benchmarks/pica-pica/optimized-v2/README.md)。
+**2026-10-27 / PICA PICA 近景性能修复：** 将有效历史观察次数与时间滤波权重分开，解除低帧率时稳定表面一直进入高采样档的反馈问题。PICA 漫反射次级查询复用每帧重建的 RC 余弦积分图，并优化漫反射任务分配。保留全分辨率反射、基础样本数和新显露区域补采样；新增近景及 20／30 Hz 条件下的性能与画面检查。见 [当前性能和验证记录](benchmarks/pica-pica/closeup-performance/README.md)。
+
+**2026-10-27 / PICA PICA 收尾版本（历史记录）：** 保留 GGX／RC／RT 间接高光和完整材质，已移除 LTC 试验。反射使用短射线任务与实际队列长度调度。外侧视角、固定 60 Hz 模拟下曾测得 **56.5 FPS 静止、37.2 FPS 相机和光源同时运动**；这组测试没有覆盖近景和实际低帧率时的采样反馈问题。见 [前一版本记录](benchmarks/pica-pica/optimized-v2/README.md)。
 
 **2026-10-26 / 稳定间接漫反射与自由相机（历史记录）：** 在动态 GI 历史、RC 合并、容量恢复、薄墙偏移、白房间与独立场景 worker 的基础上，加入按像素归一化的自适应补采样、表面重投影和漫反射重建，修正移动光源及相机运动时的局部闪烁。自由相机使用实际面板范围判断右键输入，F 看向可释放控件焦点并停止自动环绕。用户已确认当前漫反射效果满意并要求收尾，最终版本不再补跑性能。见 [当前收尾记录](benchmarks/diffuse-motion/README.md)；[第一批基础验证](benchmarks/diffuse/README.md)及下面的性能数字均为历史结果。该次收尾尚未包含间接高光、ReSTIR 或 PICA/机器人资源。
 

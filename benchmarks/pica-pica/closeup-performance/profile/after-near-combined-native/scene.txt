@@ -1,0 +1,1 @@
+1920x1080; PICA PICA: 145 source objects; 170 material meshes; 76300 triangles; 28 materials; rigid-only=false; rigid-refit=false; 16 independent history regions; 200 warmup frames + 120 measured frames; simulation step=1/60s; uncapped; multiple bounces=true; no nonfinite output

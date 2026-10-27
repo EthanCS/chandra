@@ -1,0 +1,30 @@
+[
+  {
+    "elapsed_s": 0.18516880000242963,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:54:58.909, NVIDIA GeForce RTX 5070 Ti, 617.42, 1 %, 1316 MiB, 15.03 W, 37, 405 MHz"
+  },
+  {
+    "elapsed_s": 2.236724400005187,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:55:00.956, NVIDIA GeForce RTX 5070 Ti, 617.42, 3 %, 6969 MiB, 53.23 W, 39, 2692 MHz"
+  },
+  {
+    "elapsed_s": 4.282228900003247,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:55:03.000, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6973 MiB, 262.06 W, 58, 2865 MHz"
+  },
+  {
+    "elapsed_s": 6.324996200004534,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:55:05.050, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6973 MiB, 262.38 W, 60, 2865 MHz"
+  },
+  {
+    "elapsed_s": 8.375528700002178,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:55:07.095, NVIDIA GeForce RTX 5070 Ti, 617.42, 95 %, 6973 MiB, 262.95 W, 61, 2865 MHz"
+  },
+  {
+    "elapsed_s": 10.42030870000599,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:55:09.144, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6973 MiB, 265.44 W, 62, 2857 MHz"
+  },
+  {
+    "elapsed_s": 12.469119500005036,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:55:11.188, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6973 MiB, 265.62 W, 63, 2850 MHz"
+  }
+]

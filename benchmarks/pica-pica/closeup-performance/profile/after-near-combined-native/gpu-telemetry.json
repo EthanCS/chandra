@@ -1,0 +1,34 @@
+[
+  {
+    "elapsed_s": 0.003638399997726083,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:00.388, NVIDIA GeForce RTX 5070 Ti, 617.42, 1 %, 1316 MiB, 64.59 W, 52, 2302 MHz"
+  },
+  {
+    "elapsed_s": 2.056984000002558,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:02.434, NVIDIA GeForce RTX 5070 Ti, 617.42, 70 %, 6970 MiB, 74.19 W, 59, 2722 MHz"
+  },
+  {
+    "elapsed_s": 4.102067799998622,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:04.474, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6972 MiB, 270.59 W, 68, 2850 MHz"
+  },
+  {
+    "elapsed_s": 6.1421598000015365,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:06.526, NVIDIA GeForce RTX 5070 Ti, 617.42, 95 %, 6972 MiB, 270.87 W, 69, 2850 MHz"
+  },
+  {
+    "elapsed_s": 8.193694399997185,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:08.566, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6972 MiB, 278.14 W, 71, 2835 MHz"
+  },
+  {
+    "elapsed_s": 10.236857099996996,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:10.624, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6972 MiB, 281.98 W, 72, 2835 MHz"
+  },
+  {
+    "elapsed_s": 12.29131100000086,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:12.666, NVIDIA GeForce RTX 5070 Ti, 617.42, 97 %, 6972 MiB, 285.83 W, 73, 2835 MHz"
+  },
+  {
+    "elapsed_s": 14.334646199997223,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 11:57:14.716, NVIDIA GeForce RTX 5070 Ti, 617.42, 96 %, 6972 MiB, 283.86 W, 72, 2835 MHz"
+  }
+]

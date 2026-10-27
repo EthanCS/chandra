@@ -1,0 +1,33 @@
+{
+  "binary_sha256": "55118424213eb10624fa001f6aa9774b14b7cf888272b8b238186a12124343c1",
+  "arguments": [
+    "F:\\Workspace\\chandra\\target\\debug\\lighting_lab.exe",
+    "--scene-worker",
+    "--pica-pica",
+    "--static",
+    "--view",
+    "1",
+    "--quality-check",
+    "--quality-surfaces",
+    "--specular-diagnostics",
+    "--quality-width",
+    "320",
+    "--quality-height",
+    "200",
+    "--quality-frames",
+    "260",
+    "--quality-tail",
+    "140",
+    "--specular-samples",
+    "4",
+    "--output",
+    "F:\\Workspace\\chandra\\.local\\closeup-final3-quality30\\camera\\candidate",
+    "--quality-camera-track",
+    "combined",
+    "--camera-dolly",
+    "42.0",
+    "--quality-fps",
+    "30"
+  ],
+  "scene_sha256": "dbbc921aa3080e781b3aee45e9db0656e3209646da0499dd6f074395a196caa3"
+}

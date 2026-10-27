@@ -174,6 +174,10 @@ def main():
     parser.add_argument("--height", type=int, default=200)
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--tail", type=int, default=190)
+    parser.add_argument("--camera-dolly", type=float, default=0)
+    parser.add_argument("--simulation-fps", type=int, choices=[20,30,60,120], default=60)
+    parser.add_argument("--reference-exact-feedback", action="store_true",
+                        help="Use exact angular integration for the reference's diffuse cache feedback")
     args = parser.parse_args()
     assert 1 <= args.samples <= 128 and 2 <= args.tail <= args.frames
     exe = ROOT / "target/debug/lighting_lab.exe"
@@ -181,15 +185,18 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["PATH"] = str(ROOT / ".local/cuda/bin") + os.pathsep + env["PATH"]
-    result = {"scene_sha256": sha(ROOT / "external/PicaPica/scene.gltf"), "candidate_samples": args.samples, "width": args.width, "height": args.height, "frames": args.frames, "tail": args.tail, "analysis_sha256": sha(Path(__file__)), "reference": "128 spp raw, same finite hybrid transport; not full path tracing", "cases": {}}
+    result = {"scene_sha256": sha(ROOT / "external/PicaPica/scene.gltf"), "candidate_samples": args.samples, "width": args.width, "height": args.height, "frames": args.frames, "tail": args.tail, "camera_dolly": args.camera_dolly, "simulation_fps": args.simulation_fps, "analysis_sha256": sha(Path(__file__)), "reference": "128 spp raw, same finite hybrid transport; not full path tracing", "cases": {}}
     for case in args.cases:
         directory = output / case
         directory.mkdir(exist_ok=True)
         for variant, samples in (("candidate", args.samples), ("reference", 128)):
             dest = directory / variant
             command = [str(exe), "--scene-worker", "--pica-pica", "--static", "--view", "1", "--quality-check", "--quality-surfaces", "--specular-diagnostics", "--quality-width", str(args.width), "--quality-height", str(args.height), "--quality-frames", str(args.frames), "--quality-tail", str(args.tail), "--specular-samples", str(samples), "--output", str(dest), *CASES[case]]
+            command += ["--camera-dolly", str(args.camera_dolly), "--quality-fps", str(args.simulation_fps)]
             if variant == "reference":
                 command.append("--no-specular-filter")
+                if args.reference_exact_feedback:
+                    command.append("--exact-diffuse-feedback")
             receipt = directory / (variant + "-receipt.json")
             if variant == "reference" and args.reference_root:
                 saved = json.loads((args.reference_root.resolve() / case / "reference-receipt.json").read_text())

@@ -169,6 +169,7 @@ pub struct SpecularData {
     normal: [Buffer<Vec4<f32>>; 2],
     reflector: [Buffer<Vec4<f32>>; 2],
     history: [Buffer<Vec4<f32>>; 2],
+    history_age: [Buffer<f32>; 2],
     trace: [std::sync::OnceLock<Kernel<fn(u32, u32, bool, bool, bool, View, bool, bool, u32)>>; 2],
     // Pixel, target samples, completed initial samples, needs an extra pass.
     refine_pixels: Buffer<Vec4<u32>>,
@@ -232,6 +233,7 @@ impl SpecularData {
             normal: [create(), create()],
             reflector: [create(), create()],
             history: [create(), create()],
+            history_age: std::array::from_fn(|_| DEVICE.create_buffer_from_fn(core.num_pixels() as usize, |_| 0.0f32)),
             trace: Default::default(),
             refine_pixels: DEVICE.create_buffer(core.num_pixels() as usize),
             partial_sum: DEVICE.create_buffer(if compact_refinement {
@@ -337,10 +339,11 @@ impl SpecularData {
         i: Expr<u32>,
         previous: Expr<View>,
         valid: Expr<bool>,
-    ) -> Expr<Vec4<f32>> {
+    ) -> (Expr<Vec4<f32>>, Expr<f32>) {
         let pos = self.read(&self.position, phase, i);
         let n = self.read(&self.normal, phase, i);
         let history = Vec4::splat(0.0f32).var();
+        let age = 0.0f32.var();
         let local = previous.transform.transpose() * (pos.xyz() - previous.pos);
         let screen = previous.project(pos.xyz()) - 0.5;
         if valid
@@ -389,15 +392,19 @@ impl SpecularData {
                 let weight = (c & 1u32 != 0u32).select(f.x, 1.0 - f.x)
                     * (c >> 1u32 != 0u32).select(f.y, 1.0 - f.y);
                 *history += self.read(&self.history, 1u32 - phase, j) * weight;
+                *age += (if phase == 0u32 { self.history_age[1].read(j) }
+                    else { self.history_age[0].read(j) }) * weight;
                 *support += weight;
             }
             if support > 0.7 {
                 *history /= support;
+                *age /= support;
             } else {
                 *history = Vec4::splat_expr(0.0);
+                *age = 0.0;
             }
         }
-        **history
+        (**history, **age)
     }
     pub fn trace(
         &self,
@@ -615,10 +622,13 @@ impl SpecularData {
                                 }
                                 // Use exactly the reconstruction's validity test. Pixels
                                 // without history must resolve current lighting themselves.
+                                let observations = 0.0f32.var();
                                 let prior = if refine {
                                     Vec4::splat_expr(0.0)
                                 } else {
-                                    self.reproject_history(core, phase, i, previous, history_valid)
+                                    let (history, age) = self.reproject_history(core, phase, i, previous, history_valid);
+                                    *observations = age;
+                                    history
                                 };
                                 let disoccluded = prior.w < 0.5;
                                 // Cache use fades in only for broad lobes. First segment visibility
@@ -664,7 +674,7 @@ impl SpecularData {
                                 {
                                     keter::max(
                                         samples,
-                                        if prior.w >= 3.999 && neighbors >= 6u32 {
+                                        if observations >= 3.999 && neighbors >= 6u32 {
                                             16u32.expr()
                                         } else {
                                             64u32.expr()
@@ -1159,7 +1169,7 @@ impl SpecularData {
                                 }
                             }
                             let prior =
-                                self.reproject_history(core, phase, i, previous, history_valid);
+                                self.reproject_history(core, phase, i, previous, history_valid).0;
                             if n.w > 0.001
                                 && prior.w > 0.0
                                 && (result - prior.xyz()).abs().reduce_max()
@@ -1338,10 +1348,12 @@ impl SpecularData {
                         let n = self.read(&self.normal, phase, i);
                         if pos.w == 0.0 || self.raw.read(i).w < 0.5 {
                             self.write(&self.history, phase, i, Vec4::splat_expr(0.0));
+                            if phase == 0u32 { self.history_age[0].write(i, 0.0); }
+                            else { self.history_age[1].write(i, 0.0); }
                             self.output.write(i, self.deterministic.read(i));
                             return;
                         }
-                        let history = self.reproject_history(core, phase, i, previous, valid);
+                        let (history, age) = self.reproject_history(core, phase, i, previous, valid);
                         // Clip stale history to current same-surface support.
                         // This also lets real moving illumination leave promptly.
                         let low = current.xyz().var();
@@ -1427,6 +1439,9 @@ impl SpecularData {
                             }
                         };
                         self.write(&self.history, phase, i, output);
+                        let confidence = keter::min(age + 1.0, 4.0);
+                        if phase == 0u32 { self.history_age[0].write(i, confidence); }
+                        else { self.history_age[1].write(i, confidence); }
                         self.output.write(
                             i,
                             (output.xyz() + self.deterministic.read(i).xyz()).extend(output.w),

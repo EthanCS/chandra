@@ -4,6 +4,35 @@ use keter::lang::types::vector::Vec4;
 use keter::prelude::*;
 
 #[test]
+fn short_temporal_windows_do_not_permanently_raise_diffuse_ray_budgets() {
+    let size = [32, 32];
+    let core = CoreData::new(size, chandra::white_room::world());
+    let camera = chandra::white_room::camera(0, size).view();
+    core.view.write_host(camera).execute();
+    core.compute_gbuffer().execute();
+    let data = DiffuseData::new(&core);
+    data.raw.copy_from(&vec![Vec4::new(2., 1., 0.5, 1.); 1024]);
+    // 20/30 FPS and a short light-response window. Temporal blending must
+    // stay short, while four valid observations still establish support.
+    for limit in [1., 4. / 3., 2., 8. / 3., 4.] {
+        for frame in 0..8 {
+            data.prepare(&core, frame % 2, camera, frame > 0, 2, 0).execute();
+            if frame == 0 {
+                assert!(data.samples.copy_to_vec().iter().all(|&v| v == 64));
+            }
+            if frame >= 4 {
+                assert!(data.samples.copy_to_vec().iter().filter(|&&v| v == 2).count() > 500,
+                    "Short history limit {limit} kept stable pixels at 64 rays");
+            }
+            data.reconstruct(&core, frame % 2, camera, frame > 0, limit).execute();
+            for v in data.output.copy_to_vec() {
+                assert!(v.w <= limit + 1e-5 && (v.x - 2.).abs() < 1e-5);
+            }
+        }
+    }
+}
+
+#[test]
 fn diffuse_history_preserves_energy_follows_energy_edits_and_rejects_disocclusion() {
     let size = [32, 32];
     let core = CoreData::new(size, chandra::white_room::world());

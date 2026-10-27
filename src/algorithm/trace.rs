@@ -1,6 +1,6 @@
 use yesod::direction::project_line;
 use yesod::rand::{pcg3df, r2};
-use keter::lang::functions::{warp_active_count_bits, warp_is_first_active_lane, warp_prefix_count_bits, warp_read_first_active_lane};
+use keter::lang::functions::{warp_active_count_bits, warp_active_sum, warp_prefix_sum_exclusive, warp_is_first_active_lane, warp_prefix_count_bits, warp_read_first_active_lane};
 
 use super::*;
 use crate::algorithm::rc::{Ray, RayComps, RcData};
@@ -45,6 +45,7 @@ pub struct TraceData {
     pub min_probe_rays: u32,
     adaptive_work: Option<Buffer<Vec2<u32>>>,
     diffuse_work: Option<DiffuseWork>,
+    primary_registers: u32,
 }
 
 struct DiffuseWork {
@@ -69,6 +70,10 @@ pub struct StableSamples {
 }
 
 impl TraceData {
+    pub fn set_primary_register_limit(&mut self, limit: u32) {
+        assert!(limit <= 255);
+        self.primary_registers = limit;
+    }
     /// Split expensive diffuse pixels into eight-ray jobs. This preserves
     /// per-pixel normalization and the first ray used for secondary transport.
     /// Requires diffuse budgets in 1..=64 (the DiffuseData budget contract).
@@ -91,7 +96,10 @@ impl TraceData {
             let rank=if let Some(stable)=&self.stable_samples {stable.ranks.read(i)} else {self.base_ray_index.atomic_ref(node.index).fetch_add(1u32)};
             work.ranks.write(i,rank);
             let count=(budget.read(i)+7u32)/8u32;
-            let start=work.count.atomic().fetch_add(count);
+            let total=warp_active_sum(count);
+            let start=0u32.var();
+            if warp_is_first_active_lane() {*start=work.count.atomic().fetch_add(total);}
+            let start=warp_read_first_active_lane(**start)+warp_prefix_sum_exclusive(count);
             for batch in 0u32.expr()..count {work.items.write(start+batch,Vec2::expr(i,batch*8u32));}
         }))).dispatch_async(core.screen_dispatch_size());
         (work.count.write_host(0),prepare).chain()
@@ -122,6 +130,7 @@ impl TraceData {
             min_probe_rays: 0,
             adaptive_work: None,
             diffuse_work: None,
+            primary_registers: 0,
             // used for debug
         }
     }
@@ -409,11 +418,15 @@ impl TraceData {
     }
     pub fn compute_rays_adaptive(&self,core:&CoreData,rc:&RcData,tick:u32,c0_len:f32,
         multibounce:bool,path_depth:u32,samples:u32,budget:Option<&Buffer<u32>>)->NodeConfigs<'static> {
+        self.compute_rays_adaptive_cached(core,rc,tick,c0_len,multibounce,path_depth,samples,budget,None)
+    }
+    pub fn compute_rays_adaptive_cached(&self,core:&CoreData,rc:&RcData,tick:u32,c0_len:f32,
+        multibounce:bool,path_depth:u32,samples:u32,budget:Option<&Buffer<u32>>,irradiance:Option<&super::splat::SplatData>)->NodeConfigs<'static> {
         assert!(samples > 0);
         let diffuse_work=self.diffuse_work.as_ref().filter(|_|budget.is_some() && path_depth==0 && self.frame_primary.is_none() && self.min_probe_rays==0);
         let prepare=if diffuse_work.is_some() {self.prepare_diffuse_work(core,rc,budget.unwrap())} else {Default::default()};
-        let trace=memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays,budget.is_some(),diffuse_work.is_some()), || {
-            DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
+        let trace=memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays,budget.is_some(),diffuse_work.is_some(),self.primary_registers,irradiance.is_some()), || {
+            DEVICE.create_kernel_with_options::<fn(u32, f32)>(KernelBuildOptions {max_registers:self.primary_registers,..Default::default()}, &track!(|tick, c0_len| {
                 let pixel = if let Some(work) = diffuse_work {
                     set_block_size([128,1,1]);
                     let i=dispatch_id().x;
@@ -496,7 +509,7 @@ impl TraceData {
                 let radiance = if self.frame_primary.is_some() {
                     core.get_radiance(None, start, dir, hit)
                 } else if path_depth == 0 {
-                    core.get_radiance(multibounce.then_some(rc), start, dir, hit)
+                    core.get_radiance_cached(multibounce.then_some(rc), irradiance, start, dir, hit)
                 } else {
                     self.path_radiance(core, start, dir, hit, offset_index, path_depth)
                 };
@@ -577,7 +590,10 @@ impl TraceData {
         self.compute_secondary_mode(core, rc, tick, c0_len, multibounce, 0)
     }
     pub fn compute_secondary_mode(&self, core: &CoreData, rc: &RcData, tick: u32, c0_len: f32, multibounce: bool, path_depth: u32) -> NodeConfigs<'static> {
-        memo((multibounce, self.fused_deposit, path_depth), || {
+        self.compute_secondary_cached(core, rc, tick, c0_len, multibounce, path_depth, None)
+    }
+    pub fn compute_secondary_cached(&self, core: &CoreData, rc: &RcData, tick: u32, c0_len: f32, multibounce: bool, path_depth: u32, irradiance:Option<&super::splat::SplatData>) -> NodeConfigs<'static> {
+        memo((multibounce, self.fused_deposit, path_depth, irradiance.is_some()), || {
             DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
                 let hit = self.traced_hits.read(dispatch_id().x);
                 if !hit.valid() {
@@ -604,7 +620,7 @@ impl TraceData {
                     Vec2::expr(rc.cm1_len * rc.cache.spacing(lod, 0), f32::INFINITY),
                 );
 
-                let radiance = if path_depth == 0 { core.get_radiance(multibounce.then_some(rc), start, dir, hit) }
+                let radiance = if path_depth == 0 { core.get_radiance_cached(multibounce.then_some(rc), irradiance, start, dir, hit) }
                     else { self.path_radiance(core, start, dir, hit, dispatch_id().x, path_depth) };
 
                 self.compute_deposit_ray(rc, world_pos, lod, dir, radiance, hit, c0_len);

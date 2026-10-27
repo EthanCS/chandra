@@ -1,0 +1,5 @@
+metric,mean_gpu_ms,p95_gpu_ms,max_gpu_ms,samples
+GI main,5.162723,5.429696,5.624160,120
+GI including dynamic history,5.163343,5.430176,5.624640,120
+Geometry total,0.000000,0.000000,0.000000,120
+Reflections total,9.512431,9.826433,9.936383,120

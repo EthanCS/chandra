@@ -1,0 +1,63 @@
+running 10 tests
+test dynamic::tests::rotated_swept_bounds_include_old_and_new_vertices ... ok
+test dynamic::tests::skin_weights_are_normalized_and_bad_data_rejected ... ok
+test gallery::tests::all_ninety_gallery_meshes_move_and_stay_inside_history_bounds ... ok
+test gallery::tests::gallery_has_exact_groups_valid_topology_and_animated_lights ... ok
+test lab_camera::tests::manual_motion_respects_focus_speed_and_diagonal_normalization ... ok
+test lab_camera::tests::pointer_motion_is_consumed_once_and_reentry_does_not_jump ... ok
+test lab_camera::tests::shortcut_edges_ignore_repeats_and_accept_short_taps ... ok
+test lab_camera::tests::viewport_rotation_ignores_root_ui_hover_but_respects_real_controls ... ok
+test lab_diagnostics::tests::trajectories_share_time_across_frame_rates_and_stop_at_the_same_pose ... ok
+test lab_session::tests::switch_preserves_render_options_and_replaces_scene_arguments ... ok
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+running 1 test
+test sparse_neighbours_with_divergent_hash_lookups_match_scalar_interpolation ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+running 2 tests
+test diffuse_history_preserves_energy_follows_energy_edits_and_rejects_disocclusion ... ok
+test short_temporal_windows_do_not_permanently_raise_diffuse_ray_budgets ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.43s
+running 1 test
+test extra_diffuse_samples_keep_the_same_first_path_and_secondary_hit ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.53s
+running 6 tests
+test batched_skeletons_and_grouped_blas_preserve_geometry_and_hit_identity ... ok
+test gpu_skinning_matches_cpu_and_refitted_rays_over_multiple_poses ... ok
+test hundred_rigid_instances_preserve_hits_normals_and_static_and_skinned_meshes ... ok
+test rigid_only_pipeline_keeps_order_across_empty_blas_stage ... ok
+test rigid_refit_updates_vertices_hits_and_normals_without_recompilation ... ok
+test textured_diffuse_samples_and_blends_the_expected_mip_levels ... ok
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.60s
+running 2 tests
+test lighting_response_recovers_and_energy_flush_outlasts_direction_recovery ... ok
+test motion_preserves_normalized_radiance_and_reduces_confidence_but_discards_stale_hits ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+running 3 tests
+test current_frame_light_grid_matches_full_loop_across_moves_and_range_changes ... ok
+test hundred_emissive_materials_feed_gi_rays_without_diffuse_or_external_light ... ok
+test moving_point_lights_use_finite_shadow_segments_and_range_cutoff ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+running 3 tests
+test exhausted_probe_pool_reports_failure_without_cross_cascade_writes ... ok
+test fused_transport_matches_reference_and_divergent_ray_queue_has_no_lost_samples ... ok
+test opaque_any_hit_agrees_with_closest_hit_visibility_for_both_faces_and_misses ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+running 9 tests
+test adaptive_path_samples_keep_stratified_prefixes ... ok
+test cutout_traversal_rejects_more_than_thirty_two_transparent_layers ... ok
+test ggx_visible_normal_sampling_matches_hemisphere_integration_and_mirror_energy ... ok
+test hybrid_pipeline_reflects_emission_and_discards_invalid_history ... ok
+test pbr_cutout_is_consistent_for_primary_reflections_and_shadow_rays ... ok
+test reflection_ray_sees_offscreen_surface ... ok
+test secondary_irradiance_atlas_preserves_constant_energy_and_bounds_directional_error ... ok
+test shared_reflection_shading_preserves_sun_point_shadows_and_both_material_lobes ... ok
+test short_temporal_windows_preserve_mature_reflection_support_and_reset_on_disocclusion ... ok
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.20s
+running 2 tests
+test failed_frames_hide_gi_until_two_successful_frames ... ok
+test full_hash_tables_terminate_and_recovery_coarsens_primary_and_secondary_allocations ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+running 2 tests
+test gbuffer_kernel_uses_each_worlds_own_resources ... ok
+test sealed_room_thin_partitions_and_real_openings_have_correct_visibility ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s

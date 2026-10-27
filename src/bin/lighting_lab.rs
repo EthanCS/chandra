@@ -121,7 +121,7 @@ fn main() {
     let diffuse_samples=integer_option("--diffuse-samples",0);
     let use_diffuse_filter=!single_frame && !args.iter().any(|a|a=="--no-diffuse-filter");
     let quality_fps=integer_option("--quality-fps",60);
-    assert!(diffuse_samples<=64 && (quality_fps==60 || quality_fps==120));
+    assert!(diffuse_samples<=64 && [20,30,60,120].contains(&quality_fps));
     let min_probe_rays = integer_option("--min-probe-rays", 0);
     let roam_test = args.iter().any(|a| a == "--roam-test");
     let quality_check = roam_test || args.iter().any(|a| a == "--quality-check");
@@ -132,6 +132,10 @@ fn main() {
     let probe_budget = integer_option("--probe-budget", 0);
     assert!(probe_budget == 0 || (probe_budget >= 256 && probe_budget.is_power_of_two()));
     let camera_preset = integer_option("--view", 0) as usize;
+    let camera_dolly = args.iter().position(|a| a == "--camera-dolly")
+        .map(|i| args.get(i + 1).expect("--camera-dolly needs a distance").parse::<f32>().expect("Invalid camera distance"))
+        .unwrap_or(0.0);
+    assert!(camera_dolly.is_finite());
     let quality_motion = args.iter().any(|a| a == "--quality-motion");
     let frame_cache = args.iter().any(|a| a == "--frame-cache");
     assert!(!split_single_frame || (path_depth == 1 && samples == 1 && min_probe_rays == 0 && !frame_cache),
@@ -144,8 +148,9 @@ fn main() {
     assert!((1..=16).contains(&path_depth) && (1..=64).contains(&samples));
     assert!(single_frame || samples == 1, "--samples requires --single-frame");
     if args.iter().any(|a| a == "--help") {
+        println!("Near-view diagnostics:\n  --camera-dolly N Move forward from a camera preset in scene units\n  --quality-fps 20|30|60|120 Set deterministic camera/light step and history clock\n  --profile-realtime Use measured dt for history, with identical replayed poses\n  --exact-diffuse-feedback Use per-ray angular quadrature instead of the PICA normal atlas\n  --diffuse-registers N Primary trace register limit (PICA default 64)");
         println!("PICA PICA / hybrid reflections:\n  --pica-pica Import external/PicaPica/scene.gltf (tools/setup-pica-pica.ps1)\n  --specular-samples N GGX samples per pixel (default 4)\n  --no-specular Disable indirect reflection display\n  --specular-only Show indirect reflections\n  --specular-reference Trace the first reflection segment without RC substitution\n  --no-specular-filter Disable reflection reconstruction for comparison");
-        println!("Stable diffuse GI:\n  --quality-camera-track orbit|translate|rotate|combined|stop|return\n  --quality-light-track sun|drag|points|fast|step|oscillate\n  --quality-fps 60|120   Deterministic simulation rate\n  --diffuse-diagnostics Export raw/spatial/temporal irradiance and sample counts\n  --no-diffuse-filter   Raw RC comparison; disables adaptive reconstruction\n  --diffuse-samples N   Fixed primary sample budget for diagnostics\n  --interaction-log PATH Record real input and camera state as JSON Lines\n  Tab or F1: panel; F or held right mouse: unlimited look; Q/E: down/up; Shift/Ctrl: fast/slow");
+        println!("Stable diffuse GI:\n  --quality-camera-track orbit|translate|rotate|combined|stop|return\n  --quality-light-track sun|drag|points|fast|step|oscillate\n  --quality-fps 20|30|60|120   Deterministic simulation rate\n  --diffuse-diagnostics Export raw/spatial/temporal irradiance and sample counts\n  --no-diffuse-filter   Raw RC comparison; disables adaptive reconstruction\n  --diffuse-samples N   Fixed primary sample budget for diagnostics\n  --interaction-log PATH Record real input and camera state as JSON Lines\n  Tab or F1: panel; F or held right mouse: unlimited look; Q/E: down/up; Shift/Ctrl: fast/slow");
         println!("Diffuse GI diagnostics:\n  --white-room   Sealed shell, 8 cm slit, 2/12 cm partitions and roof corner; --view 0..3\n  --geometry-only Keep camera and light motion off\n  --single-bounce Disable secondary diffuse bounces\n  --probe-budget N Power-of-two base capacity, minimum 256\n  --quality-tail N Export the last N consecutive linear frames and same-surface samples\n  --quality-stop N Stop all motion at frame N\n  --quality-stop-clear Clear transport once at that stopped pose\n  --quality-light-off N Turn off light energy at frame N\n  --roam-test --roam-frames N Deterministic camera/capacity diagnostic\n  --scene-worker Bypass the scene supervisor\n  F: mouse look; Q/E: down/up; Shift/Ctrl: fast/slow; F1: hide panel");
         println!("Split RC baseline:\n  --split-single-frame  Original primary trace/split path, one indirect bounce, cleared each frame; no temporal jitter or extra path tracing");
         println!("Experimental transport:\n  --single-frame  Clear GI transport each frame; no prior-frame hits or radiance\n  --path-depth N  Frame-local path depth (default 8, experimental)\n  --samples N     Samples per pixel within the same frame (default 1)\n  --min-probe-rays N  Fill undersampled probes within this frame (default 0)\n  --frame-cache   Experimental current-frame secondary spatial cache\n  --unbatched-skin  Reference separate skeleton dispatches and BLASes\n  --no-light-grid Reference full local-light loop\n  --view N        Camera preset 0..2\n  --indirect-only Show indirect light\n  --quality-check Export current-frame linear RGBA32F; alpha is surface mask\n  --quality-frames N End quality check at frame N (default 200)\n  --quality-motion Keep animations on during the quality check");
@@ -344,6 +349,7 @@ fn main() {
     } else {
         TraceData::new_fused(&core, &rc, ray_capacity)
     };
+    trace.set_primary_register_limit(integer_option("--diffuse-registers", if pica {64} else {0}));
     if single_frame && !split_single_frame { trace.enable_stable_samples(&core, &rc); }
     if min_probe_rays > 0 { trace.enable_probe_budget(&core, &rc, min_probe_rays); }
     if frame_cache { trace.enable_frame_cache(&core); }
@@ -351,6 +357,7 @@ fn main() {
         trace.enable_diffuse_work(&core);
     }
     let splat = SplatData::new(&core, &rc, 1.0);
+    let cached_diffuse_feedback = pica && !single_frame && !args.iter().any(|a| a == "--exact-diffuse-feedback");
     let diffuse_reconstruction=use_diffuse_filter.then(||chandra::algorithm::diffuse::DiffuseData::new(&core));
     let specular=core.world.has_pbr().then(||chandra::algorithm::specular::SpecularData::with_trace_options(&core,!args.iter().any(|a|a=="--specular-serial"),integer_option("--specular-batch",if core.num_pixels()<=1920*1080 {1} else {32}),integer_option("--specular-registers",96)));
     let history_regions = animation.as_ref().map_or(16, |a| a.moving_meshes().max(16));
@@ -458,8 +465,12 @@ fn main() {
     }
     let mut camera_time = 0.0f32;
     let mut light_time = 0.0f32;
-    let make_camera = |index| if pica {pica_scene::camera(index,size)}else if white_room { chandra::white_room::camera(index, size) }
-        else { scene::camera(index, size, sponza, intel, gallery) };
+    let make_camera = |index| {
+        let mut camera = if pica {pica_scene::camera(index,size)}else if white_room { chandra::white_room::camera(index, size) }
+            else { scene::camera(index, size, sponza, intel, gallery) };
+        camera.pos += camera.forward() * camera_dolly;
+        camera
+    };
     let mut camera = make_camera(camera_preset);
     let mut previous_diffuse_camera=camera;
     let mut diffuse_history_valid=false;
@@ -587,7 +598,10 @@ fn main() {
         if panel_key.update(rt.key_pressed(KeyCode::F1)||rt.key_pressed(KeyCode::Tab),rt.key_down(KeyCode::F1)||rt.key_down(KeyCode::Tab),focused)
             && !ui_context.egui_wants_keyboard_input() { show_ui = !show_ui; }
         if look_key.update(rt.key_pressed(KeyCode::KeyF),rt.key_down(KeyCode::KeyF),focused) { look_mode = !look_mode; }
-        let dt = if benchmarking || stressing || profiling || quality_check { 1.0 / quality_fps as f32 } else { rt.frame_time().clamp(0.001, 0.05) };
+        let dt = if (benchmarking || stressing || profiling || quality_check)
+            && !args.iter().any(|a| a == "--profile-realtime") {
+            1.0 / quality_fps as f32
+        } else { rt.frame_time().clamp(0.001, 0.05) };
         if let Some(stress) = &mut stress { stress.begin_frame(rt.tick); }
         if let Some(benchmark) = &mut benchmark {
             let [rigid, skin, sun, orbit] = benchmark.begin_frame(rt.tick);
@@ -770,7 +784,11 @@ fn main() {
 
         // Deterministic energy edits exercise the same response and extra
         // sampling window as edits made through the sliders.
-        let diagnostic_time=chandra::lab_diagnostics::motion_time(rt.tick,dt,quality_stop);
+        // Replay identical poses per frame even when profiling the interactive
+        // history clock. frame * variable_dt would make the camera jump whenever
+        // performance changes, creating artificial disocclusions and stalls.
+        let diagnostic_dt = 1.0 / quality_fps as f32;
+        let diagnostic_time=chandra::lab_diagnostics::motion_time(rt.tick,diagnostic_dt,quality_stop);
         if light_track=="drag" { controls.azimuth=225.+18.*diagnostic_time; controls.animate=false; }
         if rt.tick >= quality_light_off {
             controls.intensity = 0.; controls.sky = 0.; controls.emission = 0.; controls.point_intensity = 0.;
@@ -834,7 +852,7 @@ fn main() {
         if gallery && controls.animate { light_time += dt; }
         if !camera_track.is_empty() {
             let base=make_camera(camera_preset);
-            camera=chandra::lab_diagnostics::camera(base,camera_track,rt.tick,dt,quality_stop);
+            camera=chandra::lab_diagnostics::camera(base,camera_track,rt.tick,diagnostic_dt,quality_stop);
             // The diorama is roughly 60 cm wide; courtyard translations are meters.
             if pica { camera.pos=base.pos+(camera.pos-base.pos)*0.2; }
             controls.camera_motion=false;
@@ -958,15 +976,22 @@ fn main() {
                 commands += trace.prepare_probe_work(&core, &rc);
             }
             profiler.checkpoint("Ray scheduling", &mut commands);
+            // Allocation can recycle slots. Rebuild from the SAME immutable
+            // base_radiance read by exact queries, never from a stale atlas.
+            if cached_diffuse_feedback && controls.bounces {
+                commands += splat.calculate_irradiance(&rc);
+                commands += splat.copy_irradiance_borders(&rc);
+            }
+            profiler.checkpoint("Secondary irradiance", &mut commands);
             let c0_len = ((2 * rc.base_angular_resolution.pow(2)) as f32 / (4. * std::f32::consts::PI)).sqrt();
-            if !single_frame && controls.bounces && rt.tick > 0 { commands += trace.compute_secondary_rays(&core, &rc, rt.tick, c0_len, true); }
+            if !single_frame && controls.bounces && rt.tick > 0 { commands += trace.compute_secondary_cached(&core, &rc, rt.tick, c0_len, true, 0, cached_diffuse_feedback.then_some(&splat)); }
             profiler.checkpoint("GI secondary rays", &mut commands);
             if frame_cache { commands += trace.clear_frame_hits(); }
             commands += if split_single_frame { trace.compute_rays(&core, &rc, 0, c0_len, false) }
                 else if single_frame { trace.compute_rays_mode(&core, &rc, 0, c0_len, false, path_depth, samples) }
-                else { trace.compute_rays_adaptive(&core, &rc, rt.tick, c0_len, controls.bounces, 0,
+                else { trace.compute_rays_adaptive_cached(&core, &rc, rt.tick, c0_len, controls.bounces, 0,
                     if diffuse_samples>0 {diffuse_samples} else {manual_response.primary_samples},
-                    diffuse_reconstruction.as_ref().map(|d|&d.samples)) };
+                    diffuse_reconstruction.as_ref().map(|d|&d.samples), cached_diffuse_feedback.then_some(&splat)) };
             profiler.checkpoint("GI primary rays", &mut commands);
             if frame_cache {
                 let timer = profiler.begin("Frame secondary probe init");

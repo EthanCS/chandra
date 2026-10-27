@@ -23,6 +23,7 @@ param(
     [switch]$SplitSingleFrame,
     [switch]$Static,
     [ValidateRange(0, 3)][int]$View = 0,
+    [float]$CameraDolly = 0,
     [ValidateRange(1, 16)][int]$PathDepth = 8,
     [ValidateRange(1, 64)][int]$Samples = 1,
     [ValidateRange(0, 256)][int]$MinProbeRays = 0,
@@ -92,6 +93,7 @@ if ($SingleFrame) { $arguments += @('--single-frame', '--path-depth', $PathDepth
 if ($SplitSingleFrame) { $arguments += '--split-single-frame' }
 if ($Static) { $arguments += '--static' }
 if ($View -ne 0) { $arguments += @('--view', $View) }
+if ($CameraDolly -ne 0) { $arguments += @('--camera-dolly', $CameraDolly.ToString([cultureinfo]::InvariantCulture)) }
 if ($Cubes -ne 1) { $arguments += @('--cubes', $Cubes) }
 if ($RigidOnly) { $arguments += '--rigid-only' }
 if ($RigidRefit) { $arguments += '--rigid-refit' }

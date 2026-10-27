@@ -1,0 +1,20 @@
+{
+  "binary_sha256": "55118424213eb10624fa001f6aa9774b14b7cf888272b8b238186a12124343c1",
+  "baseline_commit": "d29a5b6265e914c51b84102f0b9eb09705564141",
+  "scene_sha256": "dbbc921aa3080e781b3aee45e9db0656e3209646da0499dd6f074395a196caa3",
+  "rust_gpu_tests": 41,
+  "candidate_evaluated_frames": 790,
+  "commands": [
+    "./run-lighting-lab.ps1 -Test",
+    "python tools/test-pica-materials.py",
+    "python tools/test-specular-motion.py",
+    "python tools/test-diffuse-motion.py"
+  ],
+  "source_sha256_lf_single_final_newline": {
+    "src/algorithm.rs": "fb3deee44b878da5b22ea958064c50b3f340021ca5e81a6f028f2f5a34b4ae6a",
+    "src/algorithm/diffuse.rs": "65947fc66a38fa9ba8647352c7595d958ea82b0503910bab42a1463147b34a8a",
+    "src/algorithm/specular.rs": "ed44629c2ba0ea109577e67d93624c35d52582d7f9ab0e58c153118eaff909f6",
+    "src/algorithm/trace.rs": "030566ef50f69980e6c3d93774e8eb38d436f8b7a77a4e7555ee3ac4ce7ce1da",
+    "src/bin/lighting_lab.rs": "908b65cd0b387363bc7605ec292f31eb92a4ccccf6df61164f1d03c0944204aa"
+  }
+}

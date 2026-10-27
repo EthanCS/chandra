@@ -1,0 +1,93 @@
+{
+  "before-overview-static": {
+    "mean_wall_ms": 17.702073,
+    "p95_wall_ms": 18.2099,
+    "max_wall_ms": 18.4115,
+    "mean_fps": 56.490561,
+    "samples": 120.0
+  },
+  "before-near-static": {
+    "mean_wall_ms": 35.715456,
+    "p95_wall_ms": 36.1314,
+    "max_wall_ms": 38.2529,
+    "mean_fps": 27.999083,
+    "samples": 120.0
+  },
+  "before-near-camera-20": {
+    "mean_wall_ms": 111.260045,
+    "p95_wall_ms": 126.3089,
+    "max_wall_ms": 127.2955,
+    "mean_fps": 8.987953,
+    "samples": 120.0
+  },
+  "before-near-combined-20": {
+    "mean_wall_ms": 112.341892,
+    "p95_wall_ms": 126.0979,
+    "max_wall_ms": 127.5836,
+    "mean_fps": 8.901399,
+    "samples": 120.0
+  },
+  "after-overview-static": {
+    "mean_wall_ms": 16.38873,
+    "p95_wall_ms": 16.8595,
+    "max_wall_ms": 17.0697,
+    "mean_fps": 61.017541,
+    "samples": 120.0
+  },
+  "after-overview-combined": {
+    "mean_wall_ms": 24.030078,
+    "p95_wall_ms": 27.5106,
+    "max_wall_ms": 27.7638,
+    "mean_fps": 41.614514,
+    "samples": 120.0
+  },
+  "after-near-static": {
+    "mean_wall_ms": 32.613299,
+    "p95_wall_ms": 32.9465,
+    "max_wall_ms": 33.0615,
+    "mean_fps": 30.662338,
+    "samples": 120.0
+  },
+  "after-near-camera-60": {
+    "mean_wall_ms": 41.542334,
+    "p95_wall_ms": 48.0807,
+    "max_wall_ms": 48.4074,
+    "mean_fps": 24.07183,
+    "samples": 120.0
+  },
+  "after-near-combined-60": {
+    "mean_wall_ms": 43.341301,
+    "p95_wall_ms": 49.7347,
+    "max_wall_ms": 50.8748,
+    "mean_fps": 23.072681,
+    "samples": 120.0
+  },
+  "after-near-camera-20": {
+    "mean_wall_ms": 47.850032,
+    "p95_wall_ms": 62.6486,
+    "max_wall_ms": 65.5516,
+    "mean_fps": 20.898627,
+    "samples": 120.0
+  },
+  "after-near-combined-20": {
+    "mean_wall_ms": 49.344929,
+    "p95_wall_ms": 62.8067,
+    "max_wall_ms": 63.8252,
+    "mean_fps": 20.265507,
+    "samples": 120.0
+  },
+  "after-near-camera-native": {
+    "mean_wall_ms": 41.913284,
+    "p95_wall_ms": 48.2464,
+    "max_wall_ms": 49.4937,
+    "mean_fps": 23.858784,
+    "samples": 120.0
+  },
+  "after-near-combined-native": {
+    "mean_wall_ms": 43.119668,
+    "p95_wall_ms": 49.5182,
+    "max_wall_ms": 50.0304,
+    "mean_fps": 23.191273,
+    "samples": 120.0
+  }
+}

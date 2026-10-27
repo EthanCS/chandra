@@ -267,6 +267,30 @@ impl CoreData {
         };
         color * self.lighting.read().environment_scale
     }
+    /// Reuse cosine-convolved radiance for secondary diffuse feedback. Rebuild
+    /// the atlas from base_radiance after cache allocation and before tracing.
+    #[tracked]
+    pub fn get_radiance_cached(
+        &self, rc: Option<&RcData>, irradiance: Option<&splat::SplatData>,
+        start: Expr<Vec3<f32>>, dir: Expr<Vec3<f32>>, hit: Expr<Hit>,
+    ) -> Expr<Radiance> {
+        if let (Some(rc), Some(irradiance)) = (rc, irradiance) {
+            if hit.miss() {
+                self.get_environment(dir)
+            } else {
+                let pos = self.hit_position(start, dir, hit);
+                let albedo = self.world.get_diffuse(hit);
+                let diffuse = if albedo.reduce_max() > 0.0 {
+                    let normal = self.world.get_shading_normal(hit, dir);
+                    (self.get_surface_irradiance(None, pos, hit, dir)
+                        + irradiance.sample_secondary(rc, pos, normal)) * albedo
+                } else { Vec3::splat_expr(0.0f32) };
+                diffuse + self.get_surface_emission(hit)
+            }
+        } else {
+            self.get_radiance(rc, start, dir, hit)
+        }
+    }
     #[tracked]
     pub fn get_fluence(
         &self,

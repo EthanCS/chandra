@@ -5,6 +5,45 @@ use keter::prelude::*;
 use yesod::rand::pcg3df;
 
 #[test]
+fn short_temporal_windows_preserve_mature_reflection_support_and_reset_on_disocclusion() {
+    use chandra::algorithm::rc::{RcConfig, RcData};
+    use chandra::algorithm::specular::SpecularData;
+    let mut world = TriangleWorld::new(
+        &[[-100., -100., 0.], [100., -100., 0.], [0., 100., 0.]],
+        &[[0, 1, 2]], &[[0, 0]], &[0], &[Vec3::splat(1.)]);
+    let mut metal = PbrMaterial::default();
+    metal.parameters = Vec4::new(0.3, 1., 0.04, 1.);
+    world.set_pbr(&[metal], &[[0., 0., 1.]; 3], &[[0.; 2]; 3], &[0.], vec![]);
+    let core = CoreData::new([16, 16], WorldData {
+        world, envmap: image::Rgb32FImage::from_pixel(4, 2, image::Rgb([1., 1., 1.])),
+        envmap_scale: 1., sun_dir: Vec3::z(), sun_color: Vec3::splat(0.), custom_emitters: vec![],
+    });
+    let camera = yesod::camera::Camera {
+        pos: glam::Vec3::new(0., -2., 2.), yaw: 0., pitch: 0.7853982,
+        screen_size: glam::Vec2::splat(16.), fov: 0.6,
+    }.view();
+    core.view.write_host(camera).execute();
+    core.compute_gbuffer().execute();
+    let rc = RcData::new(RcConfig {base_probes: 256, num_cascades: 2, ..Default::default()});
+    let data = SpecularData::new(&core);
+    for limit in [1., 4. / 3., 2., 8. / 3., 4.] {
+        for frame in 0..8 {
+            data.trace(&core, &rc, None, frame, 4, false, false, true, camera, frame > 0).execute();
+            let budgets = data.diagnostics.copy_to_vec();
+            if frame == 0 {
+                assert!(budgets.iter().all(|v| v.w == 128.), "Invalid history did not restore disocclusion sampling");
+            }
+            if frame >= 4 {
+                assert!(budgets.iter().filter(|v| v.w == 16.).count() > 150,
+                    "Short history limit {limit} kept mature metal at 64 rays");
+            }
+            data.reconstruct(&core, frame, camera, frame > 0, limit).execute();
+            assert!(data.output.copy_to_vec().iter().all(|v| v.w <= limit + 1e-5));
+        }
+    }
+}
+
+#[test]
 fn shared_reflection_shading_preserves_sun_point_shadows_and_both_material_lobes() {
     use chandra::algorithm::PointLight;
     for smooth in [false, true] {
@@ -624,6 +663,15 @@ fn secondary_irradiance_atlas_preserves_constant_energy_and_bounds_directional_e
         rc.base_radiance.write(i, value);
     }));
     let values = DEVICE.create_buffer::<Vec4<f32>>(2048);
+    let feedback = DEVICE.create_buffer::<Vec4<f32>>(1);
+    let check_feedback = DEVICE.create_kernel::<fn()>(&track!(|| {
+        let start = Vec3::new(0.1, 0.1, 1.).expr();
+        let dir = Vec3::new(0., 0., -1.).expr();
+        let hit = core.world.trace(start, dir);
+        let exact = core.get_radiance(Some(&rc), start, dir, hit);
+        let fast = core.get_radiance_cached(Some(&rc), Some(&splat), start, dir, hit);
+        feedback.write(0u32, (fast - exact).extend(fast.reduce_max()));
+    }));
     let check = DEVICE.create_kernel::<fn()>(&track!(|| {
         let i = dispatch_id().x;
         let z = (i.cast_f32() + 0.5) / 1024.0 - 1.0;
@@ -642,6 +690,10 @@ fn secondary_irradiance_atlas_preserves_constant_energy_and_bounds_directional_e
         initialize.dispatch([rc.base_radiance.len() as u32, 1, 1], &directional);
         splat.calculate_irradiance(&rc).execute();
         splat.copy_irradiance_borders(&rc).execute();
+        check_feedback.dispatch([1, 1, 1]);
+        let value = feedback.copy_to_vec()[0];
+        assert!(value.w.is_finite() && value.w > 0.0);
+        assert!(value.x.abs().max(value.y.abs()).max(value.z.abs()) < if directional {0.05} else {0.001});
         check.dispatch([2048, 1, 1]);
         let data = values.copy_to_vec();
         let max_error = data
@@ -656,4 +708,11 @@ fn secondary_irradiance_atlas_preserves_constant_energy_and_bounds_directional_e
             "Secondary irradiance error {max_error}, directional={directional}"
         );
     }
+    // Recycled/cold probes must not retain a previous atlas tile's energy.
+    rc.base_radiance.copy_from(&vec![Vec3::splat(f32::NAN); rc.base_radiance.len()]);
+    splat.calculate_irradiance(&rc).execute();
+    splat.copy_irradiance_borders(&rc).execute();
+    check_feedback.dispatch([1, 1, 1]);
+    let value = feedback.copy_to_vec()[0];
+    assert_eq!(value, Vec4::splat(0.));
 }

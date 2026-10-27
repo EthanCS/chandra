@@ -1,4 +1,4 @@
-"""Sequential PICA 1080p profiling with immutable binary/scene receipts.
+"""Sequential PICA profiling (1080p by default) with immutable binary/scene receipts.
 
 Close competing GPU workloads before running. No process is closed by this tool.
 Frame averages include presentation; stage times are CUDA event ranges.
@@ -19,9 +19,19 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--cases', nargs='+')
 parser.add_argument('--output', required=True)
 parser.add_argument('--samples', type=int, default=4)
+parser.add_argument('--width', type=int, default=1920)
+parser.add_argument('--height', type=int, default=1080)
+parser.add_argument('--view', type=int, choices=[0, 1, 2], default=1)
+parser.add_argument('--camera-dolly', type=float, default=0,
+                    help='Move forward from the camera preset in scene units')
+parser.add_argument('--simulation-fps', type=int, choices=[20,30,60,120], default=60)
+parser.add_argument('--realtime', action='store_true', help='Use measured frame time, like interactive rendering')
+parser.add_argument('--executable', type=Path, default=EXE)
 parser.add_argument('--specular-batch', type=int, choices=[1,2,4,8,16,32])
 parser.add_argument('--specular-registers', type=int)
+parser.add_argument('--diffuse-registers', type=int)
 options = parser.parse_args()
+EXE = options.executable.resolve()
 assert 1 <= options.samples <= 128
 selected = options.cases
 OUT = ROOT / options.output
@@ -49,11 +59,16 @@ if selected:
 for name, extra in cases.items():
     dest = OUT / name
     dest.mkdir()
-    args = [str(EXE), '--scene-worker', '--pica-pica', '--1080p', '--static', '--view', '1', '--profile', '--profile-frames', '120', '--specular-samples', str(options.samples), '--output', str(dest), *extra]
+    args = [str(EXE), '--scene-worker', '--pica-pica', '--quality-width', str(options.width), '--quality-height', str(options.height), '--static', '--view', str(options.view), '--camera-dolly', str(options.camera_dolly), '--profile', '--profile-frames', '120', '--specular-samples', str(options.samples), '--output', str(dest), *extra]
     if options.specular_batch is not None:
         args += ['--specular-batch',str(options.specular_batch)]
+    args += ['--quality-fps',str(options.simulation_fps)]
+    if options.realtime:
+        args += ['--profile-realtime']
     if options.specular_registers is not None:
         args += ['--specular-registers',str(options.specular_registers)]
+    if options.diffuse_registers is not None:
+        args += ['--diffuse-registers',str(options.diffuse_registers)]
     receipt = {'case': name, 'arguments': args, 'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'binary_sha256': sha(EXE), 'scene_gltf_sha256': sha(SCENE), 'gpu_before': query(), 'processes_before': processes()}
     assert not receipt['processes_before'], 'Another renderer started between cases'
     start = time.perf_counter()

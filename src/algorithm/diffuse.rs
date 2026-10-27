@@ -11,6 +11,9 @@ pub struct DiffuseData {
     position: [Buffer<Vec4<f32>>; 2],
     normal: [Buffer<Vec4<f32>>; 2],
     history: [Buffer<Vec4<f32>>; 2],
+    // Valid observations are independent of the time-scaled blend weight.
+    // A short response window must not make a mature surface disoccluded.
+    history_age: [Buffer<f32>; 2],
     prepare: std::sync::OnceLock<Kernel<fn(u32, View, bool, u32, u32)>>,
     capture: std::sync::OnceLock<Kernel<fn()>>,
     spatial: std::sync::OnceLock<Kernel<fn(u32)>>,
@@ -31,6 +34,7 @@ impl DiffuseData {
             position: [create(), create()],
             normal: [create(), create()],
             history: [create(), create()],
+            history_age: std::array::from_fn(|_| DEVICE.create_buffer_from_fn(core.num_pixels() as usize, |_| 0.0f32)),
             prepare: Default::default(),
             capture: Default::default(),
             spatial: Default::default(),
@@ -69,10 +73,11 @@ impl DiffuseData {
         view: Expr<View>,
         position: Expr<Vec4<f32>>,
         normal: Expr<Vec3<f32>>,
-    ) -> Expr<Vec4<f32>> {
+    ) -> (Expr<Vec4<f32>>, Expr<f32>) {
         let local = view.transform.transpose() * (position.xyz() - view.pos);
         let screen = view.project(position.xyz()) - 0.5;
         let output = Vec4::splat(0.0f32).var();
+        let age = 0.0f32.var();
         if local.z > 0.0
             && (screen >= 0.0).all()
             && (screen < core.screen_size().expr().cast_f32() - 1.0).all()
@@ -106,13 +111,18 @@ impl DiffuseData {
                 let weight = ((corner & 1u32) != 0u32).select(fraction.x, 1.0 - fraction.x)
                     * ((corner >> 1u32) != 0u32).select(fraction.y, 1.0 - fraction.y);
                 *sum += history * weight;
+                *age += (if slot == 0u32 { self.history_age[0].read(index) }
+                    else { self.history_age[1].read(index) }) * weight;
                 *weight_sum += weight;
             }
             if weight_sum >= 0.75 {
                 *output = sum / weight_sum;
+                *age /= weight_sum;
+            } else {
+                *age = 0.0;
             }
         }
-        **output
+        (**output, **age)
     }
     pub fn prepare(
         &self,
@@ -161,20 +171,20 @@ impl DiffuseData {
                                     *support += 1u32;
                                 }
                             }
-                            let history = if valid {
+                            let age = if valid {
                                 self.reproject(
                                     core,
                                     1u32 - phase,
                                     previous,
                                     **position,
                                     normal.xyz(),
-                                )
+                                ).1
                             } else {
-                                Vec4::splat_expr(0.0f32)
+                                0.0f32.expr()
                             };
                             // Bilinear reprojection of a four-frame history can
                             // round just below four. That is not disocclusion.
-                            *count = if history.w < 3.999 {
+                            *count = if age < 3.999 {
                                 64u32.expr()
                             } else if support < 3u32 {
                                 32u32.expr()
@@ -289,8 +299,11 @@ impl DiffuseData {
                         let position = self.position(phase, index);
                         let normal = self.normal(phase, index).xyz();
                         let current = self.filtered.read(index).xyz();
+                        let observations = 0.0f32.var();
                         let history = if valid && position.w > 0.0 {
-                            self.reproject(core, 1u32 - phase, previous, position, normal)
+                            let (history, age) = self.reproject(core, 1u32 - phase, previous, position, normal);
+                            *observations = age;
+                            history
                         } else {
                             Vec4::splat_expr(0.0f32)
                         };
@@ -321,11 +334,14 @@ impl DiffuseData {
                         let color = (current + retained * count) / (count + 1.0);
                         let age = (position.w > 0.0).select(count + 1.0, 0.0f32.expr());
                         let value = color.extend(age);
+                        let confidence = (position.w > 0.0).select(keter::min(observations + 1.0, 4.0), 0.0f32.expr());
                         self.output.write(index, value);
                         if phase == 0u32 {
                             self.history[0].write(index, value);
+                            self.history_age[0].write(index, confidence);
                         } else {
                             self.history[1].write(index, value);
+                            self.history_age[1].write(index, confidence);
                         }
                     }
                 ))

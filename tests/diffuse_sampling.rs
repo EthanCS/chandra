@@ -61,6 +61,7 @@ fn extra_diffuse_samples_keep_the_same_first_path_and_secondary_hit() {
         .sum();
     assert!((first_mass - 256.).abs() < 1e-3);
     trace.enable_diffuse_work(&core);
+    trace.set_primary_register_limit(64);
     budget.copy_from(&vec![32u32; 256]);
     schedule(&trace);
     trace

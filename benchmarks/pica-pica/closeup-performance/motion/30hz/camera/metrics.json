@@ -1,0 +1,42 @@
+{
+  "full": {
+    "bright_impulses": 0,
+    "dark_impulses": 0,
+    "valid_pairs": 7557887,
+    "peak_linear": 1380.3228759765625,
+    "events": [],
+    "compensated_residual_rms": 0.004065977630493593,
+    "display_mae": 0.0009414878443099691,
+    "relative_mean_energy": -0.0002086474921705328
+  },
+  "specular": {
+    "bright_impulses": 0,
+    "dark_impulses": 0,
+    "valid_pairs": 7557887,
+    "peak_linear": 1380.3228759765625,
+    "events": [],
+    "compensated_residual_rms": 0.006737890496314983,
+    "display_mae": 0.0038085416707742425,
+    "relative_mean_energy": -0.0025225873867796844
+  },
+  "base": {
+    "bright_impulses": 0,
+    "dark_impulses": 0,
+    "valid_pairs": 7557887,
+    "peak_linear": 386.1581115722656,
+    "events": [],
+    "compensated_residual_rms": 0.0001522307387739787,
+    "display_mae": 0.00025908355788227967,
+    "relative_mean_energy": -9.563066799389563e-05
+  },
+  "rough_specular": {
+    "bright_impulses": 0,
+    "dark_impulses": 0,
+    "valid_pairs": 2177705,
+    "peak_linear": 1380.3228759765625,
+    "events": [],
+    "compensated_residual_rms": 0.005755836390146459,
+    "display_mae": 0.0038258157254728886,
+    "relative_mean_energy": -0.006154523827587743
+  }
+}
