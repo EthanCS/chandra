@@ -143,13 +143,13 @@ fn main() {
     assert!(min_probe_rays <= 256 && (min_probe_rays == 0 || (single_frame && !frame_cache)));
     assert!(min_probe_rays == 0 || !args.iter().any(|a| a == "--unfused"), "Weighted adaptive rays require fused deposit");
     assert!(!frame_cache || (single_frame && samples == 1 && path_depth >= 2 && !args.iter().any(|a| a == "--unfused")), "--frame-cache needs --single-frame, depth >= 2, samples=1 and fused deposit");
-    assert!(camera_preset < if args.iter().any(|a| a == "--white-room") { 4 } else { 3 });
+    assert!(camera_preset < if args.iter().any(|a| a == "--white-room" || a == "--pica-pica") { 4 } else { 3 });
     assert!(quality_frames <= 36000);
     assert!((1..=16).contains(&path_depth) && (1..=64).contains(&samples));
     assert!(single_frame || samples == 1, "--samples requires --single-frame");
     if args.iter().any(|a| a == "--help") {
         println!("Near-view diagnostics:\n  --camera-dolly N Move forward from a camera preset in scene units\n  --quality-fps 20|30|60|120 Set deterministic camera/light step and history clock\n  --profile-realtime Use measured dt for history, with identical replayed poses\n  --exact-diffuse-feedback Use per-ray angular quadrature instead of the PICA normal atlas\n  --diffuse-registers N Primary trace register limit (PICA default 64)");
-        println!("PICA PICA / hybrid reflections:\n  --pica-pica Import external/PicaPica/scene.gltf (tools/setup-pica-pica.ps1)\n  --specular-samples N GGX samples per pixel (default 4)\n  --no-specular Disable indirect reflection display\n  --specular-only Show indirect reflections\n  --specular-reference Trace the first reflection segment without RC substitution\n  --no-specular-filter Disable reflection reconstruction for comparison");
+        println!("PICA PICA / cached reflections:\n  --specular-quality Use the original full-resolution adaptive GGX path\n  --reflection-scale N Reflection downsample factor 1/2/4 (default 2)\n  --rc-update-samples N Maximum adaptive RC update rays per pixel (default 8 cached / 64 quality)\n  --pica-pica Import external/PicaPica/scene.gltf (tools/setup-pica-pica.ps1)\n  --specular-samples N Samples for --specular-quality (default 4; 128 selects quality)\n  --no-specular Disable indirect reflection display\n  --specular-only Show indirect reflections\n  --specular-reference Trace the first reflection segment without RC substitution\n  --no-specular-filter Disable reflection reconstruction for comparison");
         println!("Stable diffuse GI:\n  --quality-camera-track orbit|translate|rotate|combined|stop|return\n  --quality-light-track sun|drag|points|fast|step|oscillate\n  --quality-fps 20|30|60|120   Deterministic simulation rate\n  --diffuse-diagnostics Export raw/spatial/temporal irradiance and sample counts\n  --no-diffuse-filter   Raw RC comparison; disables adaptive reconstruction\n  --diffuse-samples N   Fixed primary sample budget for diagnostics\n  --interaction-log PATH Record real input and camera state as JSON Lines\n  Tab or F1: panel; F or held right mouse: unlimited look; Q/E: down/up; Shift/Ctrl: fast/slow");
         println!("Diffuse GI diagnostics:\n  --white-room   Sealed shell, 8 cm slit, 2/12 cm partitions and roof corner; --view 0..3\n  --geometry-only Keep camera and light motion off\n  --single-bounce Disable secondary diffuse bounces\n  --probe-budget N Power-of-two base capacity, minimum 256\n  --quality-tail N Export the last N consecutive linear frames and same-surface samples\n  --quality-stop N Stop all motion at frame N\n  --quality-stop-clear Clear transport once at that stopped pose\n  --quality-light-off N Turn off light energy at frame N\n  --roam-test --roam-frames N Deterministic camera/capacity diagnostic\n  --scene-worker Bypass the scene supervisor\n  F: mouse look; Q/E: down/up; Shift/Ctrl: fast/slow; F1: hide panel");
         println!("Split RC baseline:\n  --split-single-frame  Original primary trace/split path, one indirect bounce, cleared each frame; no temporal jitter or extra path tracing");
@@ -176,6 +176,9 @@ fn main() {
     let specular_samples=integer_option("--specular-samples",4);
     assert!((1..=128).contains(&specular_samples));
     let specular_reference=args.iter().any(|a|a=="--specular-reference");
+    let bounded_reflections=pica && !args.iter().any(|a|a=="--specular-quality") && specular_samples<128 && !specular_reference;
+    let rc_update_samples=integer_option("--rc-update-samples",if bounded_reflections {8}else{64});
+    assert!((1..=64).contains(&rc_update_samples));
     let pica_path=std::path::PathBuf::from("external/PicaPica/scene.gltf");
     assert!([sponza, intel, courtyard, white_room, pica, args.iter().any(|a| a == "--gallery")].into_iter().filter(|v| *v).count() <= 1, "Choose one scene");
     let gallery = !sponza && !intel && !courtyard && !white_room && !pica;
@@ -354,12 +357,16 @@ fn main() {
     if min_probe_rays > 0 { trace.enable_probe_budget(&core, &rc, min_probe_rays); }
     if frame_cache { trace.enable_frame_cache(&core); }
     if adaptive_diffuse && !single_frame && min_probe_rays==0 && !args.iter().any(|a|a=="--diffuse-serial") {
-        trace.enable_diffuse_work(&core);
+        trace.enable_diffuse_work_with_limit(&core,rc_update_samples.max(diffuse_samples));
     }
     let splat = SplatData::new(&core, &rc, 1.0);
     let cached_diffuse_feedback = pica && !single_frame && !args.iter().any(|a| a == "--exact-diffuse-feedback");
-    let diffuse_reconstruction=use_diffuse_filter.then(||chandra::algorithm::diffuse::DiffuseData::new(&core));
-    let specular=core.world.has_pbr().then(||chandra::algorithm::specular::SpecularData::with_trace_options(&core,!args.iter().any(|a|a=="--specular-serial"),integer_option("--specular-batch",if core.num_pixels()<=1920*1080 {1} else {32}),integer_option("--specular-registers",96)));
+    let diffuse_reconstruction=use_diffuse_filter.then(||chandra::algorithm::diffuse::DiffuseData::with_sample_limit(&core,rc_update_samples));
+    let reflection_scale=integer_option("--reflection-scale",2);
+    let cached_specular=bounded_reflections.then(||chandra::algorithm::cached_specular::CachedSpecular::new(&core,&rc,reflection_scale));
+    let specular=(core.world.has_pbr() && !bounded_reflections).then(||chandra::algorithm::specular::SpecularData::with_trace_options(&core,!args.iter().any(|a|a=="--specular-serial"),integer_option("--specular-batch",if core.num_pixels()<=1920*1080 {1} else {32}),integer_option("--specular-registers",96)));
+    let reflection_buffers=if let Some(data)=&cached_specular {Some((&data.raw,&data.output,&data.diagnostics))}
+        else {specular.as_ref().map(|data|(&data.raw,&data.output,&data.diagnostics))};
     let history_regions = animation.as_ref().map_or(16, |a| a.moving_meshes().max(16));
     let history = DynamicHistory::with_region_capacity(&rc, &trace, history_regions);
     let mut lighting_response = LightingResponse::default();
@@ -381,6 +388,7 @@ fn main() {
     println!("Dynamic history capacity: {history_regions} independent swept regions");
     let invalid_pixels = Singleton::new(0u32);
     let linear_output = quality_check.then(|| DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize));
+    let base_output=(quality_check && bounded_reflections).then(|| DEVICE.create_buffer::<Vec4<f32>>(core.num_pixels() as usize));
     let surface_samples = (quality_check && courtyard).then(|| chandra::lab_quality::SurfaceSamples::courtyard(&core, linear_output.as_ref().unwrap()));
     let surface_buffers = (quality_check && args.iter().any(|a| a=="--quality-surfaces"))
         .then(|| chandra::lab_quality::SurfaceBuffers::new(&core));
@@ -392,6 +400,8 @@ fn main() {
         if depth == 0.0 {
             let color = core.get_environment(direction) * exposure;
             if let Some(output) = &linear_output { output.write(core.pixel_to_linear(pixel), color.extend(0.0)); }
+            if let Some(data)=&cached_specular {data.composition.write(core.pixel_to_linear(pixel),(color/exposure).extend(0.0));}
+            if let Some(output)=&base_output {output.write(core.pixel_to_linear(pixel),color.extend(0.0));}
             app.set_pixel(pixel.cast_i32(), color);
             return;
         }
@@ -410,8 +420,8 @@ fn main() {
             let irradiance=if let Some(data)=&diffuse_reconstruction {data.output.read(index).xyz()} else {splat.get_radiance(index)};
             irradiance * diffuse
         } else { Vec3::splat_expr(0.0f32) };
-        let reflected=if let Some(data)=&specular {
-            if reflections {data.output.read(index).xyz()}else{Vec3::splat_expr(0.0)}
+        let reflected=if let Some((_,output,_))=&reflection_buffers {
+            if reflections {output.read(index).xyz()}else{Vec3::splat_expr(0.0)}
         }else{Vec3::splat_expr(0.0)};
         let color = if mode == 1 {
             direct
@@ -426,8 +436,16 @@ fn main() {
             invalid_pixels.atomic().fetch_add(1u32);
         }
         if let Some(output) = &linear_output { output.write(index, (color * exposure).extend(1.0)); }
+        if let Some(output)=&base_output {output.write(index,((direct+indirect)*exposure).extend(1.0));}
+        if let Some(data)=&cached_specular {data.composition.write(index,color.extend(1.0));}
         app.set_pixel(pixel.cast_i32(), color * exposure);
     }));
+    let present_cached=cached_specular.as_ref().map(|data|DEVICE.create_kernel::<fn(f32)>(&track!(|exposure| {
+        let p=dispatch_id().xy();let i=core.pixel_to_linear(p);let value=data.composition.read(i);
+        if !value.is_finite().all(){invalid_pixels.atomic().fetch_add(1u32);}
+        if let Some(output)=&linear_output {output.write(i,(value.xyz()*exposure).extend(value.w));}
+        app.set_pixel(p.cast_i32(),value.xyz()*exposure);
+    })));
 
     let ui_context = egui::Context::default();
     ui_context.set_visuals(egui::Visuals::dark());
@@ -550,7 +568,7 @@ fn main() {
         }
     );
     println!("Lighting setup: {lighting_metadata}");
-    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}; pica={pica}; specular_samples={specular_samples}; specular_reference={specular_reference}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
+    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}; pica={pica}; specular_samples={specular_samples}; specular_reference={specular_reference}; bounded_reflections={bounded_reflections}; reflection_scale={reflection_scale}; rc_update_samples={rc_update_samples}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
     println!("Transport: {transport_metadata}");
     let scene_counts = if pica {
         "PICA PICA: 145 source objects; 170 material meshes; 76300 triangles; 28 materials".to_string()
@@ -747,7 +765,7 @@ fn main() {
                 ui.radio_value(&mut controls.mode, 1, "Direct light only");
                 ui.radio_value(&mut controls.mode, 2, "Indirect light only");
                 ui.radio_value(&mut controls.mode, 3, "Surface normals");
-                if specular.is_some(){
+                if reflection_buffers.is_some(){
                     ui.checkbox(&mut controls.reflections,"Indirect reflections");
                     ui.radio_value(&mut controls.mode,4,"Reflections only");
                 }
@@ -763,6 +781,7 @@ fn main() {
                 ui.strong("CAMERA / TEST VIEWS");
                 ui.horizontal(|ui| {
                     let labels: &[&str] = if white_room { &["Sealed", "Slit", "Thin walls", "Corner"] }
+                        else if pica { &["Overview", "Right", "Left", "Reflections"] }
                         else { &["Overview", "Shadows", "Color bleed"] };
                     for (i, label) in labels.iter().enumerate() {
                         if ui.button(*label).clicked() { reset_camera = Some(i); }
@@ -1045,7 +1064,25 @@ fn main() {
         }
         let warmed = gi_availability.update(capacity_ok);
         let gi_available = capacity_ok && ((single_frame && capacity_recoveries == 0) || warmed);
-        if controls.reflections && let Some(data)=&specular {
+        let previous_reflection_view=previous_diffuse_camera.view();
+        let mut composition_history_valid=false;
+        if controls.reflections && let Some(data)=&cached_specular {
+            let light_now=controls.lighting().sun_dir;
+            let light_before=previous.lighting().sun_dir;
+            let light_jump=light_now.x*light_before.x+light_now.y*light_before.y+light_now.z*light_before.z<5_f32.to_radians().cos();
+            let reset=energy_changed || light_jump || !swept.is_empty();
+            let valid=specular_history_valid && diffuse_history_valid && !reset;
+            composition_history_valid=valid && controls.mode==previous.mode;
+            if gi_available { commands+=data.prefilter(&rc); }
+            profiler.checkpoint("Reflection RC prefilter",&mut commands);
+            commands+=data.trace(&core,&rc,&splat,rt.tick,gi_available);
+            profiler.checkpoint("Reflection bounded GGX",&mut commands);
+            let frames=if reset {1.0} else if camera_moving || response.retention<1.0 {6.0} else {16.0};
+            for (stage,command) in data.reconstruct(&core,&rc,&splat,rt.tick,previous_diffuse_camera.view(),valid,(frames/60.0/dt).max(1.0),gi_available) {
+                commands+=command; profiler.checkpoint(stage,&mut commands);
+            }
+            specular_history_valid=capacity_ok;
+        } else if controls.reflections && let Some(data)=&specular {
             let light_now=controls.lighting().sun_dir;
             let light_before=previous.lighting().sun_dir;
             let light_jump=light_now.x*light_before.x+light_now.y*light_before.y+light_now.z*light_before.z<5_f32.to_radians().cos();
@@ -1082,6 +1119,11 @@ fn main() {
         commands += invalid_pixels.write_host(0);
         commands.push(draw.dispatch_async([size[0], size[1], 1], &camera.view(), &controls.mode, &2_f32.powf(controls.exposure), &gi_available,&controls.reflections));
         profiler.checkpoint("Direct and compose", &mut commands);
+        if controls.reflections && controls.mode==0 && let Some(data)=&cached_specular {
+            commands+=data.compose(&core,rt.tick,previous_reflection_view,composition_history_valid);
+            commands.push(present_cached.as_ref().unwrap().dispatch_async(core.screen_dispatch_size(),&2_f32.powf(controls.exposure)));
+            profiler.checkpoint("Reflection composition TAA",&mut commands);
+        }
         commands.execute();
 
         if quality_check && ([0, 1, 2, 16, 64, 200].contains(&rt.tick) || rt.tick == quality_frames
@@ -1089,12 +1131,17 @@ fn main() {
             let directory = output_dir.as_deref().unwrap_or(".local/quality-check");
             std::fs::create_dir_all(directory).unwrap();
             let pixels = linear_output.as_ref().unwrap().copy_to_vec();
-            if let Some(data)=&specular {
+            if let Some(buffer)=&base_output {
+                let values:Vec<[f32;4]>=buffer.copy_to_vec().into_iter().map(|v|[v.x,v.y,v.z,v.w]).collect();
+                std::fs::write(format!("{directory}/base-lighting-{:03}.rgba32f",rt.tick),bytemuck::cast_slice(&values)).unwrap();
+            }
+
+            if let Some((raw,output,diagnostics))=&reflection_buffers {
                 if args.iter().any(|a|a=="--specular-diagnostics") {
-                    let values:Vec<[f32;4]>=data.diagnostics.copy_to_vec().into_iter().map(|v|[v.x,v.y,v.z,v.w]).collect();
+                    let values:Vec<[f32;4]>=diagnostics.copy_to_vec().into_iter().map(|v|[v.x,v.y,v.z,v.w]).collect();
                     std::fs::write(format!("{directory}/specular-diagnostics-{:03}.rgba32f",rt.tick),bytemuck::cast_slice(&values)).unwrap();
                 }
-                for (name,buffer) in [("specular-raw",&data.raw),("specular-filtered",&data.output)]{
+                for (name,buffer) in [("specular-raw",raw),("specular-filtered",output)]{
                     let values:Vec<[f32;4]>=buffer.copy_to_vec().into_iter().map(|v|[v.x,v.y,v.z,v.w]).collect();
                     std::fs::write(format!("{directory}/{name}-{:03}.rgba32f",rt.tick),bytemuck::cast_slice(&values)).unwrap();
                 }

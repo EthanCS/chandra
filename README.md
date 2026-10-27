@@ -108,7 +108,7 @@ The default research renderer uses temporal, approximate GI; fast motion and dis
 
 The suite checks counts/topology, motion of all 90 gallery meshes, skin deformation and bounds, mixed instancing, finite light visibility, emission, history invalidation, ray queues, transport accumulation and safe probe-pool exhaustion.
 
-The current suite has 38 Rust CPU/GPU tests, including seven hybrid specular checks. `python tools/test-diffuse-motion.py` provides two additional receiver-correspondence checks. Earlier diffuse interaction acceptance and image experiments are distinguished in the [closeout record](benchmarks/diffuse-motion/README.md); PICA reflection measurements are recorded separately below.
+The current suite has 43 Rust CPU/GPU tests, including bounded reflection convolution, reconstruction and fade checks. `python tools/test-diffuse-motion.py` provides two additional receiver-correspondence checks. Earlier diffuse interaction acceptance and image experiments are distinguished in the [closeout record](benchmarks/diffuse-motion/README.md); PICA reflection measurements are recorded separately below.
 
 `timings.csv` contains unprofiled frame intervals including CPU/UI/presentation, excluding warmup and screenshot I/O. `passes.csv` and `summary.csv` contain CUDA stream-event ranges including submission gaps, not isolated kernel execution times. GI excludes geometry, GBuffer and direct composition; history is reported separately and in the combined GI total. Configuration files, screenshots and convergence reports record the setup. Set `CHANDRA_GPU_DEBUG_SYNC=1` with profiling only for stage-by-stage GPU diagnostics; these are not performance runs.
 
@@ -132,7 +132,27 @@ The FBX contains generic white material defaults, so conversion restores the
 author's published material parameters by exact material name. See
 [asset provenance and license](resources/pica-pica/SOURCE.md).
 
-The first hybrid reflection implementation uses GGX visible-normal samples:
+PICA now defaults to a bounded reflection path: half width/height, four GGX
+queries for glossy pixels, full-resolution sharp mirrors, and a shared
+roughness-prefiltered RC field for broad lobes and secondary lighting. Diffuse
+RC refresh is capped at eight samples per pixel. Object/geometry-aware
+reconstruction and short perceptual temporal filters favor stability, with
+softer details and some response lag. See the [design, measurements, on/off
+images and motion checks](benchmarks/pica-pica/bounded-reflections/README.md).
+
+```powershell
+# New close-up that puts reflective metal in the middle of the image.
+./run-lighting-lab.ps1 -PicaPica -FullHD -View 3 -Static
+# Lower intermediate resolution, or the preserved old quality path.
+./run-lighting-lab.ps1 -PicaPica -FullHD -View 3 -Static -ReflectionScale 4
+./run-lighting-lab.ps1 -PicaPica -FullHD -View 3 -Static -SpecularQuality
+```
+
+`-ReflectionScale 1|2|4` changes the intermediate reflection image. The default
+is 2. `-RcUpdateSamples N` changes the RC refresh cap. `-NoSpecular` switches
+indirect reflections off. Material parameters and textures are unchanged.
+
+The original quality path (`-SpecularQuality`) uses GGX visible-normal samples:
 roughness 0.45–0.60 blends traced shading into the directional RC field outside
 the near probe footprint. Lower roughness uses traced shading; exact mirrors
 use the deterministic reflection direction. Visibility is traced from the
@@ -142,7 +162,7 @@ and a deterministic reflector guide, with history rejection on light-energy,
 large light-direction or geometry changes. It uses numerical BRDF integration, without reservoir resampling.
 
 Use **Indirect reflections** and **Reflections only** in the panel to compare.
-`-NoSpecular` disables the reflection passes; `-SpecularSamples 4` is the
+In the original quality path, `-SpecularSamples 4` is the
 base budget. Thin/grazing surfaces receive extra samples; glossy metals use
 at least 16 with mature, well-supported history, otherwise at least 64.
 Newly visible metals retain 128 samples; temporal disagreement and rare
@@ -168,11 +188,11 @@ python tools/test-pica-materials.py
 python tools/validate-specular-motion.py --capture --output .local/pica-motion-check
 ```
 
-[Current motion checks, isolated 1080p profiles and limitations](benchmarks/pica-pica/optimized/README.md)
+[Earlier adaptive-path motion checks, isolated 1080p profiles and limitations](benchmarks/pica-pica/optimized/README.md)
 use the same binary and corrected scene. Reflection cost averages 23.80 ms static
 and 36.79 ms during combined camera/light motion on an RTX 5070 Ti;
 actual whole-frame throughput is about 31 and 19 FPS respectively.
-The current quality configuration still misses 60 FPS; trace/shading work dominates.
+That adaptive quality configuration misses 60 FPS; trace/shading work dominates. The bounded default is measured separately in the report above.
 The [earlier performance baseline](benchmarks/pica-pica/performance/README.md)
 and [earlier motion captures](benchmarks/pica-pica/motion/README.md) are preserved separately.
 The [initial record](benchmarks/pica-pica/hybrid/README.md) used an incorrect

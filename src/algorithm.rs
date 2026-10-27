@@ -385,6 +385,7 @@ pub mod dynamic_history;
 pub mod diffuse;
 pub mod specular_brdf;
 pub mod specular;
+pub mod cached_specular;
 mod light_grid;
 pub mod rc;
 pub mod ris;

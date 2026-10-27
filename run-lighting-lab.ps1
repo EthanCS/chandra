@@ -10,6 +10,9 @@ param(
     [switch]$IntelSponza,
     [switch]$PicaPica,
     [switch]$NoSpecular,
+    [switch]$SpecularQuality,
+    [ValidateSet(1,2,4)][int]$ReflectionScale = 2,
+    [ValidateRange(1,64)][int]$RcUpdateSamples = 8,
     [ValidateRange(1, 128)][int]$SpecularSamples = 4,
     [string]$ScenePath,
     [switch]$SmokeTest,
@@ -66,7 +69,7 @@ $buildArguments = @('build', '--locked', '--jobs', '12', '--bin', 'lighting_lab'
 if ($LASTEXITCODE -ne 0) { throw 'Chandra build failed.' }
 if ($BuildOnly) { return }
 if ($Test) {
-    & $cargoDriver test --locked --jobs 12 --lib --test dynamic_geometry --test dynamic_history --test gi_optimizations --test emissive_lighting --test cascade_merge --test probe_capacity --test white_room --test diffuse_reconstruction --test diffuse_sampling --test hybrid_specular -- --test-threads=1
+    & $cargoDriver test --locked --jobs 12 --lib --test dynamic_geometry --test dynamic_history --test gi_optimizations --test emissive_lighting --test cascade_merge --test probe_capacity --test white_room --test diffuse_reconstruction --test diffuse_sampling --test hybrid_specular --test cached_specular -- --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     return
 }
@@ -81,6 +84,9 @@ if ($PSBoundParameters.ContainsKey('ProbeBudget')) { $arguments += @('--probe-bu
 if ($IntelSponza) { $arguments += '--intel-sponza' }
 if ($PicaPica) { $arguments += '--pica-pica' }
 if ($NoSpecular) { $arguments += '--no-specular' }
+if ($SpecularQuality) { $arguments += '--specular-quality' }
+$arguments += @('--reflection-scale', $ReflectionScale)
+if ($PSBoundParameters.ContainsKey('RcUpdateSamples')) { $arguments += @('--rc-update-samples', $RcUpdateSamples) }
 $arguments += @('--specular-samples', $SpecularSamples)
 if ($ScenePath) { $arguments += @('--scene-path', $ScenePath) }
 if ($SmokeTest) { $arguments += '--smoke-test' }

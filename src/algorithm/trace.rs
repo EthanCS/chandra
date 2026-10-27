@@ -78,8 +78,12 @@ impl TraceData {
     /// per-pixel normalization and the first ray used for secondary transport.
     /// Requires diffuse budgets in 1..=64 (the DiffuseData budget contract).
     pub fn enable_diffuse_work(&mut self, core: &CoreData) {
+        self.enable_diffuse_work_with_limit(core, 64);
+    }
+    pub fn enable_diffuse_work_with_limit(&mut self, core: &CoreData, max_samples: u32) {
+        assert!((1..=64).contains(&max_samples));
         self.diffuse_work=Some(DiffuseWork {
-            items:DEVICE.create_buffer(core.num_pixels() as usize * 8),
+            items:DEVICE.create_buffer(core.num_pixels() as usize * max_samples.div_ceil(8) as usize),
             ranks:DEVICE.create_buffer(core.num_pixels() as usize),
             count:Singleton::new(0),
         });

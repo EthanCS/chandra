@@ -1,0 +1,22 @@
+{
+  "binary_sha256": "1a9d92ca6583405d7f09157b308c155a1674f6a3dedb9b2397e0ca2653e9c5b3",
+  "parent_commit": "bf3348fa00a08a18ecd3d62622bfc82e568c5639",
+  "scene_sha256": "dbbc921aa3080e781b3aee45e9db0656e3209646da0499dd6f074395a196caa3",
+  "source_sha256": {
+    "src/algorithm/cached_specular.rs": "026f9616282a3952d5c16e96b86f6d2ec15dcaa20a32c5f80d53ad34f3a86d56",
+    "src/algorithm/diffuse.rs": "31b94be1f6a9453d090f5dcdfea20b05cd9c74b6448ee085f27afb986e78b902",
+    "src/algorithm/trace.rs": "191cb79dbd74190fd1c52c0d28e3022ccd7c0de6954f562d74ae059b262a0fe2",
+    "src/bin/lighting_lab.rs": "960daefdd4f5847ffb3b3f3af25fd247768127b43ddd8119fc2ef20b894cac1e",
+    "src/lab_pica.rs": "5a7d833f88ada85794ea8bcdbc6532ce4dd347ca6a1c0b9cb09e127214359fe3",
+    "tests/cached_specular.rs": "999d5c9c3809b5e618b6485c4ac07aae6776b521a89922526c0859c5faef1717",
+    "run-lighting-lab.ps1": "a0ac6feb3620560a110e0f6a881ca417cd99bed9dd4044737c2700d3d2c33bca"
+  },
+  "rust_tests": 43,
+  "motion_frames": 790,
+  "motion_impulses": 0,
+  "notes": [
+    "Near20 quality reuses immutable dense reference captures; original receipt retained.",
+    "Full image uses short perceptual TAA; independent base and reflection layers are also checked.",
+    "Raw floating-point sequences and executables remain in ignored .local/ and target/."
+  ]
+}

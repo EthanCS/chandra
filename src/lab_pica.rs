@@ -182,6 +182,10 @@ pub fn load(path: &Path) -> WorldData {
 }
 pub fn camera(index: usize, size: [u32; 2]) -> yesod::camera::Camera {
     let (pos, target) = match index {
+        3 => (
+            glam::Vec3::new(22., -31., 15.),
+            glam::Vec3::new(6., -11., 4.5),
+        ),
         1 => (
             glam::Vec3::new(36., -42., 26.),
             glam::Vec3::new(-4., 8., 7.),

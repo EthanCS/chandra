@@ -101,7 +101,11 @@ def analyze(directory, width, height, end, tail, reference_directory=None, candi
         view = json.loads((cdir / f"camera-{frame:03}.json").read_text())
         assert view == json.loads((rdir / f"camera-{frame:03}.json").read_text())
         assert np.array_equal(cfull[..., 3], rfull[..., 3])
-        values = {"full": (cfull, rfull), "specular": (cspec, rspec), "base": (cfull - cspec, rfull - rspec), "rough_specular": (cspec, rspec)}
+        # The final composition may have its own temporal stabilization.
+        # Read the independently captured base layer instead of subtracting a
+        # pre-composition reflection from a post-composition image.
+        cbase = load(cdir, "base-lighting", frame, width, height) if (cdir / f"base-lighting-{frame:03}.rgba32f").exists() else cfull - cspec
+        values = {"full": (cfull, rfull), "specular": (cspec, rspec), "base": (cbase, rfull - rspec), "rough_specular": (cspec, rspec)}
         rough = load(cdir,"specular-diagnostics",frame,width,height)[...,0]>=.6
         now = {}
         mask = pos[..., 3] > 0
@@ -175,9 +179,13 @@ def main():
     parser.add_argument("--frames", type=int, default=300)
     parser.add_argument("--tail", type=int, default=190)
     parser.add_argument("--camera-dolly", type=float, default=0)
+    parser.add_argument("--view", type=int, choices=[0,1,2,3], default=1)
     parser.add_argument("--simulation-fps", type=int, choices=[20,30,60,120], default=60)
     parser.add_argument("--reference-exact-feedback", action="store_true",
                         help="Use exact angular integration for the reference's diffuse cache feedback")
+    parser.add_argument("--diffuse-samples", type=int, help="Override candidate diffuse update budget")
+    parser.add_argument("--reflection-scale", type=int, choices=[1,2,4], default=2)
+    parser.add_argument("--specular-quality", action="store_true", help="Validate the original adaptive path")
     args = parser.parse_args()
     assert 1 <= args.samples <= 128 and 2 <= args.tail <= args.frames
     exe = ROOT / "target/debug/lighting_lab.exe"
@@ -191,12 +199,18 @@ def main():
         directory.mkdir(exist_ok=True)
         for variant, samples in (("candidate", args.samples), ("reference", 128)):
             dest = directory / variant
-            command = [str(exe), "--scene-worker", "--pica-pica", "--static", "--view", "1", "--quality-check", "--quality-surfaces", "--specular-diagnostics", "--quality-width", str(args.width), "--quality-height", str(args.height), "--quality-frames", str(args.frames), "--quality-tail", str(args.tail), "--specular-samples", str(samples), "--output", str(dest), *CASES[case]]
+            command = [str(exe), "--scene-worker", "--pica-pica", "--static", "--view", str(args.view), "--quality-check", "--quality-surfaces", "--specular-diagnostics", "--quality-width", str(args.width), "--quality-height", str(args.height), "--quality-frames", str(args.frames), "--quality-tail", str(args.tail), "--specular-samples", str(samples), "--output", str(dest), *CASES[case]]
             command += ["--camera-dolly", str(args.camera_dolly), "--quality-fps", str(args.simulation_fps)]
             if variant == "reference":
                 command.append("--no-specular-filter")
                 if args.reference_exact_feedback:
                     command.append("--exact-diffuse-feedback")
+            else:
+                command += ["--reflection-scale", str(args.reflection_scale)]
+                if args.diffuse_samples is not None:
+                    command += ["--diffuse-samples", str(args.diffuse_samples)]
+                if args.specular_quality:
+                    command.append("--specular-quality")
             receipt = directory / (variant + "-receipt.json")
             if variant == "reference" and args.reference_root:
                 saved = json.loads((args.reference_root.resolve() / case / "reference-receipt.json").read_text())
@@ -214,7 +228,7 @@ def main():
                 receipt.write_text(json.dumps({"binary_sha256": binary, "arguments": command, "scene_sha256": sha(ROOT / "external/PicaPica/scene.gltf")}, indent=2))
             assert receipt.exists(), "Capture receipt missing; use --capture"
         reference_directory=args.reference_root.resolve() / case / "reference" if args.reference_root else None
-        result["cases"][case] = analyze(directory, args.width, args.height, args.frames, args.tail, reference_directory, "GGX + reconstruction")
+        result["cases"][case] = analyze(directory, args.width, args.height, args.frames, args.tail, reference_directory, "Adaptive GGX" if args.specular_quality else "RC + bounded reflections")
         print(case, json.dumps({k: {n: v for n, v in m.items() if n != "events"} for k, m in result["cases"][case].items()}), flush=True)
         (output / "summary.json").write_text(json.dumps(result, indent=2))
 

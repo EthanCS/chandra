@@ -21,7 +21,7 @@ parser.add_argument('--output', required=True)
 parser.add_argument('--samples', type=int, default=4)
 parser.add_argument('--width', type=int, default=1920)
 parser.add_argument('--height', type=int, default=1080)
-parser.add_argument('--view', type=int, choices=[0, 1, 2], default=1)
+parser.add_argument('--view', type=int, choices=[0, 1, 2, 3], default=1)
 parser.add_argument('--camera-dolly', type=float, default=0,
                     help='Move forward from the camera preset in scene units')
 parser.add_argument('--simulation-fps', type=int, choices=[20,30,60,120], default=60)
@@ -30,6 +30,9 @@ parser.add_argument('--executable', type=Path, default=EXE)
 parser.add_argument('--specular-batch', type=int, choices=[1,2,4,8,16,32])
 parser.add_argument('--specular-registers', type=int)
 parser.add_argument('--diffuse-registers', type=int)
+parser.add_argument('--diffuse-samples', type=int)
+parser.add_argument('--reflection-scale', type=int, choices=[1,2,4])
+parser.add_argument('--specular-quality', action='store_true')
 options = parser.parse_args()
 EXE = options.executable.resolve()
 assert 1 <= options.samples <= 128
@@ -44,12 +47,22 @@ def query():
     return subprocess.check_output(['nvidia-smi', '--query-gpu=timestamp,name,driver_version,utilization.gpu,memory.used,power.draw,temperature.gpu,clocks.current.graphics', '--format=csv'], text=True, creationflags=flags).strip()
 
 def processes():
-    return subprocess.check_output(['powershell', '-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -in @('Albor.Runtime.exe','lighting_lab.exe') } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"], text=True, creationflags=flags).strip()
+    return subprocess.check_output(['powershell', '-NoProfile', '-Command', "Get-CimInstance Win32_Process | Where-Object { $_.Name -like 'Albor*' -or $_.Name -like 'lighting_lab*' } | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json"], text=True, creationflags=flags).strip()
+
+def gpu_consumers():
+    # WDDM applications may be absent from nvidia-smi's compute process list.
+    script = """Get-Counter '\\GPU Engine(*)\\Utilization Percentage' -SampleInterval 1 -MaxSamples 2 |
+      ForEach-Object { $_.CounterSamples | Where-Object CookedValue -gt 2 | ForEach-Object {
+        $taskPid = [int]([regex]::Match($_.InstanceName, 'pid_(\\d+)_').Groups[1].Value)
+        [pscustomobject]@{pid=$taskPid;name=(Get-Process -Id $taskPid -ErrorAction SilentlyContinue).ProcessName;engine=$_.InstanceName;utilization=$_.CookedValue}
+      }} | ConvertTo-Json"""
+    raw = subprocess.check_output(['powershell', '-NoProfile', '-Command', script], text=True, creationflags=flags).strip()
+    return json.loads(raw) if raw else []
 
 def sha(p):
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
-initial = {'gpu': query(), 'processes': processes(), 'binary_sha256': sha(EXE), 'scene_gltf_sha256': sha(SCENE)}
+initial = {'gpu': query(), 'processes': processes(), 'gpu_engine_processes': gpu_consumers(), 'binary_sha256': sha(EXE), 'scene_gltf_sha256': sha(SCENE)}
 assert not initial['processes'], 'Another lighting_lab or Albor runtime is active; stop it before profiling'
 if not (OUT / 'environment-before.json').exists():
     (OUT / 'environment-before.json').write_text(json.dumps(initial, indent=2), encoding='utf-8')
@@ -69,6 +82,12 @@ for name, extra in cases.items():
         args += ['--specular-registers',str(options.specular_registers)]
     if options.diffuse_registers is not None:
         args += ['--diffuse-registers',str(options.diffuse_registers)]
+    if options.diffuse_samples is not None:
+        args += ['--diffuse-samples', str(options.diffuse_samples)]
+    if options.reflection_scale is not None:
+        args += ['--reflection-scale', str(options.reflection_scale)]
+    if options.specular_quality:
+        args += ['--specular-quality']
     receipt = {'case': name, 'arguments': args, 'started_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'binary_sha256': sha(EXE), 'scene_gltf_sha256': sha(SCENE), 'gpu_before': query(), 'processes_before': processes()}
     assert not receipt['processes_before'], 'Another renderer started between cases'
     start = time.perf_counter()
@@ -87,4 +106,5 @@ for name, extra in cases.items():
     assert run.returncode == 0, name
     assert (dest / 'summary.csv').exists(), name
     print('DONE', name, (dest / 'summary.csv').read_text(), flush=True)
+(OUT / 'environment-after.json').write_text(json.dumps({'gpu': query(), 'processes': processes(), 'gpu_engine_processes': gpu_consumers()}, indent=2), encoding='utf-8')
 print('ALL DONE', query(), flush=True)

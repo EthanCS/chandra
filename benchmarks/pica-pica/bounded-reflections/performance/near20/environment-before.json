@@ -1,0 +1,20 @@
+{
+  "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 13:13:34.305, NVIDIA GeForce RTX 5070 Ti, 617.42, 9 %, 1468 MiB, 47.11 W, 40, 1125 MHz",
+  "processes": "",
+  "gpu_engine_processes": [
+    {
+      "pid": 2692,
+      "name": "dwm",
+      "engine": "pid_2692_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization": 7.4357401470847
+    },
+    {
+      "pid": 2692,
+      "name": "dwm",
+      "engine": "pid_2692_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization": 7.423877785916082
+    }
+  ],
+  "binary_sha256": "1a9d92ca6583405d7f09157b308c155a1674f6a3dedb9b2397e0ca2653e9c5b3",
+  "scene_gltf_sha256": "dbbc921aa3080e781b3aee45e9db0656e3209646da0499dd6f074395a196caa3"
+}

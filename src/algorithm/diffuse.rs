@@ -8,6 +8,7 @@ pub struct DiffuseData {
     pub filtered: Buffer<Vec4<f32>>,
     pub output: Buffer<Vec4<f32>>,
     pub samples: Buffer<u32>,
+    sample_limit: u32,
     position: [Buffer<Vec4<f32>>; 2],
     normal: [Buffer<Vec4<f32>>; 2],
     history: [Buffer<Vec4<f32>>; 2],
@@ -22,6 +23,11 @@ pub struct DiffuseData {
 
 impl DiffuseData {
     pub fn new(core: &CoreData) -> Self {
+        Self::with_sample_limit(core, 64)
+    }
+    /// Bound the work used to refresh shared RC lighting on disocclusion.
+    pub fn with_sample_limit(core: &CoreData, sample_limit: u32) -> Self {
+        assert!((1..=64).contains(&sample_limit));
         let create = || {
             DEVICE
                 .create_buffer_from_fn::<Vec4<f32>>(core.num_pixels() as usize, |_| Vec4::splat(0.))
@@ -31,6 +37,7 @@ impl DiffuseData {
             filtered: create(),
             output: create(),
             samples: DEVICE.create_buffer(core.num_pixels() as usize),
+            sample_limit,
             position: [create(), create()],
             normal: [create(), create()],
             history: [create(), create()],
@@ -194,6 +201,7 @@ impl DiffuseData {
                                 base_samples
                             };
                         }
+                        *count = keter::min(**count, self.sample_limit);
                         if override_samples > 0u32 {
                             *count = override_samples;
                         }
