@@ -1,0 +1,34 @@
+{
+  "static": {
+    "reflection_mean_ms": 79.081734,
+    "reflection_p95_ms": 80.462463,
+    "gi_including_history_mean_ms": 8.634012,
+    "sum_recorded_stage_mean_ms": 88.129344,
+    "application_smoothed_fps_at_frame_300": 11.0,
+    "measured_frames": 120
+  },
+  "combined": {
+    "reflection_mean_ms": 173.331436,
+    "reflection_p95_ms": 186.960617,
+    "gi_including_history_mean_ms": 24.71089,
+    "sum_recorded_stage_mean_ms": 198.448876,
+    "application_smoothed_fps_at_frame_300": 5.8,
+    "measured_frames": 120
+  },
+  "static-no-specular": {
+    "reflection_mean_ms": 0.0,
+    "reflection_p95_ms": 0.0,
+    "gi_including_history_mean_ms": 8.730472,
+    "sum_recorded_stage_mean_ms": 9.111339000000001,
+    "application_smoothed_fps_at_frame_300": 95.1,
+    "measured_frames": 120
+  },
+  "combined-no-specular": {
+    "reflection_mean_ms": 0.0,
+    "reflection_p95_ms": 0.0,
+    "gi_including_history_mean_ms": 24.590117,
+    "sum_recorded_stage_mean_ms": 24.996947,
+    "application_smoothed_fps_at_frame_300": 42.9,
+    "measured_frames": 120
+  }
+}

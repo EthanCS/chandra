@@ -1,0 +1,15 @@
+{
+  "status": "superseded_by_isolated_profile",
+  "isolated_profile": "../performance/README.md",
+  "isolated_profile_result": "Measured after user-authorized Albor closure; current configuration does not meet realtime performance.",
+  "observed_local_time": "2026-10-27 ~02:46 Asia/Shanghai",
+  "renderer_running_during_utilization_check": false,
+  "competing_process": "Albor.Runtime.exe",
+  "gpu_3d_engine_utilization_percent": [
+    97.36,
+    96.31
+  ],
+  "action_at_initial_observation": "Application left running pending permission.",
+  "subsequent_action": "User authorized closure; verified PID 45720 and command line, closed its main window successfully. GPU utilization fell to 1 percent before profiling.",
+  "excluded_profile_directory": ".local/pica-net-profile"
+}

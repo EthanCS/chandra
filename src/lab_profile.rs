@@ -66,6 +66,7 @@ pub struct GpuProfiler {
     driver: Option<Driver>,
     ranges: Vec<(&'static str, Handle, Handle)>,
     samples: BTreeMap<&'static str, Vec<f32>>,
+    frame_intervals_ms: Vec<f64>,
 }
 impl GpuProfiler {
     pub fn new(enabled: bool) -> Self {
@@ -74,6 +75,7 @@ impl GpuProfiler {
             driver: enabled.then(Driver::new),
             ranges: Vec::new(),
             samples: BTreeMap::new(),
+            frame_intervals_ms: Vec::new(),
         }
     }
     pub fn begin(&mut self, name: &'static str) -> Option<usize> {
@@ -151,8 +153,22 @@ impl GpuProfiler {
         }
         driver.pop();
     }
+    pub fn record_frame_interval(&mut self, seconds: f64) {
+        if self.driver.is_some() { self.frame_intervals_ms.push(seconds * 1000.0); }
+    }
     pub fn save(&self, directory: &str) {
         std::fs::create_dir_all(directory).unwrap();
+        if !self.frame_intervals_ms.is_empty() {
+            let mut frames=String::from("frame,wall_ms\n");
+            for (i,t) in self.frame_intervals_ms.iter().enumerate() {frames.push_str(&format!("{},{t:.6}\n",200+i));}
+            std::fs::write(format!("{directory}/frame-times.csv"),frames).unwrap();
+            let mut sorted=self.frame_intervals_ms.clone(); sorted.sort_by(f64::total_cmp);
+            let mean=sorted.iter().sum::<f64>()/sorted.len() as f64;
+            let p95=sorted[(sorted.len() as f64*0.95) as usize];
+            let fps=1000.0/mean;
+            std::fs::write(format!("{directory}/frame-summary.csv"),format!("mean_wall_ms,p95_wall_ms,max_wall_ms,mean_fps,samples\n{mean:.6},{p95:.6},{:.6},{fps:.6},{}\n",sorted.last().unwrap(),sorted.len())).unwrap();
+            println!("Frame interval: {mean:.4} ms, p95 {p95:.4} ms, {fps:.2} FPS");
+        }
         let mut rows: Vec<_> = self
             .samples
             .iter()
@@ -184,12 +200,16 @@ impl GpuProfiler {
             ("GI main", false),
             ("GI including dynamic history", true),
             ("Geometry total", false),
+            ("Reflections total", false),
         ] {
             let count = self.samples.values().next().unwrap().len();
             let mut totals = vec![0.0f32; count];
             for (stage, samples) in &self.samples {
                 let geometry = stage.starts_with("Geometry ");
-                if (name == "Geometry total" && !geometry)
+                let reflection = stage.starts_with("Reflection ");
+                if name == "Reflections total" {
+                    if !reflection { continue; }
+                } else if reflection || (name == "Geometry total" && !geometry)
                     || (name != "Geometry total" && geometry)
                     || matches!(*stage, "GBuffer" | "Direct and compose")
                     || (!include_history && *stage == "Dynamic history")

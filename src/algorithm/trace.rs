@@ -44,6 +44,13 @@ pub struct TraceData {
     frame_primary: Option<Buffer<FrameRay>>,
     pub min_probe_rays: u32,
     adaptive_work: Option<Buffer<Vec2<u32>>>,
+    diffuse_work: Option<DiffuseWork>,
+}
+
+struct DiffuseWork {
+    items: Buffer<Vec2<u32>>,
+    ranks: Buffer<u32>,
+    count: Singleton<u32>,
 }
 
 #[repr(C)]
@@ -62,6 +69,33 @@ pub struct StableSamples {
 }
 
 impl TraceData {
+    /// Split expensive diffuse pixels into eight-ray jobs. This preserves
+    /// per-pixel normalization and the first ray used for secondary transport.
+    /// Requires diffuse budgets in 1..=64 (the DiffuseData budget contract).
+    pub fn enable_diffuse_work(&mut self, core: &CoreData) {
+        self.diffuse_work=Some(DiffuseWork {
+            items:DEVICE.create_buffer(core.num_pixels() as usize * 8),
+            ranks:DEVICE.create_buffer(core.num_pixels() as usize),
+            count:Singleton::new(0),
+        });
+    }
+    fn prepare_diffuse_work(&self,core:&CoreData,rc:&RcData,budget:&Buffer<u32>)->NodeConfigs<'static> {
+        let work=self.diffuse_work.as_ref().unwrap();
+        let prepare=memo((), || DEVICE.create_kernel::<fn()>(&track!(|| {
+            let pixel=dispatch_id().xy();
+            let i=core.pixel_to_linear(pixel);
+            if core.read_depth(pixel)==0.0 {self.traced_hits.write(i,Hit::invalid().expr());return;}
+            let pos=core.get_world_pos(pixel);
+            let node=rc.cache.get(rc.cache.quantize(pos,rc.cache.estimate_lod(pos),0u32.expr()));
+            if node.invalid() {return;}
+            let rank=if let Some(stable)=&self.stable_samples {stable.ranks.read(i)} else {self.base_ray_index.atomic_ref(node.index).fetch_add(1u32)};
+            work.ranks.write(i,rank);
+            let count=(budget.read(i)+7u32)/8u32;
+            let start=work.count.atomic().fetch_add(count);
+            for batch in 0u32.expr()..count {work.items.write(start+batch,Vec2::expr(i,batch*8u32));}
+        }))).dispatch_async(core.screen_dispatch_size());
+        (work.count.write_host(0),prepare).chain()
+    }
     pub fn new(core: &CoreData, rc: &RcData, max_rays: usize) -> Self {
         Self::create(core, rc, max_rays, false)
     }
@@ -87,6 +121,7 @@ impl TraceData {
             frame_primary: None,
             min_probe_rays: 0,
             adaptive_work: None,
+            diffuse_work: None,
             // used for debug
         }
     }
@@ -375,9 +410,17 @@ impl TraceData {
     pub fn compute_rays_adaptive(&self,core:&CoreData,rc:&RcData,tick:u32,c0_len:f32,
         multibounce:bool,path_depth:u32,samples:u32,budget:Option<&Buffer<u32>>)->NodeConfigs<'static> {
         assert!(samples > 0);
-        memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays,budget.is_some()), || {
+        let diffuse_work=self.diffuse_work.as_ref().filter(|_|budget.is_some() && path_depth==0 && self.frame_primary.is_none() && self.min_probe_rays==0);
+        let prepare=if diffuse_work.is_some() {self.prepare_diffuse_work(core,rc,budget.unwrap())} else {Default::default()};
+        let trace=memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays,budget.is_some(),diffuse_work.is_some()), || {
             DEVICE.create_kernel::<fn(u32, f32)>(&track!(|tick, c0_len| {
-                let pixel = if let Some(work) = &self.adaptive_work {
+                let pixel = if let Some(work) = diffuse_work {
+                    set_block_size([128,1,1]);
+                    let i=dispatch_id().x;
+                    if i>=work.count.read() {return;}
+                    let pixel=work.items.read(i).x;
+                    Vec2::expr(pixel % core.screen_size().x,pixel / core.screen_size().x)
+                } else if let Some(work) = &self.adaptive_work {
                     set_block_size([128,1,1]);
                     let i = dispatch_id().x;
                     if i >= self.next_max_cascade_ray_direction.read() { return; }
@@ -402,7 +445,8 @@ impl TraceData {
                 let offset = if let Some(stable) = &self.stable_samples { stable.offsets.read(node.index) }
                     else { self.ray_offset.read(node.index) };
 
-                let pixel_index = if let Some(stable) = &self.stable_samples { stable.ranks.read(core.pixel_to_linear(pixel)) }
+                let pixel_index = if let Some(work)=diffuse_work {work.ranks.read(core.pixel_to_linear(pixel))}
+                    else if let Some(stable) = &self.stable_samples { stable.ranks.read(core.pixel_to_linear(pixel)) }
                     else { self.base_ray_index.atomic_ref(node.index).fetch_add(1) };
                 let sample_weight = if self.min_probe_rays > 0 {
                     let pixels = self.stable_samples.as_ref().unwrap().pixel_counts.read(node.index);
@@ -430,7 +474,9 @@ impl TraceData {
                 let sample_weight=if path_depth==0 && self.frame_primary.is_none() {
                     sample_weight/effective_samples.cast_f32()
                 } else {sample_weight};
-                for sample in 0u32.expr()..count * effective_samples {
+                let sample_start=if let Some(work)=diffuse_work {work.items.read(dispatch_id().x).y} else {0u32.expr()};
+                let sample_end=if diffuse_work.is_some() {keter::min(sample_start+8u32,effective_samples)} else {count*effective_samples};
+                for sample in sample_start..sample_end {
                 let offset_index = if let Some(work) = &self.adaptive_work { work.read(dispatch_id().x).y * samples + sample }
                     else if path_depth==0 && self.frame_primary.is_none() {offset+first+sample*104729u32}
                     else { (offset + first) * samples + sample };
@@ -480,8 +526,9 @@ impl TraceData {
                 }
             }))
         })
-        .dispatch_async(if let Some(work) = &self.adaptive_work { [work.len() as u32,1,1] } else { core.screen_dispatch_size() }, &tick, &c0_len)
-        .debug("Compute Rays")
+        .dispatch_async(if let Some(work)=diffuse_work {[work.items.len() as u32,1,1]} else if let Some(work) = &self.adaptive_work { [work.len() as u32,1,1] } else { core.screen_dispatch_size() }, &tick, &c0_len)
+        .debug("Compute Rays");
+        (prepare,trace).chain()
     }
 
     #[tracked]

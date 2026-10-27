@@ -7,15 +7,17 @@ pub enum Scene {
     Courtyard,
     Sponza,
     IntelSponza,
+    PicaPica,
 }
 
 impl Scene {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Gallery,
         Self::WhiteRoom,
         Self::Courtyard,
         Self::Sponza,
         Self::IntelSponza,
+        Self::PicaPica,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -24,6 +26,7 @@ impl Scene {
             Self::Courtyard => "Small courtyard",
             Self::Sponza => "Sponza OBJ",
             Self::IntelSponza => "Intel Sponza",
+            Self::PicaPica => "PICA PICA",
         }
     }
     pub fn flag(self) -> &'static str {
@@ -33,6 +36,7 @@ impl Scene {
             Self::Courtyard => "--courtyard",
             Self::Sponza => "--sponza",
             Self::IntelSponza => "--intel-sponza",
+            Self::PicaPica => "--pica-pica",
         }
     }
     pub fn exit_code(self) -> i32 {

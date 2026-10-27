@@ -31,7 +31,7 @@ fn extra_diffuse_samples_keep_the_same_first_path_and_secondary_hit() {
     // must not be confused with a change in the samples-per-pixel budget.
     let mut trace = trace;
     trace.enable_stable_samples(&core, &rc);
-    let schedule = || {
+    let schedule = |trace: &TraceData| {
         let mut commands = CommandList::new();
         commands += trace.reset();
         commands += trace.compute_ray_count_base(&core, &rc);
@@ -47,7 +47,7 @@ fn extra_diffuse_samples_keep_the_same_first_path_and_secondary_hit() {
     let budget = DEVICE.create_buffer_from_fn::<u32>(256, |_| 1);
     let length =
         ((2 * rc.base_angular_resolution.pow(2)) as f32 / (4. * std::f32::consts::PI)).sqrt();
-    schedule();
+    schedule(&trace);
     trace
         .compute_rays_adaptive(&core, &rc, 140, length, false, 0, 1, Some(&budget))
         .execute();
@@ -60,8 +60,9 @@ fn extra_diffuse_samples_keep_the_same_first_path_and_secondary_hit() {
         .iter()
         .sum();
     assert!((first_mass - 256.).abs() < 1e-3);
+    trace.enable_diffuse_work(&core);
     budget.copy_from(&vec![32u32; 256]);
-    schedule();
+    schedule(&trace);
     trace
         .compute_rays_adaptive(&core, &rc, 140, length, false, 0, 1, Some(&budget))
         .execute();

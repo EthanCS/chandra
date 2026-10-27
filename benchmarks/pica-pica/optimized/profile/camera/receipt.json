@@ -1,0 +1,32 @@
+{
+  "case": "camera",
+  "arguments": [
+    "F:\\Workspace\\chandra\\target\\debug\\lighting_lab.exe",
+    "--scene-worker",
+    "--pica-pica",
+    "--1080p",
+    "--static",
+    "--view",
+    "1",
+    "--profile",
+    "--profile-frames",
+    "120",
+    "--specular-samples",
+    "4",
+    "--output",
+    "F:\\Workspace\\chandra\\.local\\pica-batched-profile\\camera",
+    "--quality-camera-track",
+    "combined"
+  ],
+  "started_utc": "2026-10-27T00:27:58.304796+00:00",
+  "binary_sha256": "25afb3d6af840328c60436efbc42830d7c7afb3e9297af5bf66209874ccbfc0f",
+  "scene_gltf_sha256": "dbbc921aa3080e781b3aee45e9db0656e3209646da0499dd6f074395a196caa3",
+  "gpu_before": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 08:27:58.350, NVIDIA GeForce RTX 5070 Ti, 617.42, 0 %, 1306 MiB, 193.01 W, 49, 2865 MHz",
+  "processes_before": "",
+  "renderer_pid": 41976,
+  "returncode": 0,
+  "wall_seconds_including_startup": 16.363722599999164,
+  "binary_sha256_after": "25afb3d6af840328c60436efbc42830d7c7afb3e9297af5bf66209874ccbfc0f",
+  "gpu_after": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 08:28:15.020, NVIDIA GeForce RTX 5070 Ti, 617.42, 0 %, 1306 MiB, 136.28 W, 51, 2872 MHz",
+  "processes_after": ""
+}

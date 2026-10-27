@@ -1,0 +1,30 @@
+PICA: 76300 triangles, 170 meshes, 28 materials, 6 textures, 0 omitted blend primitives
+Rigid update path: batched vertices + transform-only TLAS update; immutable rigid BLASes
+[2026-10-26T23:15:58Z WARN  lc-cpp] Failed to allocate 134217728 bytes from CUDAHostBufferPool. Falling back to ad-hoc allocation. [C:\Users\Administrator\.cargo\git\checkouts\luisa-compute-rs-897d3c0b442d5d95\d270b52\luisa_compute_sys\LuisaCompute\src\backends\cuda\cuda_host_buffer_pool.cpp:35]
+Dynamic history capacity: 16 independent swept regions
+Lighting setup: emissive-materials=false; preset=default; sun=3; sky=0.6; emission=1; exposure_ev=0; local_light_strength=0
+Transport: single_frame=false; split_single_frame=false; frame_cache=false; path_depth=8; samples=1; min_probe_rays=0; batched_skin=true; light_grid=true; camera_preset=1; quality_motion=false; pica=true; specular_samples=16; specular_reference=false
+Scene ready: PICA PICA / 145 objects / 170 material meshes / 76300 triangles. First frame compiles the GPU kernels.
+Frame 0: 62.5 FPS, 49009664 rays, 21070 probes
+Frame 1: 43.9 FPS, 49335642 rays, 23501 probes
+Frame 300: 5.8 FPS, 14976405 rays, 21130 probes
+GPU Reflection trace: 172.6936 ms
+GPU GI primary rays: 21.7538 ms
+GPU Reflection reconstruction: 0.6378 ms
+GPU GI secondary rays: 0.6153 ms
+GPU Diffuse reconstruction: 0.5811 ms
+GPU Screen GI interpolation: 0.4220 ms
+GPU Probe init and lifetime: 0.3325 ms
+GPU Direct and compose: 0.2448 ms
+GPU Diffuse sample support: 0.2203 ms
+GPU Cache merge: 0.1923 ms
+GPU Cache freelists and readback: 0.1825 ms
+GPU GBuffer: 0.1617 ms
+GPU Ray scheduling: 0.1473 ms
+GPU Irradiance: 0.1334 ms
+GPU Dynamic history: 0.1288 ms
+GPU Radiance deposit: 0.0016 ms
+GPU GI main: 24.5821 ms, p95 27.5397 ms
+GPU GI including dynamic history: 24.7109 ms, p95 27.6687 ms
+GPU Geometry total: 0.0000 ms, p95 0.0000 ms
+GPU Reflections total: 173.3314 ms, p95 186.9606 ms

@@ -172,7 +172,9 @@ impl DiffuseData {
                             } else {
                                 Vec4::splat_expr(0.0f32)
                             };
-                            *count = if history.w < 4.0 {
+                            // Bilinear reprojection of a four-frame history can
+                            // round just below four. That is not disocclusion.
+                            *count = if history.w < 3.999 {
                                 64u32.expr()
                             } else if support < 3u32 {
                                 32u32.expr()

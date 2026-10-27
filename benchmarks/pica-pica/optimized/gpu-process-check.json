@@ -1,0 +1,49 @@
+{
+  "time": "2026-10-27T08:27:30.3072030+08:00",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti, 617.42, 1 %, 1304 MiB, 15.30 W",
+  "renderers": [],
+  "active_engines": [
+    {
+      "pid": 26016,
+      "name": "ChatGPT",
+      "engine": "pid_26016_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization_percent": 0.8158059791804575,
+      "timestamp": "2026-10-27T08:27:29.2378786+08:00"
+    },
+    {
+      "pid": 22048,
+      "name": "msedgewebview2",
+      "engine": "pid_22048_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization_percent": 0.815777295796883,
+      "timestamp": "2026-10-27T08:27:28.2251378+08:00"
+    },
+    {
+      "pid": 22048,
+      "name": "msedgewebview2",
+      "engine": "pid_22048_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization_percent": 0.7653685918450209,
+      "timestamp": "2026-10-27T08:27:29.2378786+08:00"
+    },
+    {
+      "pid": 26016,
+      "name": "ChatGPT",
+      "engine": "pid_26016_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization_percent": 0.7146049490330579,
+      "timestamp": "2026-10-27T08:27:30.2568332+08:00"
+    },
+    {
+      "pid": 26016,
+      "name": "ChatGPT",
+      "engine": "pid_26016_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization_percent": 0.689547607841026,
+      "timestamp": "2026-10-27T08:27:28.2251378+08:00"
+    },
+    {
+      "pid": 22048,
+      "name": "msedgewebview2",
+      "engine": "pid_22048_luid_0x00000000_0x0001e9e2_phys_0_eng_0_engtype_3d",
+      "utilization_percent": 0.5771896019704901,
+      "timestamp": "2026-10-27T08:27:30.2568332+08:00"
+    }
+  ]
+}

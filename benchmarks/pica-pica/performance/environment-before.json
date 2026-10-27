@@ -1,0 +1,7 @@
+{
+  "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 07:15:11.708, NVIDIA GeForce RTX 5070 Ti, 617.42, 1 %, 1305 MiB, 16.15 W, 42, 397 MHz",
+  "processes": "",
+  "binary_sha256": "62cfb8a31d9df711c5e52177da17e24c9a94e1418980865ac4b6b9dc354a051b",
+  "scene_gltf_sha256": "dbbc921aa3080e781b3aee45e9db0656e3209646da0499dd6f074395a196caa3",
+  "user_authorized_albor_close": true
+}

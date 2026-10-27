@@ -1,0 +1,10 @@
+PICA: 76300 triangles, 170 meshes, 28 materials, 6 textures, 0 omitted blend primitives
+Rigid update path: batched vertices + transform-only TLAS update; immutable rigid BLASes
+[2026-10-27T00:23:29Z WARN  lc-cpp] Failed to allocate 134217728 bytes from CUDAHostBufferPool. Falling back to ad-hoc allocation. [C:\Users\Administrator\.cargo\git\checkouts\luisa-compute-rs-897d3c0b442d5d95\d270b52\luisa_compute_sys\LuisaCompute\src\backends\cuda\cuda_host_buffer_pool.cpp:35]
+Dynamic history capacity: 16 independent swept regions
+Lighting setup: emissive-materials=false; preset=default; sun=3; sky=0.6; emission=1; exposure_ev=0; local_light_strength=0
+Transport: single_frame=false; split_single_frame=false; frame_cache=false; path_depth=8; samples=1; min_probe_rays=0; batched_skin=true; light_grid=true; camera_preset=1; quality_motion=false; pica=true; specular_samples=128; specular_reference=false
+Scene ready: PICA PICA / 145 objects / 170 material meshes / 76300 triangles. First frame compiles the GPU kernels.
+Frame 0: 62.5 FPS, 1680640 rays, 16975 probes
+Frame 1: 51.3 FPS, 1691859 rays, 19044 probes
+Frame 300: 44.8 FPS, 259104 rays, 19357 probes

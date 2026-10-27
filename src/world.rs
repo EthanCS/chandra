@@ -17,6 +17,11 @@ use yesod::shapes::dda;
 
 use crate::utils::*;
 
+#[path = "world_pbr.rs"]
+mod pbr;
+pub use pbr::PbrMaterial;
+use pbr::PbrData;
+
 pub struct TriangleWorld {
     accel: Accel,
     pub(crate) meshes: Vec<Mesh>,
@@ -33,6 +38,7 @@ pub struct TriangleWorld {
     pub material_diffuse: Buffer<Vec3<f32>>,
     material_emission: Option<Buffer<Vec3<f32>>>,
     diffuse_textures: Option<DiffuseTextures>,
+    pbr: Option<PbrData>,
     deformation_groups: Vec<DeformationGroup>,
     grouped_meshes: Vec<Option<usize>>,
     group_hit_offsets: Option<Buffer<u32>>,
@@ -162,6 +168,7 @@ impl TriangleWorld {
             material_diffuse,
             material_emission: None,
             diffuse_textures: None,
+            pbr: None,
             deformation_groups: Vec::new(),
             grouped_meshes: vec![None; mesh_count],
             group_hit_offsets: None,
@@ -208,6 +215,7 @@ impl TriangleWorld {
             self.deformation_groups.push(DeformationGroup { mesh, _indices: indices });
         }
         if !groups.is_empty() {
+            if let Some(pbr) = &mut self.pbr { pbr.hardware_alpha = false; }
             self.group_hit_offsets = Some(DEVICE.create_buffer_from_slice(&offsets));
             self.group_hit_meshes = Some(DEVICE.create_buffer_from_slice(&identities));
             self.accel.build(AccelBuildRequest::ForceBuild);
@@ -231,7 +239,8 @@ impl TriangleWorld {
                 hint: AccelUsageHint::FastTrace, allow_compaction: true, allow_update: false,
             });
             mesh.build(AccelBuildRequest::ForceBuild);
-            self.accel.set_mesh(i, &mesh, Mat4::identity(), 0xFF, true);
+            let opaque = !self.pbr.as_ref().is_some_and(|p| p.hardware_alpha && p.masked_meshes[i]);
+            self.accel.set_mesh(i, &mesh, Mat4::identity(), 0xFF, opaque);
             self.meshes[i] = mesh;
             self.rigid_instance_vertices[i] = Some(bind);
         }
@@ -254,7 +263,10 @@ impl TriangleWorld {
 
     #[tracked]
     pub fn get_emission(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
-        if let Some(emission) = &self.material_emission {
+        if self.pbr.is_some() {
+            let m=self.pbr_material(hit);
+            m.emission_alpha.xyz()*self.pbr_texture(hit,m.textures[3],false).xyz()
+        } else if let Some(emission) = &self.material_emission {
             emission.read(self.material_indices.read(hit.inst))
         } else {
             Vec3::splat_expr(0.0f32)
@@ -399,7 +411,7 @@ impl TriangleWorld {
     }
 
     #[tracked]
-    pub fn trace_segment(
+    fn trace_opaque_segment(
         &self,
         ray_start: Expr<Vec3<f32>>,
         ray_dir: Expr<Vec3<f32>>,
@@ -428,6 +440,32 @@ impl TriangleWorld {
     }
 
     #[tracked]
+    pub fn trace_segment(&self, start: Expr<Vec3<f32>>, direction: Expr<Vec3<f32>>, interval: Expr<Vec2<f32>>) -> Expr<SurfaceHit> {
+        if self.pbr.as_ref().is_some_and(|p| p.has_mask && p.hardware_alpha) {
+            let h = self.accel.traverse(
+                Ray::new_expr(Expr::<[f32;3]>::from(start), interval.x, Expr::<[f32;3]>::from(direction), interval.y),
+                AccelTraceOptions { mask:0xFF.expr(), ..Default::default() },
+            ).on_surface_hit(|candidate| {
+                if self.accepts_hit(*candidate) { candidate.commit(); }
+            }).trace();
+            SurfaceHit::from_comps_expr(keter::rtx::SurfaceHitComps {
+                inst:h.miss().select(u32::MAX.expr(),h.inst), prim:h.prim,
+                bary:h.bary, committed_ray_t:h.committed_ray_t,
+            })
+        } else {
+        let hit=self.trace_opaque_segment(start,direction,interval).var();
+        if self.pbr.as_ref().is_some_and(|p|p.has_mask) {
+            for _ in 0u32.expr()..32u32.expr() {
+                if hit.miss() || self.accepts_hit(**hit) {break;}
+                let near=hit.committed_ray_t+keter::max(0.0001,hit.committed_ray_t*0.000001);
+                *hit=self.trace_opaque_segment(start,direction,Vec2::expr(near,interval.y));
+            }
+        }
+        **hit
+        }
+    }
+
+    #[tracked]
     pub fn trace(&self, ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>) -> Expr<SurfaceHit> {
         self.trace_segment(ray_start, ray_dir, Vec2::expr(0.0, f32::INFINITY))
     }
@@ -435,20 +473,33 @@ impl TriangleWorld {
     /// Opaque visibility only: terminate traversal on the first blocker.
     #[tracked]
     pub fn occluded(&self, ray_start: Expr<Vec3<f32>>, ray_dir: Expr<Vec3<f32>>) -> Expr<bool> {
-        self.accel.intersect_any(
+        if self.pbr.as_ref().is_some_and(|p| p.has_mask && p.hardware_alpha) {
+            self.occluded_segment(ray_start,ray_dir,f32::INFINITY.expr())
+        } else if self.pbr.as_ref().is_some_and(|p|p.has_mask) {
+            !self.trace(ray_start,ray_dir).miss()
+        } else { self.accel.intersect_any(
             Ray::new_expr(Expr::<[f32; 3]>::from(ray_start), 0.0,
                 Expr::<[f32; 3]>::from(ray_dir), f32::INFINITY),
             AccelTraceOptions { mask: 0xFF.expr(), ..Default::default() },
-        )
+        ) }
     }
 
     #[tracked]
     pub fn occluded_segment(&self, start: Expr<Vec3<f32>>, direction: Expr<Vec3<f32>>, distance: Expr<f32>) -> Expr<bool> {
-        self.accel.intersect_any(
+        if self.pbr.as_ref().is_some_and(|p| p.has_mask && p.hardware_alpha) {
+            !self.accel.traverse_any(
+                Ray::new_expr(Expr::<[f32;3]>::from(start),0.0,Expr::<[f32;3]>::from(direction),distance),
+                AccelTraceOptions {mask:0xFF.expr(),..Default::default()},
+            ).on_surface_hit(|candidate| {
+                if self.accepts_hit(*candidate) {candidate.commit();}
+            }).trace().miss()
+        } else if self.pbr.as_ref().is_some_and(|p|p.has_mask) {
+            !self.trace_segment(start,direction,Vec2::expr(0.0,distance)).miss()
+        } else { self.accel.intersect_any(
             Ray::new_expr(Expr::<[f32; 3]>::from(start), 0.0,
                 Expr::<[f32; 3]>::from(direction), distance),
             AccelTraceOptions { mask: 0xFF.expr(), ..Default::default() },
-        )
+        ) }
     }
 
     #[tracked]
@@ -493,9 +544,12 @@ impl TriangleWorld {
     */
 
     #[tracked]
-    pub fn get_diffuse(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
+    pub fn get_base_color(&self, hit: Expr<SurfaceHit>) -> Expr<Vec3<f32>> {
         let material_index = self.material_indices.read(hit.inst);
         let diffuse = self.material_diffuse.read(material_index).var();
+        if self.pbr.is_some() {
+            *diffuse *= self.pbr_texture(hit,self.pbr_material(hit).textures[0],false).xyz();
+        }
         if let Some(textures) = &self.diffuse_textures {
             let texture_index = textures.material_texture.read(material_index);
             if texture_index != u32::MAX {

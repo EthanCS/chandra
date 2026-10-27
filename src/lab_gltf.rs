@@ -9,18 +9,20 @@ use keter::lang::types::vector::{Vec3 as GpuVec3, Vec4};
 use keter::prelude::*;
 
 #[derive(Default)]
-struct Geometry {
-    positions: Vec<[f32; 3]>,
-    uv: Vec<[f32; 2]>,
-    indices: Vec<[u32; 3]>,
-    density: Vec<f32>,
-    offsets: Vec<[u32; 2]>,
-    materials: Vec<u32>,
-    skipped: usize,
+pub(crate) struct Geometry {
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub uv: Vec<[f32; 2]>,
+    pub indices: Vec<[u32; 3]>,
+    pub density: Vec<f32>,
+    pub offsets: Vec<[u32; 2]>,
+    pub materials: Vec<u32>,
+    pub skipped: usize,
+    pub include_mask: bool,
 }
 
 impl Geometry {
-    fn visit(
+    pub fn visit(
         &mut self,
         node: gltf::Node<'_>,
         parent: Mat4,
@@ -30,7 +32,8 @@ impl Geometry {
         let transform = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
-                if primitive.material().alpha_mode() != gltf::material::AlphaMode::Opaque {
+                if primitive.material().alpha_mode() != gltf::material::AlphaMode::Opaque
+                    && !(self.include_mask && primitive.material().alpha_mode()==gltf::material::AlphaMode::Mask) {
                     self.skipped += 1;
                     continue;
                 }
@@ -49,6 +52,11 @@ impl Geometry {
                     .read_tex_coords(0)
                     .map(|uv| uv.into_f32().collect())
                     .unwrap_or_else(|| vec![[0.; 2]; positions.len()]);
+                let normal_transform=transform.inverse().transpose();
+                let mut normals:Vec<[f32;3]>=reader.read_normals().map(|values|values.map(|n|
+                    normal_transform.transform_vector3(Vec3::from(n)).normalize_or_zero().to_array()).collect())
+                    .unwrap_or_else(||vec![[0.;3];positions.len()]);
+                let missing_normals=reader.read_normals().is_none();
                 let indices: Vec<u32> = reader
                     .read_indices()
                     .map(|v| v.into_u32().collect())
@@ -71,6 +79,10 @@ impl Geometry {
                     let p = t.map(|i| Vec3::from(positions[i as usize]));
                     let u = t.map(|i| Vec2::from(uv[i as usize]));
                     let area = (p[1] - p[0]).cross(p[2] - p[0]).length();
+                    if missing_normals {
+                        let n=(p[1]-p[0]).cross(p[2]-p[0]).normalize_or_zero().to_array();
+                        for i in t {normals[i as usize]=n;}
+                    }
                     let uv_area = (u[1] - u[0]).perp_dot(u[2] - u[0]).abs();
                     self.density.push(if area > 1e-12 {
                         (uv_area / area).sqrt()
@@ -80,6 +92,7 @@ impl Geometry {
                     self.indices.push(t);
                 }
                 self.positions.extend(positions);
+                self.normals.extend(normals);
                 self.uv.extend(uv);
             }
         }

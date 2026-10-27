@@ -1,0 +1,5092 @@
+{
+  "Plastic_Dark_Matte": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0.0443978659
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0.0443978659
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Blue": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.1651321945,
+        0.3419144249,
+        0.4019777798
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.1651321945,
+        0.3419144249,
+        0.4019777798
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Coated_Black_Glossy": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0.0078125
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0.05
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.8431783537
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Glass_Dark_01": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "refraction",
+      "enable": true,
+      "factor": 0.8004954268,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0.0541871921,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Metal_Aluminium": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 1
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.495617378,
+      "texture": {
+        "uid": "960d4f227d5144769e503d5812e797ae",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "LUMINANCE"
+      }
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 1,
+      "texture": {
+        "uid": "960d4f227d5144769e503d5812e797ae",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "LUMINANCE"
+      }
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_White_Matte": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.6204585874,
+        0.5840814812,
+        0.5840814812
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.9386857285,
+        0.6866853124,
+        0.7379104088
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Wax_Pastel_Label_02": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "f7bb9cb5643b4039b140f5172bb8a1a0",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      }
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_MediumGrey_Glossy": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.3781239176,
+        0.5356541874,
+        0.6204585874
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.4834222561
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Wax_Pastel_Yellow_01": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.4788319435,
+        0.3266790256,
+        0.0218746409
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Decal_First_Aid_Kit": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "cf6318140d9647c4a0e5452ac361c67d",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      }
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Decal_Keyboard_01": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "9debb52551864d61bb40dcd2bac89c6c",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      }
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "enable": false,
+      "factor": 1,
+      "texture": {
+        "uid": "9debb52551864d61bb40dcd2bac89c6c",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      }
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Brown_Satin": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.6435635529,
+        0.3919832,
+        0.3919832
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.6938717613,
+        0.4125426135,
+        0.4125426135
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.7578125
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Red_Transparent": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": false,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.3310827365,
+        0.0033541063,
+        0.0033541063
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.8309832317
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Brown_Dark": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.2917706498,
+        0.1878207723,
+        0.0648032667
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.2917706498,
+        0.1878207723,
+        0.0648032667
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Wax_Pastel_Blue_01": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.7325329855,
+        0.4821522251,
+        0.0423516405
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Decals": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.5329208617,
+        0.3608442501,
+        0.0423868634
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.7605245047,
+        0.5271151257,
+        0.1746474037
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.8858612805
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Paper_StickyNote_01": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Decal_Note_01": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "cec02ade7ec442aeaaa4da494c47a218",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      }
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Blue_Satin": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Red_Matte": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.6912592434,
+        0.0011638093,
+        0.0011638093
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.6912592434,
+        0.0011638093,
+        0.0011638093
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Pink_Details": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0.6358612805
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.8553734756
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Grey_Dark": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0.2395198171
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0.2395198171
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Orange_Satin": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.8307698768,
+        0.3277780981,
+        0.0648032667
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.8307698768,
+        0.3277780981,
+        0.0648032667
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Tape_Glossy": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.3921895659,
+        0.2211398454,
+        0.2211398454
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.9529344512
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Metal_Blue": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 1
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Wall_Only": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        0.4576056927,
+        0.6071480897,
+        0.6592412686
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        0.4576056927,
+        0.6071480897,
+        0.6592412686
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.8858612805
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Decal_Caution": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "867b95e7768f444588828e6b42795e2b",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      }
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 0
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 0
+    },
+    "RoughnessPBR": {
+      "enable": true,
+      "factor": 0.6
+    },
+    "GlossinessPBR": {
+      "enable": false,
+      "factor": 0.4
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  },
+  "Plastic_Blue_ExtraLight": {
+    "AOPBR": {
+      "enable": false,
+      "factor": 1,
+      "occludeSpecular": false
+    },
+    "Matcap": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1,
+      "texture": {
+        "uid": "35c4d334eded44d8a657f390954a32dd",
+        "wrapS": "REPEAT",
+        "wrapT": "REPEAT",
+        "magFilter": "LINEAR",
+        "minFilter": "LINEAR_MIPMAP_LINEAR",
+        "texCoordUnit": 0,
+        "textureTarget": "TEXTURE_2D",
+        "internalFormat": "RGB"
+      },
+      "curvature": 0
+    },
+    "BumpMap": {
+      "enable": false,
+      "factor": 1
+    },
+    "Opacity": {
+      "ior": 1.05,
+      "type": "alphaBlend",
+      "enable": true,
+      "factor": 1,
+      "invert": false,
+      "thinLayer": false,
+      "useAlbedoTint": false,
+      "refractionColor": [
+        1,
+        1,
+        1
+      ],
+      "roughnessFactor": 0,
+      "useNormalOffset": false,
+      "useMicrosurfaceTexture": true
+    },
+    "AlbedoPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "CavityPBR": {
+      "enable": false,
+      "factor": 1
+    },
+    "ClearCoat": {
+      "tint": [
+        0.914,
+        0.914,
+        0.914
+      ],
+      "enable": false,
+      "factor": 1,
+      "thickness": 5,
+      "reflectivity": 0
+    },
+    "EmitColor": {
+      "type": "additive",
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "NormalMap": {
+      "flipY": true,
+      "enable": false,
+      "factor": 1
+    },
+    "DiffusePBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "SpecularF0": {
+      "enable": true,
+      "factor": 0.5
+    },
+    "SpecularPBR": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": false,
+      "factor": 1
+    },
+    "DiffuseColor": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "Displacement": {
+      "enable": true,
+      "factor": 0
+    },
+    "MetalnessPBR": {
+      "enable": true,
+      "factor": 1
+    },
+    "RoughnessPBR": {
+      "enable": false,
+      "factor": 0.75
+    },
+    "GlossinessPBR": {
+      "enable": true,
+      "factor": 0.75
+    },
+    "SpecularColor": {
+      "color": [
+        0.5,
+        0.5,
+        0.5
+      ],
+      "enable": true,
+      "factor": 0
+    },
+    "DiffuseIntensity": {
+      "color": [
+        1,
+        1,
+        1
+      ],
+      "enable": true,
+      "factor": 1
+    },
+    "SpecularHardness": {
+      "enable": true,
+      "factor": 12.5
+    },
+    "ClearCoatNormalMap": {
+      "flipY": true,
+      "enable": true,
+      "factor": 1
+    },
+    "ClearCoatRoughness": {
+      "enable": true,
+      "factor": 0.04
+    },
+    "SubsurfaceScattering": {
+      "enable": false,
+      "factor": 2.100160231,
+      "profile": 1
+    },
+    "SubsurfaceTranslucency": {
+      "color": [
+        0.98,
+        0.3,
+        0.2
+      ],
+      "enable": false,
+      "factor": 1,
+      "thicknessFactor": 2.100160231
+    }
+  }
+}

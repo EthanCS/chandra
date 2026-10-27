@@ -178,7 +178,7 @@ impl CoreData {
         hit: Expr<Hit>,
         dir: Expr<Vec3<f32>>,
     ) -> Expr<Radiance> {
-        let normal = self.world.get_normal_flat(hit, dir);
+        let normal = self.world.get_shading_normal(hit, dir);
         let lighting = self.lighting.read();
         let weight = normal.dot(lighting.sun_dir);
         let radiance = Vec3::splat(0.0_f32).var();
@@ -347,7 +347,7 @@ impl CoreData {
                     return;
                 }
                 self.depth.write(pixel, hit.committed_ray_t);
-                let normal = self.world.get_normal_flat(hit, ray_dir);
+                let normal = self.world.get_shading_normal(hit, ray_dir);
                 self.normal.write(pixel, SphericalEncoder::encode(normal));
                 self.hit.write(self.pixel_to_linear(pixel), hit);
             })))
@@ -359,6 +359,8 @@ impl CoreData {
 pub mod ddgi;
 pub mod dynamic_history;
 pub mod diffuse;
+pub mod specular_brdf;
+pub mod specular;
 mod light_grid;
 pub mod rc;
 pub mod ris;

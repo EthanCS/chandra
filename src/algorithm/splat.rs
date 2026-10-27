@@ -67,6 +67,23 @@ impl SplatData {
     fn irradiance_size(&self) -> u32 {
         self.irradiance_resolution + 2
     }
+    /// Reuse the current frame's cosine convolution at secondary hits. The
+    /// probe/LOD selection and normalization match RcData::sample_secondary;
+    /// only interpolation over normal directions is approximate (6x6 oct map).
+    #[tracked]
+    pub fn sample_secondary(&self, rc: &RcData, pos: Expr<Vec3<f32>>, normal: Expr<Vec3<f32>>) -> Expr<Vec3<f32>> {
+        let lod = rc.cache.estimate_lod_secondary(pos);
+        let node = rc.cache.get(rc.cache.quantize(pos, lod, 0u32.expr()));
+        if node.loaded() {
+            let tile = Vec2::expr(node.index % self.irradiance_dims.x, node.index / self.irradiance_dims.x);
+            let uv = (tile * self.irradiance_size()).cast_f32()
+                + OctahedralEncoder::encode(normal) * self.irradiance_resolution as f32 + 1.0;
+            let value = self.irradiance.var().sample(uv / (self.irradiance_dims * self.irradiance_size()).expr().cast_f32());
+            value.xyz() / keter::max(value.w, 0.00001)
+        } else {
+            Vec3::splat_expr(0.0)
+        }
+    }
     // could switch to gather instead.
     pub fn calculate_irradiance(&self, rc: &RcData) -> NodeConfigs<'static> {
         dispatch0(track!(|| {

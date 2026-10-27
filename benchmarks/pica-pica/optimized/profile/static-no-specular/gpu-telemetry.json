@@ -1,0 +1,14 @@
+[
+  {
+    "elapsed_s": 0.0032987000013235956,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 08:27:31.459, NVIDIA GeForce RTX 5070 Ti, 617.42, 1 %, 1315 MiB, 15.31 W, 36, 375 MHz"
+  },
+  {
+    "elapsed_s": 2.056979599998158,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 08:27:33.513, NVIDIA GeForce RTX 5070 Ti, 617.42, 25 %, 5042 MiB, 57.33 W, 39, 2572 MHz"
+  },
+  {
+    "elapsed_s": 4.110802099996363,
+    "gpu": "timestamp, name, driver_version, utilization.gpu [%], memory.used [MiB], power.draw [W], temperature.gpu, clocks.current.graphics [MHz]\n2026/10/27 08:27:35.554, NVIDIA GeForce RTX 5070 Ti, 617.42, 89 %, 5041 MiB, 200.21 W, 51, 2872 MHz"
+  }
+]

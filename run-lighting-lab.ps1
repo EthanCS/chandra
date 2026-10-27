@@ -8,6 +8,9 @@ param(
     [switch]$SingleBounce,
     [ValidateRange(256, 1048576)][int]$ProbeBudget = 65536,
     [switch]$IntelSponza,
+    [switch]$PicaPica,
+    [switch]$NoSpecular,
+    [ValidateRange(1, 128)][int]$SpecularSamples = 4,
     [string]$ScenePath,
     [switch]$SmokeTest,
     [switch]$Benchmark,
@@ -62,7 +65,7 @@ $buildArguments = @('build', '--locked', '--jobs', '12', '--bin', 'lighting_lab'
 if ($LASTEXITCODE -ne 0) { throw 'Chandra build failed.' }
 if ($BuildOnly) { return }
 if ($Test) {
-    & $cargoDriver test --locked --jobs 12 --lib --test dynamic_geometry --test dynamic_history --test gi_optimizations --test emissive_lighting --test cascade_merge --test probe_capacity --test white_room --test diffuse_reconstruction --test diffuse_sampling -- --test-threads=1
+    & $cargoDriver test --locked --jobs 12 --lib --test dynamic_geometry --test dynamic_history --test gi_optimizations --test emissive_lighting --test cascade_merge --test probe_capacity --test white_room --test diffuse_reconstruction --test diffuse_sampling --test hybrid_specular -- --test-threads=1
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     return
 }
@@ -75,6 +78,9 @@ if ($GeometryOnly) { $arguments += '--geometry-only' }
 if ($SingleBounce) { $arguments += '--single-bounce' }
 if ($PSBoundParameters.ContainsKey('ProbeBudget')) { $arguments += @('--probe-budget', $ProbeBudget) }
 if ($IntelSponza) { $arguments += '--intel-sponza' }
+if ($PicaPica) { $arguments += '--pica-pica' }
+if ($NoSpecular) { $arguments += '--no-specular' }
+$arguments += @('--specular-samples', $SpecularSamples)
 if ($ScenePath) { $arguments += @('--scene-path', $ScenePath) }
 if ($SmokeTest) { $arguments += '--smoke-test' }
 if ($Small) { $arguments += '--small' }

@@ -3,6 +3,8 @@
 mod benchmark;
 #[path = "../lab_gltf.rs"]
 mod gltf_scene;
+#[path = "../lab_pica.rs"]
+mod pica_scene;
 #[path = "../lab_profile.rs"]
 mod gpu_profile;
 #[path = "../lab_scene.rs"]
@@ -37,6 +39,7 @@ struct Controls {
     rigid_motion: bool,
     skin_motion: bool,
     camera_motion: bool,
+    reflections: bool,
 }
 
 impl Default for Controls {
@@ -56,6 +59,7 @@ impl Default for Controls {
             rigid_motion: true,
             skin_motion: true,
             camera_motion: true,
+            reflections: true,
         }
     }
 }
@@ -140,6 +144,7 @@ fn main() {
     assert!((1..=16).contains(&path_depth) && (1..=64).contains(&samples));
     assert!(single_frame || samples == 1, "--samples requires --single-frame");
     if args.iter().any(|a| a == "--help") {
+        println!("PICA PICA / hybrid reflections:\n  --pica-pica Import external/PicaPica/scene.gltf (tools/setup-pica-pica.ps1)\n  --specular-samples N GGX samples per pixel (default 4)\n  --no-specular Disable indirect reflection display\n  --specular-only Show indirect reflections\n  --specular-reference Trace the first reflection segment without RC substitution\n  --no-specular-filter Disable reflection reconstruction for comparison");
         println!("Stable diffuse GI:\n  --quality-camera-track orbit|translate|rotate|combined|stop|return\n  --quality-light-track sun|drag|points|fast|step|oscillate\n  --quality-fps 60|120   Deterministic simulation rate\n  --diffuse-diagnostics Export raw/spatial/temporal irradiance and sample counts\n  --no-diffuse-filter   Raw RC comparison; disables adaptive reconstruction\n  --diffuse-samples N   Fixed primary sample budget for diagnostics\n  --interaction-log PATH Record real input and camera state as JSON Lines\n  Tab or F1: panel; F or held right mouse: unlimited look; Q/E: down/up; Shift/Ctrl: fast/slow");
         println!("Diffuse GI diagnostics:\n  --white-room   Sealed shell, 8 cm slit, 2/12 cm partitions and roof corner; --view 0..3\n  --geometry-only Keep camera and light motion off\n  --single-bounce Disable secondary diffuse bounces\n  --probe-budget N Power-of-two base capacity, minimum 256\n  --quality-tail N Export the last N consecutive linear frames and same-surface samples\n  --quality-stop N Stop all motion at frame N\n  --quality-stop-clear Clear transport once at that stopped pose\n  --quality-light-off N Turn off light energy at frame N\n  --roam-test --roam-frames N Deterministic camera/capacity diagnostic\n  --scene-worker Bypass the scene supervisor\n  F: mouse look; Q/E: down/up; Shift/Ctrl: fast/slow; F1: hide panel");
         println!("Split RC baseline:\n  --split-single-frame  Original primary trace/split path, one indirect bounce, cleared each frame; no temporal jitter or extra path tracing");
@@ -162,10 +167,15 @@ fn main() {
     let intel = args.iter().any(|a| a == "--intel-sponza");
     let courtyard = args.iter().any(|a| a == "--courtyard");
     let white_room = args.iter().any(|a| a == "--white-room");
-    assert!([sponza, intel, courtyard, white_room, args.iter().any(|a| a == "--gallery")].into_iter().filter(|v| *v).count() <= 1, "Choose one scene");
-    let gallery = !sponza && !intel && !courtyard && !white_room;
+    let pica = args.iter().any(|a| a == "--pica-pica");
+    let specular_samples=integer_option("--specular-samples",4);
+    assert!((1..=128).contains(&specular_samples));
+    let specular_reference=args.iter().any(|a|a=="--specular-reference");
+    let pica_path=std::path::PathBuf::from("external/PicaPica/scene.gltf");
+    assert!([sponza, intel, courtyard, white_room, pica, args.iter().any(|a| a == "--gallery")].into_iter().filter(|v| *v).count() <= 1, "Choose one scene");
+    let gallery = !sponza && !intel && !courtyard && !white_room && !pica;
     use chandra::lab_session::Scene;
-    let active_scene = if white_room { Scene::WhiteRoom } else if courtyard { Scene::Courtyard }
+    let active_scene = if pica {Scene::PicaPica} else if white_room { Scene::WhiteRoom } else if courtyard { Scene::Courtyard }
         else if intel { Scene::IntelSponza } else if sponza { Scene::Sponza } else { Scene::Gallery };
     assert!(
         !(args.iter().any(|a| a == "--gallery") && !gallery),
@@ -296,7 +306,8 @@ fn main() {
         .agx()
         .init();
     yesod::printer::global::set_capacity(1024 * 1024);
-    let lab_scene = if white_room { scene::LabScene { world: chandra::white_room::world(), animation: None } } else { scene::world(
+    let lab_scene = if pica {scene::LabScene{world:pica_scene::load(&pica_path),animation:None}}
+        else if white_room { scene::LabScene { world: chandra::white_room::world(), animation: None } } else { scene::world(
         sponza,
         intel.then_some(intel_path.as_path()),
         cube_count,
@@ -319,7 +330,7 @@ fn main() {
         core.set_point_lights_grid(&chandra::gallery::lights(0., 1.), !args.iter().any(|a| a == "--no-light-grid"));
     }
     let mut rc = RcData::new(RcConfig {
-        base_grid_size: if sponza || intel || gallery { 10. } else { 6. },
+        base_grid_size: if pica {0.5} else if sponza || intel || gallery { 10. } else { 6. },
         // The gallery exposes more coarse-cascade cells than the narrow Intel
         // courtyard view. Reserve headroom without reducing spatial resolution.
         base_probes: if probe_budget > 0 { probe_budget } else if gallery { 1 << 17 } else { 1 << 16 },
@@ -336,8 +347,12 @@ fn main() {
     if single_frame && !split_single_frame { trace.enable_stable_samples(&core, &rc); }
     if min_probe_rays > 0 { trace.enable_probe_budget(&core, &rc, min_probe_rays); }
     if frame_cache { trace.enable_frame_cache(&core); }
+    if adaptive_diffuse && !single_frame && min_probe_rays==0 && !args.iter().any(|a|a=="--diffuse-serial") {
+        trace.enable_diffuse_work(&core);
+    }
     let splat = SplatData::new(&core, &rc, 1.0);
     let diffuse_reconstruction=use_diffuse_filter.then(||chandra::algorithm::diffuse::DiffuseData::new(&core));
+    let specular=core.world.has_pbr().then(||chandra::algorithm::specular::SpecularData::with_trace_options(&core,!args.iter().any(|a|a=="--specular-serial"),integer_option("--specular-batch",if core.num_pixels()<=1920*1080 {1} else {32}),integer_option("--specular-registers",96)));
     let history_regions = animation.as_ref().map_or(16, |a| a.moving_meshes().max(16));
     let history = DynamicHistory::with_region_capacity(&rc, &trace, history_regions);
     let mut lighting_response = LightingResponse::default();
@@ -362,7 +377,7 @@ fn main() {
     let surface_samples = (quality_check && courtyard).then(|| chandra::lab_quality::SurfaceSamples::courtyard(&core, linear_output.as_ref().unwrap()));
     let surface_buffers = (quality_check && args.iter().any(|a| a=="--quality-surfaces"))
         .then(|| chandra::lab_quality::SurfaceBuffers::new(&core));
-    let draw = DEVICE.create_kernel::<fn(View, u32, f32, bool)>(&track!(|view, mode, exposure, gi_available| {
+    let draw = DEVICE.create_kernel::<fn(View, u32, f32, bool, bool)>(&track!(|view, mode, exposure, gi_available, reflections| {
         set_block_size([8, 8, 1]);
         let pixel = dispatch_id().xy();
         let direction = view.ray_dir(pixel.cast_f32() + 0.5).normalize();
@@ -382,19 +397,23 @@ fn main() {
             hit,
             direction,
         ) * diffuse
-            + core.get_surface_emission(hit);
+            + core.get_surface_emission(hit)
+            + if core.world.has_pbr(){core.direct_specular(core.get_world_pos(pixel),hit,-direction)}else{Vec3::splat_expr(0.0)};
         let indirect = if gi_available {
             let irradiance=if let Some(data)=&diffuse_reconstruction {data.output.read(index).xyz()} else {splat.get_radiance(index)};
             irradiance * diffuse
         } else { Vec3::splat_expr(0.0f32) };
+        let reflected=if let Some(data)=&specular {
+            if reflections {data.output.read(index).xyz()}else{Vec3::splat_expr(0.0)}
+        }else{Vec3::splat_expr(0.0)};
         let color = if mode == 1 {
             direct
         } else if mode == 2 {
-            indirect
+            indirect+reflected
         } else if mode == 3 {
             core.read_normal(pixel) * 0.5 + 0.5
-        } else {
-            direct + indirect
+        } else if mode == 4 {reflected} else {
+            direct + indirect + reflected
         };
         if !color.is_finite().all() {
             invalid_pixels.atomic().fetch_add(1u32);
@@ -417,6 +436,9 @@ fn main() {
         overlay.write(p, rgb.extend(rgba.w));
     }));
     let mut controls = Controls::for_scene(intel, gallery);
+    if pica {controls.azimuth=230.;controls.elevation=55.;controls.intensity=3.;controls.sky=0.6;controls.emission=1.;controls.animate=false;controls.camera_motion=false;}
+    controls.reflections=!args.iter().any(|a|a=="--no-specular");
+    if args.iter().any(|a|a=="--specular-only"){controls.mode=4;}
     if split_single_frame { controls.bounces = false; }
     if args.iter().any(|a| a == "--single-bounce") { controls.bounces = false; }
     if args.iter().any(|a| a == "--indirect-only") { controls.mode = 2; }
@@ -436,11 +458,12 @@ fn main() {
     }
     let mut camera_time = 0.0f32;
     let mut light_time = 0.0f32;
-    let make_camera = |index| if white_room { chandra::white_room::camera(index, size) }
+    let make_camera = |index| if pica {pica_scene::camera(index,size)}else if white_room { chandra::white_room::camera(index, size) }
         else { scene::camera(index, size, sponza, intel, gallery) };
     let mut camera = make_camera(camera_preset);
     let mut previous_diffuse_camera=camera;
     let mut diffuse_history_valid=false;
+    let mut specular_history_valid=false;
     let mut switch_scene = None;
     let mut show_ui = true;
     let mut look_mode = false;
@@ -516,9 +539,11 @@ fn main() {
         }
     );
     println!("Lighting setup: {lighting_metadata}");
-    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
+    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}; pica={pica}; specular_samples={specular_samples}; specular_reference={specular_reference}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
     println!("Transport: {transport_metadata}");
-    let scene_counts = if gallery {
+    let scene_counts = if pica {
+        "PICA PICA: 145 source objects; 170 material meshes; 76300 triangles; 28 materials".to_string()
+    } else if gallery {
         "30 point lights; 30 rigid; 30 emissive; 30 skinned".to_string()
     } else if intel {
         format!("{cube_count} cubes")
@@ -535,7 +560,8 @@ fn main() {
     }
     println!(
         "Scene ready: {}. First frame compiles the GPU kernels.",
-        if gallery {
+        if pica {"PICA PICA / 145 objects / 170 material meshes / 76300 triangles"}
+        else if gallery {
             "Chromatic Gallery / 30 lights + 30 rigid + 30 emissive + 30 skinned"
         } else if intel {
             "Intel New Sponza / moving cubes"
@@ -652,7 +678,7 @@ fn main() {
                     for next in Scene::ALL {
                         let available = match next {
                             Scene::Sponza => std::path::Path::new("assets/sponza.obj").exists(),
-                            Scene::IntelSponza => intel_path.exists(), _ => true,
+                            Scene::IntelSponza => intel_path.exists(), Scene::PicaPica=>pica_path.exists(), _ => true,
                         };
                         if ui.add_enabled(available, egui::Button::new(next.name()).selected(next == active_scene)).clicked() && next != active_scene {
                             switch_scene = Some(next); rt.exit();
@@ -707,6 +733,10 @@ fn main() {
                 ui.radio_value(&mut controls.mode, 1, "Direct light only");
                 ui.radio_value(&mut controls.mode, 2, "Indirect light only");
                 ui.radio_value(&mut controls.mode, 3, "Surface normals");
+                if specular.is_some(){
+                    ui.checkbox(&mut controls.reflections,"Indirect reflections");
+                    ui.radio_value(&mut controls.mode,4,"Reflections only");
+                }
                 if split_single_frame {
                     ui.label("Split RC: single frame / one indirect bounce");
                     ui.small("No accumulation / no extra path tracing");
@@ -768,6 +798,7 @@ fn main() {
             let axis = |positive, negative| (held(positive) as u8 as f32) - (held(negative) as u8 as f32);
             let mouse=if looking {mouse_capture.update(true).unwrap_or(mouse_delta)*0.003} else {mouse_capture.release();glam::Vec2::ZERO};
             camera_mouse=mouse;
+            let old_position=camera.pos;
             let moved = chandra::lab_camera::update(&mut camera, chandra::lab_camera::Input {
                 forward: axis(KeyCode::KeyW,KeyCode::KeyS), right: axis(KeyCode::KeyD,KeyCode::KeyA),
                 up: axis(KeyCode::KeyE,KeyCode::KeyQ) + held(KeyCode::Space) as u8 as f32,
@@ -775,6 +806,7 @@ fn main() {
                 pitch: axis(KeyCode::ArrowDown,KeyCode::ArrowUp)*1.3*dt + mouse.y,
                 fast: held(KeyCode::ShiftLeft)||held(KeyCode::ShiftRight), slow: held(KeyCode::ControlLeft)||held(KeyCode::ControlRight), focused,
             }, dt);
+            if pica {camera.pos=old_position+(camera.pos-old_position)*0.04;}
             if moved { controls.camera_motion = false; }
             if rt.key_pressed(KeyCode::KeyR) { reset_camera = Some(0); }
         } else {mouse_capture.release();}
@@ -789,10 +821,11 @@ fn main() {
         if controls.camera_motion {
             camera_time += dt;
             let angle = -0.58 + 0.25 * (camera_time * 0.35).sin();
-            camera.pos = if gallery { glam::Vec3::new(1050. + 160. * (camera_time * 0.19).sin(), -1950. + 130. * (camera_time * 0.23).sin(), 1100. + 100. * (camera_time * 0.21).sin()) }
+            camera.pos = if pica {glam::Vec3::new(70.*(camera_time*0.2).sin(),-70.*(camera_time*0.2).cos(),40.)}
+                else if gallery { glam::Vec3::new(1050. + 160. * (camera_time * 0.19).sin(), -1950. + 130. * (camera_time * 0.23).sin(), 1100. + 100. * (camera_time * 0.21).sin()) }
                 else if intel { glam::Vec3::new(1050. + 40. * (camera_time * 0.23).sin(), 60. * (camera_time * 0.31).sin(), 330. + 30. * (camera_time * 0.27).sin()) }
                 else { glam::Vec3::new(-angle.sin() * 960., -angle.cos() * 960., 450. + 65. * (camera_time * 0.27).sin()) };
-            let target = if gallery { glam::Vec3::new(-100., 150., 180.) } else if intel { glam::Vec3::new(-250., 0., 100.) } else { glam::Vec3::new(-40., 70., 85.) };
+            let target = if pica {glam::Vec3::new(-4.,7.,5.)}else if gallery { glam::Vec3::new(-100., 150., 180.) } else if intel { glam::Vec3::new(-250., 0., 100.) } else { glam::Vec3::new(-40., 70., 85.) };
             let direction = (target - camera.pos).normalize();
             camera.yaw = direction.x.atan2(direction.y);
             camera.pitch = (-direction.z).asin();
@@ -800,7 +833,10 @@ fn main() {
         if controls.animate { controls.azimuth = (controls.azimuth + dt * 18.).rem_euclid(360.); }
         if gallery && controls.animate { light_time += dt; }
         if !camera_track.is_empty() {
-            camera=chandra::lab_diagnostics::camera(make_camera(camera_preset),camera_track,rt.tick,dt,quality_stop);
+            let base=make_camera(camera_preset);
+            camera=chandra::lab_diagnostics::camera(base,camera_track,rt.tick,dt,quality_stop);
+            // The diorama is roughly 60 cm wide; courtyard translations are meters.
+            if pica { camera.pos=base.pos+(camera.pos-base.pos)*0.2; }
             controls.camera_motion=false;
         }
         match light_track {
@@ -865,10 +901,11 @@ fn main() {
         let translation=(camera.pos-previous_diffuse_camera.pos).length();
         let rotation=(camera.yaw-previous_diffuse_camera.yaw).abs()+(camera.pitch-previous_diffuse_camera.pitch).abs();
         let camera_moving=translation>1e-4 || rotation>1e-5;
-        let fast_camera=translation/dt>300.0 || rotation/dt>1.2;
         if let Some(data)=&diffuse_reconstruction {
             commands+=data.prepare(&core,diffuse_phase,previous_diffuse_camera.view(),diffuse_history_valid,
-                if fast_camera {16} else if camera_moving {8} else if response.retention<1.0 || !swept.is_empty() {4}else{2},
+                // Diffuse lighting is view independent. Reprojection and local
+                // support already give newly visible pixels 16/32/64 samples.
+                if response.retention<1.0 || !swept.is_empty() {4}else{2},
                 if diffuse_samples>0 {diffuse_samples} else if !adaptive_diffuse {4}else{0});
             profiler.checkpoint("Diffuse sample support",&mut commands);
         }
@@ -983,10 +1020,42 @@ fn main() {
         }
         let warmed = gi_availability.update(capacity_ok);
         let gi_available = capacity_ok && ((single_frame && capacity_recoveries == 0) || warmed);
+        if controls.reflections && let Some(data)=&specular {
+            let light_now=controls.lighting().sun_dir;
+            let light_before=previous.lighting().sun_dir;
+            let light_jump=light_now.x*light_before.x+light_now.y*light_before.y+light_now.z*light_before.z<5_f32.to_radians().cos();
+            let reset_reflections=energy_changed || light_jump || !swept.is_empty();
+            let reflection_history_valid=specular_history_valid && diffuse_history_valid && !reset_reflections;
+            use chandra::algorithm::specular::SpecularTraceStage;
+            let reflection_stages=|stage|data.trace_stages(&core,&rc,if args.iter().any(|a|a=="--specular-exact-diffuse") {None} else {Some(&splat)},rt.tick,specular_samples,gi_available,specular_reference,!args.iter().any(|a| a == "--no-specular-regularization"),previous_diffuse_camera.view(),reflection_history_valid,stage);
+            for (stage, command) in reflection_stages(SpecularTraceStage::Base) {
+                commands+=command; profiler.checkpoint(stage,&mut commands);
+            }
+            if specular_samples<128 && !args.iter().any(|a|a=="--specular-serial") {
+                // Include the compact count readback in event and wall-clock timings.
+                commands.execute();
+                let timer=profiler.begin("Reflection queue readback");
+                let active=data.pending_refinement_count();
+                profiler.end(timer);
+                for (stage,command) in reflection_stages(SpecularTraceStage::Refinement(active)) {
+                    commands+=command; profiler.checkpoint(stage,&mut commands);
+                }
+            }
+            if args.iter().any(|a|a=="--no-specular-filter") {
+                commands.push(data.raw.copy_to_buffer_async(&data.output));
+            } else {
+                let history_frames=if reset_reflections {1.0}
+                    else if camera_moving || response.retention<1.0 {4.0}else{24.0};
+                commands+=data.reconstruct(&core,rt.tick,previous_diffuse_camera.view(),reflection_history_valid,
+                    (history_frames*(1.0/60.0)/dt).max(1.0));
+            }
+            profiler.checkpoint("Reflection reconstruction",&mut commands);
+            specular_history_valid=capacity_ok;
+        } else {specular_history_valid=false;}
         diffuse_history_valid=capacity_ok;
         previous_diffuse_camera=camera;
         commands += invalid_pixels.write_host(0);
-        commands.push(draw.dispatch_async([size[0], size[1], 1], &camera.view(), &controls.mode, &2_f32.powf(controls.exposure), &gi_available));
+        commands.push(draw.dispatch_async([size[0], size[1], 1], &camera.view(), &controls.mode, &2_f32.powf(controls.exposure), &gi_available,&controls.reflections));
         profiler.checkpoint("Direct and compose", &mut commands);
         commands.execute();
 
@@ -995,6 +1064,16 @@ fn main() {
             let directory = output_dir.as_deref().unwrap_or(".local/quality-check");
             std::fs::create_dir_all(directory).unwrap();
             let pixels = linear_output.as_ref().unwrap().copy_to_vec();
+            if let Some(data)=&specular {
+                if args.iter().any(|a|a=="--specular-diagnostics") {
+                    let values:Vec<[f32;4]>=data.diagnostics.copy_to_vec().into_iter().map(|v|[v.x,v.y,v.z,v.w]).collect();
+                    std::fs::write(format!("{directory}/specular-diagnostics-{:03}.rgba32f",rt.tick),bytemuck::cast_slice(&values)).unwrap();
+                }
+                for (name,buffer) in [("specular-raw",&data.raw),("specular-filtered",&data.output)]{
+                    let values:Vec<[f32;4]>=buffer.copy_to_vec().into_iter().map(|v|[v.x,v.y,v.z,v.w]).collect();
+                    std::fs::write(format!("{directory}/{name}-{:03}.rgba32f",rt.tick),bytemuck::cast_slice(&values)).unwrap();
+                }
+            }
             if rt.tick == 0 {
                 std::fs::write(format!("{directory}/probe-pixel-counts.u32"), bytemuck::cast_slice(&trace.ray_count.view(..rc.cache.base_probes as usize).copy_to_vec())).unwrap();
             }
@@ -1037,11 +1116,16 @@ fn main() {
             &primitives, &output.textures_delta, output.pixels_per_point);
         ui_texture.view(0).copy_from(&ui_pixels);
         composite_ui.dispatch([size[0], size[1], 1]);
-        profiler.finish_frame(rt.tick >= 200);
+        profiler.finish_frame(rt.tick >= 200 && rt.tick < 200 + profile_frames);
+        // At frame N, the runtime interval covers the completed frame N-1,
+        // including presentation. Pair intervals 200..319 with GPU samples.
+        if profiling && rt.tick > 200 && rt.tick <= 200 + profile_frames {
+            profiler.record_frame_interval(rt.frame_time_f64());
+        }
         if profiling {
             assert_eq!(invalid_pixels.read_blocking(), 0, "Nonfinite rendered pixel during profiling");
         }
-        if profiling && rt.tick == 199 + profile_frames {
+        if profiling && rt.tick == 200 + profile_frames {
             let directory = output_dir.as_deref().unwrap_or(".local/gpu-profile");
             profiler.save(directory);
             let image: Vec<[u8; 4]> = rt.final_display().view(0).copy_to_vec();

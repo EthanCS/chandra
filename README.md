@@ -2,7 +2,9 @@
 
 A dynamic-scene extension of [entropylost/chandra](https://github.com/entropylost/chandra), the reference implementation of [Split Radiance Cascades](https://arxiv.org/abs/2607.20384). The original research renderer is retained. This fork adds an interactive lighting lab, rigid instancing, GPU skinning, emissive materials, moving local lights, dynamic history invalidation and GPU timing tools.
 
-**2026-10-26 / 稳定间接漫反射与自由相机：** 在动态 GI 历史、RC 合并、容量恢复、薄墙偏移、白房间与独立场景 worker 的基础上，加入按像素归一化的自适应补采样、表面重投影和漫反射重建，修正移动光源及相机运动时的局部闪烁。自由相机使用实际面板范围判断右键输入，F 看向可释放控件焦点并停止自动环绕。用户已确认当前漫反射效果满意并要求收尾，最终版本不再补跑性能。见 [当前收尾记录](benchmarks/diffuse-motion/README.md)；[第一批基础验证](benchmarks/diffuse/README.md)及下面的性能数字均为历史结果。Lighting Lab 未接入间接高光或 ReSTIR，PICA/机器人资源接入仍在本轮范围外。
+**2026-10-27 / PICA PICA 收尾版本：** 保留 GGX／RC／RT 间接高光和完整材质，已移除 LTC 试验。相机运动时的漫反射全屏采样倍增已修复，反射使用短射线任务与实际队列长度调度。RTX 5070 Ti / 1080p 实测约 **56.5 FPS 静止、37.2 FPS 相机和光源同时运动**；间接高光阶段为 9.48 / 12.07 ms。详见 [当前性能和连续帧验证](benchmarks/pica-pica/optimized-v2/README.md)。
+
+**2026-10-26 / 稳定间接漫反射与自由相机（历史记录）：** 在动态 GI 历史、RC 合并、容量恢复、薄墙偏移、白房间与独立场景 worker 的基础上，加入按像素归一化的自适应补采样、表面重投影和漫反射重建，修正移动光源及相机运动时的局部闪烁。自由相机使用实际面板范围判断右键输入，F 看向可释放控件焦点并停止自动环绕。用户已确认当前漫反射效果满意并要求收尾，最终版本不再补跑性能。见 [当前收尾记录](benchmarks/diffuse-motion/README.md)；[第一批基础验证](benchmarks/diffuse/README.md)及下面的性能数字均为历史结果。该次收尾尚未包含间接高光、ReSTIR 或 PICA/机器人资源。
 
 **Historical 1080p optimization, before diffuse reconstruction:** the experimental single-frame mode reached **150.3 FPS** in the combined scenario and **143.9 FPS** over continuous motion on an RTX 5070 Ti, with **4.87 ms GI**. It clears transport every frame, but residual spatial sampling error remains. **120 FPS + no accumulation + no noise + unchanged quality has not been achieved.** The temporal path remains the default. See the [historical measurements and quality comparisons](benchmarks/1080p-single-frame/README.md).
 
@@ -104,13 +106,82 @@ The default research renderer uses temporal, approximate GI; fast motion and dis
 
 The suite checks counts/topology, motion of all 90 gallery meshes, skin deformation and bounds, mixed instancing, finite light visibility, emission, history invalidation, ray queues, transport accumulation and safe probe-pool exhaustion.
 
-The current suite has 31 passing Rust CPU/GPU tests, plus `python tools/test-diffuse-motion.py` for two receiver-correspondence checks. Current interaction acceptance and older image experiments are distinguished in the [closeout record](benchmarks/diffuse-motion/README.md). Performance reruns above remain optional; none was claimed for the final reconstruction build.
+The current suite has 38 Rust CPU/GPU tests, including seven hybrid specular checks. `python tools/test-diffuse-motion.py` provides two additional receiver-correspondence checks. Earlier diffuse interaction acceptance and image experiments are distinguished in the [closeout record](benchmarks/diffuse-motion/README.md); PICA reflection measurements are recorded separately below.
 
 `timings.csv` contains unprofiled frame intervals including CPU/UI/presentation, excluding warmup and screenshot I/O. `passes.csv` and `summary.csv` contain CUDA stream-event ranges including submission gaps, not isolated kernel execution times. GI excludes geometry, GBuffer and direct composition; history is reported separately and in the combined GI total. Configuration files, screenshots and convergence reports record the setup. Set `CHANDRA_GPU_DEBUG_SYNC=1` with profiling only for stage-by-stage GPU diagnostics; these are not performance runs.
 
 The [original dynamic-lab baseline](benchmarks/chromatic-gallery-rtx5070ti/README.txt) recorded 108.5 FPS in the combined scenario, 6.33 ms GI including history and 1.89 ms geometry updates. The [optimization report](benchmarks/1080p-single-frame/README.md) records **17 passing tests**, new 4,200-frame scenario benchmarks, a 3,600-frame motion run, individual GPU ranges and linear-GI quality comparisons. The optimized default temporal path reaches 124.2 FPS in the combined scenario with 0.87 ms geometry updates. The faster experimental single-frame path does not meet the unchanged-quality requirement.
 
 ## Optional external scenes
+
+### PICA PICA and hybrid indirect specular
+
+```powershell
+# Requires Blender 4.2+; downloads the author's pinned FBX and six TGA maps.
+./tools/setup-pica-pica.ps1
+./run-lighting-lab.ps1 -PicaPica -FullHD -View 1 -Static
+```
+
+PICA PICA Mini Diorama 01 imports 145 source objects / 170 material meshes,
+76,300 triangles and 28 authored materials. Base color textures are decoded
+from sRGB once; metallic/roughness maps remain linear. Author normals,
+metallic factors, roughness factors, and alpha-mask decals are preserved.
+The FBX contains generic white material defaults, so conversion restores the
+author's published material parameters by exact material name. See
+[asset provenance and license](resources/pica-pica/SOURCE.md).
+
+The first hybrid reflection implementation uses GGX visible-normal samples:
+roughness 0.45–0.60 blends traced shading into the directional RC field outside
+the near probe footprint. Lower roughness uses traced shading; exact mirrors
+use the deterministic reflection direction. Visibility is traced from the
+actual surface. A second glossy continuation and diffuse RC support lighting
+at reflection hits. The reconstruction uses geometry, roughness, hit distance
+and a deterministic reflector guide, with history rejection on light-energy,
+large light-direction or geometry changes. It uses numerical BRDF integration, without reservoir resampling.
+
+Use **Indirect reflections** and **Reflections only** in the panel to compare.
+`-NoSpecular` disables the reflection passes; `-SpecularSamples 4` is the
+base budget. Thin/grazing surfaces receive extra samples; glossy metals use
+at least 16 with mature, well-supported history, otherwise at least 64.
+Newly visible metals retain 128 samples; temporal disagreement and rare
+high-energy paths can also extend the budget to 128. Exact deterministic mirror rays execute once.
+High-budget reflection pixels use independent 32-ray batches and a separate
+compute reduction; diffuse refinement uses eight-ray jobs. Camera movement
+alone no longer multiplies the full-screen diffuse base budget.
+Secondary diffuse reflection shading reads the existing normal irradiance
+atlas; `--specular-exact-diffuse` retains the original angular integral.
+`--specular-serial` and `--diffuse-serial` retain serial scheduling for comparison.
+A digitally shifted 4D Sobol sequence covers both reflection bounces.
+Reconstruction separates deterministic detail from estimated RC/glossy energy,
+checks reflected-surface correspondence and keeps short history during motion.
+Secondary GGX lobes are regularized after a rough first bounce to control
+unresolved indirect caustics; `--no-specular-regularization` disables this
+intentional approximation. Camera-visible material roughness is unchanged. Low-level diagnostics include `--specular-reference` (traces
+the first reflection segment instead of substituting RC), `--no-specular-filter`
+and `--specular-only`. The reference retains the same finite secondary
+transport and is not full path-traced ground truth.
+
+```powershell
+python tools/test-pica-materials.py
+python tools/validate-specular-motion.py --capture --output .local/pica-motion-check
+```
+
+[Current motion checks, isolated 1080p profiles and limitations](benchmarks/pica-pica/optimized/README.md)
+use the same binary and corrected scene. Reflection cost averages 23.80 ms static
+and 36.79 ms during combined camera/light motion on an RTX 5070 Ti;
+actual whole-frame throughput is about 31 and 19 FPS respectively.
+The current quality configuration still misses 60 FPS; trace/shading work dominates.
+The [earlier performance baseline](benchmarks/pica-pica/performance/README.md)
+and [earlier motion captures](benchmarks/pica-pica/motion/README.md) are preserved separately.
+The [initial record](benchmarks/pica-pica/hybrid/README.md) used an incorrect
+Glossiness conversion and is retained only as historical evidence.
+`python tools/test-pica-materials.py` verifies the corrected 28 material factors
+and six texture references against the author's published metadata.
+Glass currently uses an opaque reflective approximation; transmission,
+refraction, the original HDR environment and ShaderFX are not reproduced.
+PICA assets are SEED / Electronic Arts, CC BY-NC 4.0; retain attribution and
+use them noncommercially. Downloads and converted models stay in ignored
+`.local/pica-pica-assets` and `external/PicaPica` directories.
 
 **Intel New Sponza is not included:** no Intel model, textures or rendered captures are distributed in this fork. Its optional importer requires an explicit path or `CHANDRA_INTEL_SPONZA`. The public default scene does not depend on it.
 
