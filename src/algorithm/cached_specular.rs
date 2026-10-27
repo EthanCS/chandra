@@ -17,9 +17,9 @@ pub struct CachedSpecular {
     pub raw: Buffer<Vec4<f32>>,
     pub output: Buffer<Vec4<f32>>,
     pub diagnostics: Buffer<Vec4<f32>>,
-    pub composition: Buffer<Vec4<f32>>,
     pub scale: u32,
     size: Vec2<u32>,
+    spp: u32,
     atlas: Tex2dHandle<Vec4<f32>>,
     atlas_dims: Vec2<u32>,
     weights: Buffer<f32>,
@@ -32,20 +32,17 @@ pub struct CachedSpecular {
     history: [Buffer<Vec4<f32>>; 2],
     full_positions: [Buffer<Vec4<f32>>; 2],
     full_normals: [Buffer<Vec4<f32>>; 2],
-    full_history: [Buffer<Vec4<f32>>; 2],
-    composition_history: [Buffer<Vec4<f32>>; 2],
     prefilter_kernel: std::sync::OnceLock<Kernel<fn()>>,
-    trace_kernel: std::sync::OnceLock<Kernel<fn(u32, bool)>>,
+    trace_kernel: std::sync::OnceLock<Kernel<fn(u32, bool, u32)>>,
     spatial_kernel: std::sync::OnceLock<Kernel<fn(u32)>>,
     temporal_kernel: std::sync::OnceLock<Kernel<fn(u32, View, bool, f32)>>,
-    upscale_kernel: std::sync::OnceLock<Kernel<fn(u32, bool)>>,
-    stabilize_kernel: std::sync::OnceLock<Kernel<fn(u32, View, bool)>>,
-    composition_kernel: std::sync::OnceLock<Kernel<fn(u32, View, bool)>>,
+    upscale_kernel: std::sync::OnceLock<Kernel<fn(u32)>>,
 }
 
 impl CachedSpecular {
-    pub fn new(core: &CoreData, rc: &RcData, scale: u32) -> Self {
+    pub fn new(core: &CoreData, rc: &RcData, scale: u32, spp: u32) -> Self {
         assert!(matches!(scale, 1 | 2 | 4));
+        assert!((1..=8).contains(&spp));
         assert!(rc.increased_base_resolution && rc.base_angular_resolution == 4);
         let size = Vec2::new(
             core.screen_size().x.div_ceil(scale),
@@ -133,9 +130,9 @@ impl CachedSpecular {
             raw: full(),
             output: full(),
             diagnostics: full(),
-            composition: full(),
             scale,
             size,
+            spp,
             atlas,
             atlas_dims,
             weights,
@@ -148,15 +145,11 @@ impl CachedSpecular {
             history: [low(), low()],
             full_positions: [full(), full()],
             full_normals: [full(), full()],
-            full_history: [full(), full()],
-            composition_history: [full(), full()],
             prefilter_kernel: Default::default(),
             trace_kernel: Default::default(),
             spatial_kernel: Default::default(),
             temporal_kernel: Default::default(),
             upscale_kernel: Default::default(),
-            stabilize_kernel: Default::default(),
-            composition_kernel: Default::default(),
         }
     }
 
@@ -453,6 +446,7 @@ impl CachedSpecular {
         splat: &SplatData,
         p: Expr<Vec2<u32>>,
         frame: Expr<u32>,
+        spp: Expr<u32>,
         cache_valid: Expr<bool>,
     ) -> (Expr<Vec3<f32>>, Expr<Vec4<f32>>) {
         let hit = core.hit.read(core.pixel_to_linear(p));
@@ -473,7 +467,10 @@ impl CachedSpecular {
             let sum = Vec3::splat(0.0f32).var();
             let weights = Vec3::splat(0.0f32).var();
             let reflector = Vec4::splat(0.0f32).var();
-            for s in 0u32..4 {
+            for s in 0u32..8 {
+                if s >= spp {
+                    break;
+                }
                 let (l, w) = brdf::sample(n, v, r, f0, brdf::path_samples(p, frame, s).xy());
                 if l.dot(ng) > 0.0 && l.dot(n) > 0.0 {
                     let (radiance, guide) =
@@ -502,10 +499,12 @@ impl CachedSpecular {
         splat: &SplatData,
         frame: u32,
         cache_valid: bool,
+        spp: u32,
     ) -> NodeConfigs<'static> {
+        let spp = spp.min(self.spp).max(1);
         self.trace_kernel
             .get_or_init(|| {
-                DEVICE.create_kernel::<fn(u32, bool)>(&track!(|frame, cache_valid| {
+                DEVICE.create_kernel::<fn(u32, bool, u32)>(&track!(|frame, cache_valid, spp| {
                     let phase = frame % 2u32;
                     set_block_size([8, 8, 1]);
                     let p = dispatch_id().xy();
@@ -522,7 +521,7 @@ impl CachedSpecular {
                     let hit = core.hit.read(core.pixel_to_linear(full));
                     let pos = core.get_world_pos(full);
                     let roughness = core.world.get_roughness_metallic(hit).x;
-                    let (value, reflector) = self.shade(core, rc, splat, full, frame, cache_valid);
+                    let (value, reflector) = self.shade(core, rc, splat, full, frame, spp, cache_valid);
                     self.signal.write(i, value.extend(1.0));
                     self.write(
                         &self.positions,
@@ -539,7 +538,7 @@ impl CachedSpecular {
                     self.write(&self.reflectors, phase, i, reflector);
                 }))
             })
-            .dispatch_async([self.size.x, self.size.y, 1], &frame, &cache_valid)
+            .dispatch_async([self.size.x, self.size.y, 1], &frame, &cache_valid, &spp)
             .debug("Reflection bounded GGX")
     }
     #[tracked]
@@ -557,89 +556,16 @@ impl CachedSpecular {
             && (n.w - m.w).abs() < 0.10
             && (a.xyz() - b.xyz()).dot(n.xyz()).abs() < footprint * 0.2
     }
-    /// Short perceptual TAA of the composed image. A stable reflection layer
-    /// alone cannot stabilize its combination with a moving direct highlight.
-    /// Geometry gates history; light jumps/cuts bypass it. Unlike linear HDR
-    /// accumulation, this cannot carry an unbounded highlight into a dark pixel.
-    pub fn compose(
-        &self,
-        core: &CoreData,
-        frame: u32,
-        previous: View,
-        valid: bool,
-    ) -> NodeConfigs<'static> {
-        self.composition_kernel
-            .get_or_init(|| {
-                DEVICE.create_kernel::<fn(u32, View, bool)>(&track!(|phase, previous, valid| {
-                    let p = dispatch_id().xy();
-                    let i = core.pixel_to_linear(p);
-                    let pos = self.read(&self.full_positions, phase, i);
-                    let n = self.read(&self.full_normals, phase, i);
-                    let raw = self.composition.read(i);
-                    let current: Expr<Vec3<f32>> =
-                        (raw.xyz() / (1.0f32 + raw.xyz())).powf(1.0f32 / 2.2);
-                    let old = Vec3::splat(0.0f32).var();
-                    let support = 0.0f32.var();
-                    let local = previous.transform.transpose() * (pos.xyz() - previous.pos);
-                    let screen = previous.project(pos.xyz()) - 0.5;
-                    let footprint = keter::max(0.05, local.z * previous.scaling * 3.0);
-                    if valid
-                        && pos.w > 0.0
-                        && local.z > 0.0
-                        && (screen >= 0.0).all()
-                        && (screen < core.screen_size().expr().cast_f32() - 1.0).all()
-                    {
-                        let base = screen.floor().cast_u32();
-                        let f = screen.fract();
-                        for c in 0u32..4 {
-                            let q = base + Vec2::expr(c & 1u32, c >> 1u32);
-                            let j = core.pixel_to_linear(q);
-                            let pp = self.read(&self.full_positions, 1u32 - phase, j);
-                            let nn = self.read(&self.full_normals, 1u32 - phase, j);
-                            let h = self.read(&self.composition_history, 1u32 - phase, j);
-                            if h.w < 0.5
-                                || pp.w != pos.w
-                                || nn.xyz().dot(n.xyz()) <= 0.95
-                                || (pp.xyz() - pos.xyz()).length() >= footprint
-                                || (pp.xyz() - pos.xyz()).dot(n.xyz()).abs()
-                                    >= keter::max(0.03, footprint * 0.1)
-                            {
-                                continue;
-                            }
-                            let w = (c & 1u32 != 0u32).select(f.x, 1.0 - f.x)
-                                * (c >> 1u32 != 0u32).select(f.y, 1.0 - f.y);
-                            *old += h.xyz() * w;
-                            *support += w;
-                        }
-                    }
-                    let value: Expr<Vec3<f32>> = if support > 0.75 {
-                        current * 0.35 + old / support * 0.65
-                    } else {
-                        current
-                    };
-                    let value = value.clamp(Vec3::splat_expr(0.0), Vec3::splat_expr(0.999999));
-                    self.write(&self.composition_history, phase, i, value.extend(raw.w));
-                    let linear = value.powf(2.2);
-                    self.composition.write(
-                        i,
-                        (linear / keter::max(Vec3::splat_expr(0.000001), 1.0 - linear))
-                            .extend(raw.w),
-                    );
-                }))
-            })
-            .dispatch_async(core.screen_dispatch_size(), &(frame % 2), &previous, &valid)
-            .debug("Reflection composition TAA")
-    }
     pub fn reconstruct(
         &self,
         core: &CoreData,
-        rc: &RcData,
-        splat: &SplatData,
+        _rc: &RcData,
+        _splat: &SplatData,
         frame: u32,
         previous: View,
         valid: bool,
         max_frames: f32,
-        cache_valid: bool,
+        _cache_valid: bool,
     ) -> Vec<(&'static str, NodeConfigs<'static>)> {
         let phase = frame % 2;
         let spatial = self
@@ -751,9 +677,14 @@ impl CachedSpecular {
                             }
                         }
                         // Clip old lighting to current same-surface support, never to
-                        // unrelated foreground/background colours.
+                        // unrelated foreground/background colours. A highlight is a
+                        // legitimate outlier, so a 3x3 min/max of a four-sample
+                        // estimate must not bound it: that cuts the brightest pixels
+                        // every frame and silently defeats accumulation. The bound is
+                        // widened to half the local spread and needs real support.
                         let low = current.xyz().var();
                         let high = current.xyz().var();
+                        let neighbours = 0u32.var();
                         for y in -1i32..=1 {
                             for x in -1i32..=1 {
                                 let q = p.cast_i32() + Vec2::expr(x, y);
@@ -768,6 +699,7 @@ impl CachedSpecular {
                                     self.read(&self.normals, phase, j),
                                     footprint,
                                 ) {
+                                    *neighbours += 1u32;
                                     *low = keter::min(**low, self.filtered.read(j).xyz());
                                     *high = keter::max(**high, self.filtered.read(j).xyz());
                                 }
@@ -779,8 +711,20 @@ impl CachedSpecular {
                             *history = Vec4::splat_expr(0.0);
                         }
                         let count = keter::min(history.w + 1.0, max_frames);
-                        let margin = (high - low) * 0.1 + 0.001;
-                        let retained = history.xyz().clamp(low - margin, high + margin);
+                        let spread = high - low;
+                        // A rare bright reflection sample has no equally bright
+                        // neighbour, so bounding the history by the neighbourhood
+                        // maximum pins each highlight to its dimmer surroundings and
+                        // re-randomises it whenever that maximum moves. Keep the
+                        // history's own energy instead: the upper guard is relative to
+                        // the pixel itself, while stale dark history is still cut.
+                        let upper = keter::max(**high, current.xyz()) * 2.0 + 0.01;
+                        let lower = low - spread * 0.5 - 0.002;
+                        let retained = if neighbours >= 4u32 {
+                            history.xyz().clamp(lower, upper)
+                        } else {
+                            history.xyz()
+                        };
                         let value = (retained * (count - 1.0) + current.xyz()) / count;
                         self.write(&self.history, phase, i, value.extend(count * current.w));
                     }
@@ -796,7 +740,7 @@ impl CachedSpecular {
         let upscale = self
             .upscale_kernel
             .get_or_init(|| {
-                DEVICE.create_kernel::<fn(u32, bool)>(&track!(|frame, cache_valid| {
+                DEVICE.create_kernel::<fn(u32)>(&track!(|frame| {
                     let phase = frame % 2u32;
                     let p = dispatch_id().xy();
                     let i = core.pixel_to_linear(p);
@@ -851,14 +795,14 @@ impl CachedSpecular {
                             *total += weight;
                         }
                     }
-                    let fallback = total < 0.00001 || r < 0.08;
-                    let value = if fallback {
-                        // Thin foreground objects absent from the low-res G-buffer
-                        // get the same bounded query instead of background bleed.
-                        self.shade(core, rc, splat, p, frame, cache_valid).0
-                    } else {
-                        sum / total
-                    };
+                    // A thin foreground object may be absent from the low-resolution
+                    // G-buffer. Resolve it from the accumulated history of its own tile
+                    // instead of tracing a fresh full-resolution ray: a fresh trace
+                    // would reintroduce four-sample noise at the exact pixels (mirrors,
+                    // railings) that the temporal filter is supposed to stabilise.
+                    let coverage = total > 0.00001;
+                    let tile = self.read(&self.history, phase, self.index(p / self.scale));
+                    let value = if coverage { sum / total } else { tile.xyz() };
                     let reflected = value * self.response(n, v, r, f0);
                     self.raw.write(i, reflected.extend(1.0));
                     self.output.write(i, reflected.extend(1.0));
@@ -866,92 +810,18 @@ impl CachedSpecular {
                         i,
                         Vec4::expr(
                             r,
-                            fallback.cast_u32().cast_f32(),
+                            coverage.select(0.0f32.expr(), 1.0f32.expr()),
                             1.0,
                             (r >= 0.08 && r < 0.6).select(4.0f32.expr(), 1.0f32.expr()),
                         ),
                     );
                 }))
             })
-            .dispatch_async(core.screen_dispatch_size(), &frame, &cache_valid);
-        let stabilize = self
-            .stabilize_kernel
-            .get_or_init(|| {
-                DEVICE.create_kernel::<fn(u32, View, bool)>(&track!(|phase, previous, valid| {
-                    let p = dispatch_id().xy();
-                    let i = core.pixel_to_linear(p);
-                    let pos = self.read(&self.full_positions, phase, i);
-                    let n = self.read(&self.full_normals, phase, i);
-                    let raw = self.raw.read(i);
-                    // Accumulate bounded perceptual radiance, including precise mirror
-                    // and thin-surface fallback pixels omitted from the low-res history.
-                    // This intentionally trades reflection response/sharpness for
-                    // stability. Explicit light changes and camera cuts bypass history.
-                    let current: Expr<Vec3<f32>> =
-                        (raw.xyz() / (1.0f32 + raw.xyz())).powf(1.0f32 / 2.2);
-                    let old = Vec3::splat(0.0f32).var();
-                    let support = 0.0f32.var();
-                    let local = previous.transform.transpose() * (pos.xyz() - previous.pos);
-                    let screen = previous.project(pos.xyz()) - 0.5;
-                    let footprint = keter::max(0.05, local.z * previous.scaling * 3.0);
-                    if valid
-                        && pos.w > 0.0
-                        && local.z > 0.0
-                        && (screen >= 0.0).all()
-                        && (screen < core.screen_size().expr().cast_f32() - 1.0).all()
-                    {
-                        let base = screen.floor().cast_u32();
-                        let f = screen.fract();
-                        for c in 0u32..4 {
-                            let q = base + Vec2::expr(c & 1u32, c >> 1u32);
-                            let j = core.pixel_to_linear(q);
-                            let pp = self.read(&self.full_positions, 1u32 - phase, j);
-                            let nn = self.read(&self.full_normals, 1u32 - phase, j);
-                            let h = self.read(&self.full_history, 1u32 - phase, j);
-                            if h.w < 0.5
-                                || pp.w != pos.w
-                                || nn.xyz().dot(n.xyz()) <= 0.95
-                                || (pp.xyz() - pos.xyz()).length() >= footprint
-                                || (pp.xyz() - pos.xyz()).dot(n.xyz()).abs()
-                                    >= keter::max(0.03, footprint * 0.1)
-                            {
-                                continue;
-                            }
-                            let w = (c & 1u32 != 0u32).select(f.x, 1.0 - f.x)
-                                * (c >> 1u32 != 0u32).select(f.y, 1.0 - f.y);
-                            *old += h.xyz() * w;
-                            *support += w;
-                        }
-                    }
-                    let value = if support > 0.75 {
-                        let previous: Expr<Vec3<f32>> = old / support;
-                        // Maximum 8% perceptual change in an accepted surface history.
-                        // Uniform, sustained changes still reach their new value.
-                        previous
-                            + (current - previous)
-                                .clamp(Vec3::splat_expr(-0.08), Vec3::splat_expr(0.08))
-                    } else {
-                        current
-                    };
-                    let value = value.clamp(Vec3::splat_expr(0.0), Vec3::splat_expr(0.999999));
-                    self.write(&self.full_history, phase, i, value.extend(raw.w));
-                    let linear = value.powf(2.2);
-                    self.output.write(
-                        i,
-                        (linear / keter::max(Vec3::splat_expr(0.000001), 1.0 - linear))
-                            .extend(raw.w),
-                    );
-                }))
-            })
-            .dispatch_async(core.screen_dispatch_size(), &phase, &previous, &valid);
+            .dispatch_async(core.screen_dispatch_size(), &frame);
         vec![
             ("Reflection spatial", spatial.debug("Reflection spatial")),
             ("Reflection temporal", temporal.debug("Reflection temporal")),
             ("Reflection upsample", upscale.debug("Reflection upsample")),
-            (
-                "Reflection stability",
-                stabilize.debug("Reflection stability"),
-            ),
         ]
     }
 }

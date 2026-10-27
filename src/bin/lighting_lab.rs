@@ -12,6 +12,17 @@ mod scene;
 
 use std::time::Instant;
 
+/// Wall-clock accounting for the gap between the summed GPU passes and the
+/// measured frame interval: the probe-table readback blocks the CPU mid-frame,
+/// and the UI path costs CPU rasterisation plus a full-screen upload.
+static RESET_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static UI_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static EXEC_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WALL_FRAMES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Frame intervals captured without GPU timestamp queries, so the reported
+/// number is end-to-end and not inflated by profiling itself.
+static FPS_PROBE: std::sync::Mutex<Vec<f64>> = std::sync::Mutex::new(Vec::new());
+
 use chandra::algorithm::dynamic_history::{DynamicHistory, LightingResponse};
 use chandra::algorithm::rc::{GiAvailability, RcConfig, RcData};
 use chandra::algorithm::splat::SplatData;
@@ -149,13 +160,14 @@ fn main() {
     assert!(single_frame || samples == 1, "--samples requires --single-frame");
     if args.iter().any(|a| a == "--help") {
         println!("Near-view diagnostics:\n  --camera-dolly N Move forward from a camera preset in scene units\n  --quality-fps 20|30|60|120 Set deterministic camera/light step and history clock\n  --profile-realtime Use measured dt for history, with identical replayed poses\n  --exact-diffuse-feedback Use per-ray angular quadrature instead of the PICA normal atlas\n  --diffuse-registers N Primary trace register limit (PICA default 64)");
-        println!("PICA PICA / cached reflections:\n  --specular-quality Use the original full-resolution adaptive GGX path\n  --reflection-scale N Reflection downsample factor 1/2/4 (default 2)\n  --rc-update-samples N Maximum adaptive RC update rays per pixel (default 8 cached / 64 quality)\n  --pica-pica Import external/PicaPica/scene.gltf (tools/setup-pica-pica.ps1)\n  --specular-samples N Samples for --specular-quality (default 4; 128 selects quality)\n  --no-specular Disable indirect reflection display\n  --specular-only Show indirect reflections\n  --specular-reference Trace the first reflection segment without RC substitution\n  --no-specular-filter Disable reflection reconstruction for comparison");
+        println!("PICA PICA / cached reflections:\n  --specular-quality Use the original full-resolution adaptive GGX path\n  --specular-spp N Reflection rays per pixel per frame on the default path (1..8, default 4)\n  --reflection-scale N Reflection downsample factor 1/2/4 (default 2)\n  --rc-update-samples N Maximum adaptive RC update rays per pixel (default 4 cached / 64 quality)\n  --pica-pica Import external/PicaPica/scene.gltf (tools/setup-pica-pica.ps1)\n  --specular-samples N Samples for --specular-quality (default 4; 128 selects quality)\n  --no-specular Disable indirect reflection display\n  --specular-only Show indirect reflections\n  --specular-reference Trace the first reflection segment without RC substitution\n  --no-specular-filter Disable reflection reconstruction for comparison");
         println!("Stable diffuse GI:\n  --quality-camera-track orbit|translate|rotate|combined|stop|return\n  --quality-light-track sun|drag|points|fast|step|oscillate\n  --quality-fps 20|30|60|120   Deterministic simulation rate\n  --diffuse-diagnostics Export raw/spatial/temporal irradiance and sample counts\n  --no-diffuse-filter   Raw RC comparison; disables adaptive reconstruction\n  --diffuse-samples N   Fixed primary sample budget for diagnostics\n  --interaction-log PATH Record real input and camera state as JSON Lines\n  Tab or F1: panel; F or held right mouse: unlimited look; Q/E: down/up; Shift/Ctrl: fast/slow");
         println!("Diffuse GI diagnostics:\n  --white-room   Sealed shell, 8 cm slit, 2/12 cm partitions and roof corner; --view 0..3\n  --geometry-only Keep camera and light motion off\n  --single-bounce Disable secondary diffuse bounces\n  --probe-budget N Power-of-two base capacity, minimum 256\n  --quality-tail N Export the last N consecutive linear frames and same-surface samples\n  --quality-stop N Stop all motion at frame N\n  --quality-stop-clear Clear transport once at that stopped pose\n  --quality-light-off N Turn off light energy at frame N\n  --roam-test --roam-frames N Deterministic camera/capacity diagnostic\n  --scene-worker Bypass the scene supervisor\n  F: mouse look; Q/E: down/up; Shift/Ctrl: fast/slow; F1: hide panel");
         println!("Split RC baseline:\n  --split-single-frame  Original primary trace/split path, one indirect bounce, cleared each frame; no temporal jitter or extra path tracing");
         println!("Experimental transport:\n  --single-frame  Clear GI transport each frame; no prior-frame hits or radiance\n  --path-depth N  Frame-local path depth (default 8, experimental)\n  --samples N     Samples per pixel within the same frame (default 1)\n  --min-probe-rays N  Fill undersampled probes within this frame (default 0)\n  --frame-cache   Experimental current-frame secondary spatial cache\n  --unbatched-skin  Reference separate skeleton dispatches and BLASes\n  --no-light-grid Reference full local-light loop\n  --view N        Camera preset 0..2\n  --indirect-only Show indirect light\n  --quality-check Export current-frame linear RGBA32F; alpha is surface mask\n  --quality-frames N End quality check at frame N (default 200)\n  --quality-motion Keep animations on during the quality check");
         println!(
-            "Chandra lighting lab\n  --sponza       Load assets/sponza.obj\n  --intel-sponza Load an external Intel Sponza asset (--scene-path required)\n  --scene-path   Override the Intel Sponza glTF path\n  --smoke-test   Verify two light directions and save PNGs, then exit\n  --benchmark    Deterministic scenarios and convergence checks\n  --stress-test  3600 frames with rigid, skin, sun and camera motion\n  --profile      Collect CUDA event timings after 200 warmup frames\n  --output DIR   Benchmark, stress or profiler output directory\n  --unfused      Use the separate ray-deposit queue for comparison\n  --static       Start with all animations paused\n  --1080p        Render at 1920 x 1080\n  --small        Render at 960 x 600 (default: 1280 x 800)\n\nRendering is uncapped. Mouse sliders change sunlight live. WASD moves; arrows/right drag look; Q/E move vertically; Shift/Ctrl select fast/slow speed. R resets the camera."
+            "Chandra lighting lab\n  --sponza       Load assets/sponza.obj\n  --intel-sponza Load an external Intel Sponza asset (--scene-path required)\n  --scene-path   Override the Intel Sponza glTF path\n  --smoke-test   Verify two light directions and save PNGs, then exit\n  --benchmark    Deterministic scenarios and convergence checks\n  --stress-test  3600 frames with rigid, skin, sun and camera motion\n  --profile      Collect CUDA event timings after 200 warmup frames\n  --output DIR   Benchmark, stress or profiler output directory\n  --unfused      Use the separate ray-deposit queue for comparison\n  --static       Start with all animations paused\n  --1080p        Render at 1920 x 1080\n  --900p         Render at 1600 x 900\n  --orbit        Orbit the camera (dynamic-camera timing)\n  --sun-orbit D  Rotate the sun at D degrees/second (dynamic-light timing)\n  --camera-dolly D Move the camera D units forward along its view direction\n  --fps-probe    Print end-to-end frame time without GPU timestamp queries, then exit
+  --fps-probe-after N  Frames to render before sampling (default 900, warm clocks)\n  --ui-every N   Rasterise the control panel every N frames (default 2)\n  --small        Render at 960 x 600 (default: 1280 x 800)\n\nRendering is uncapped. Mouse sliders change sunlight live. WASD moves; arrows/right drag look; Q/E move vertically; Shift/Ctrl select fast/slow speed. R resets the camera."
         );
         println!(
             "\nAdditional scene/profile options:\n  --cubes N           Intel courtyard cube count, 1..100 (default 1)\n  --rigid-only        Keep sunlight and camera stationary\n  --rigid-refit       Reference per-object vertex and BLAS updates\n  --profile-frames N  Measured frames after warmup (default 600)"
@@ -175,9 +187,16 @@ fn main() {
     let pica = args.iter().any(|a| a == "--pica-pica");
     let specular_samples=integer_option("--specular-samples",4);
     assert!((1..=128).contains(&specular_samples));
+    let specular_spp = integer_option("--specular-spp", 4);
+    assert!((1..=8).contains(&specular_spp), "--specular-spp must be 1..8");
     let specular_reference=args.iter().any(|a|a=="--specular-reference");
     let bounded_reflections=pica && !args.iter().any(|a|a=="--specular-quality") && specular_samples<128 && !specular_reference;
-    let rc_update_samples=integer_option("--rc-update-samples",if bounded_reflections {8}else{64});
+    // Four rays per pixel is the point where the RC budget stops costing frame
+    // time but the converged image is already identical: probe radiance is a
+    // temporal average, so a larger per-frame budget only shortens the warm-up.
+    // Eight was enough to push the far view below the 90 FPS target with a
+    // moving camera and a moving sun.
+    let rc_update_samples=integer_option("--rc-update-samples",if bounded_reflections {4}else{64});
     assert!((1..=64).contains(&rc_update_samples));
     let pica_path=std::path::PathBuf::from("external/PicaPica/scene.gltf");
     assert!([sponza, intel, courtyard, white_room, pica, args.iter().any(|a| a == "--gallery")].into_iter().filter(|v| *v).count() <= 1, "Choose one scene");
@@ -276,6 +295,8 @@ fn main() {
         [integer_option("--quality-width",480),integer_option("--quality-height",300)]
     } else if args.iter().any(|a| a == "--1080p") {
         [1920, 1080]
+    } else if args.iter().any(|a| a == "--900p") {
+        [1600, 900]
     } else if args.iter().any(|a| a == "--small") {
         [960, 600]
     } else {
@@ -363,7 +384,35 @@ fn main() {
     let cached_diffuse_feedback = pica && !single_frame && !args.iter().any(|a| a == "--exact-diffuse-feedback");
     let diffuse_reconstruction=use_diffuse_filter.then(||chandra::algorithm::diffuse::DiffuseData::with_sample_limit(&core,rc_update_samples));
     let reflection_scale=integer_option("--reflection-scale",2);
-    let cached_specular=bounded_reflections.then(||chandra::algorithm::cached_specular::CachedSpecular::new(&core,&rc,reflection_scale));
+    let cached_specular=bounded_reflections.then(||chandra::algorithm::cached_specular::CachedSpecular::new(&core,&rc,reflection_scale,specular_spp));
+    let ui_raster = !args.iter().any(|a| a == "--no-ui");
+    let ui_period = integer_option("--ui-every", 2).max(1);
+    let fps_probe = args.iter().any(|a| a == "--fps-probe");
+    // Frames to skip before sampling, so the measurement starts with the GPU at its
+    // sustained clock. 900 frames is roughly the point where a cold start settles.
+    let fps_probe_start = integer_option("--fps-probe-after", 900);
+    // Explicit motion switches: the target is 900p at 90 FPS with a moving camera
+    // and a moving light, so that case has to be measurable directly rather than
+    // only through the benchmark scenarios.
+    let orbit_camera = args.iter().any(|a| a == "--orbit");
+    // Target frame rate for the refinement governor; 0 disables it.
+    // Target frame rate for the refinement governor. Refinement raises the ray
+    // count as pixels are first sampled, so a camera that stops in a near view
+    // watches the frame rate decay; holding a target keeps it flat. `0` disables
+    // the governor and reports the ungoverned cost instead.
+    let refine_budget = args
+        .iter()
+        .position(|a| a == "--refine-budget")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(90.0);
+    let mut refine_scale = 1000u32;
+    let sun_orbit = args
+        .iter()
+        .position(|a| a == "--sun-orbit")
+        .and_then(|p| args.get(p + 1))
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(0.0);
     let specular=(core.world.has_pbr() && !bounded_reflections).then(||chandra::algorithm::specular::SpecularData::with_trace_options(&core,!args.iter().any(|a|a=="--specular-serial"),integer_option("--specular-batch",if core.num_pixels()<=1920*1080 {1} else {32}),integer_option("--specular-registers",96)));
     let reflection_buffers=if let Some(data)=&cached_specular {Some((&data.raw,&data.output,&data.diagnostics))}
         else {specular.as_ref().map(|data|(&data.raw,&data.output,&data.diagnostics))};
@@ -400,7 +449,6 @@ fn main() {
         if depth == 0.0 {
             let color = core.get_environment(direction) * exposure;
             if let Some(output) = &linear_output { output.write(core.pixel_to_linear(pixel), color.extend(0.0)); }
-            if let Some(data)=&cached_specular {data.composition.write(core.pixel_to_linear(pixel),(color/exposure).extend(0.0));}
             if let Some(output)=&base_output {output.write(core.pixel_to_linear(pixel),color.extend(0.0));}
             app.set_pixel(pixel.cast_i32(), color);
             return;
@@ -437,15 +485,8 @@ fn main() {
         }
         if let Some(output) = &linear_output { output.write(index, (color * exposure).extend(1.0)); }
         if let Some(output)=&base_output {output.write(index,((direct+indirect)*exposure).extend(1.0));}
-        if let Some(data)=&cached_specular {data.composition.write(index,color.extend(1.0));}
         app.set_pixel(pixel.cast_i32(), color * exposure);
     }));
-    let present_cached=cached_specular.as_ref().map(|data|DEVICE.create_kernel::<fn(f32)>(&track!(|exposure| {
-        let p=dispatch_id().xy();let i=core.pixel_to_linear(p);let value=data.composition.read(i);
-        if !value.is_finite().all(){invalid_pixels.atomic().fetch_add(1u32);}
-        if let Some(output)=&linear_output {output.write(i,(value.xyz()*exposure).extend(value.w));}
-        app.set_pixel(p.cast_i32(),value.xyz()*exposure);
-    })));
 
     let ui_context = egui::Context::default();
     ui_context.set_visuals(egui::Visuals::dark());
@@ -568,7 +609,7 @@ fn main() {
         }
     );
     println!("Lighting setup: {lighting_metadata}");
-    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}; pica={pica}; specular_samples={specular_samples}; specular_reference={specular_reference}; bounded_reflections={bounded_reflections}; reflection_scale={reflection_scale}; rc_update_samples={rc_update_samples}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
+    let transport_metadata = format!("single_frame={single_frame}; split_single_frame={split_single_frame}; frame_cache={frame_cache}; path_depth={path_depth}; samples={samples}; min_probe_rays={min_probe_rays}; batched_skin={}; light_grid={}; camera_preset={camera_preset}; quality_motion={quality_motion}; pica={pica}; specular_samples={specular_samples}; specular_spp={specular_spp}; specular_reference={specular_reference}; bounded_reflections={bounded_reflections}; reflection_scale={reflection_scale}; rc_update_samples={rc_update_samples}", !args.iter().any(|a| a == "--unbatched-skin"), !args.iter().any(|a| a == "--no-light-grid"));
     println!("Transport: {transport_metadata}");
     let scene_counts = if pica {
         "PICA PICA: 145 source objects; 170 material meshes; 76300 triangles; 28 materials".to_string()
@@ -629,6 +670,11 @@ fn main() {
         if args.iter().any(|a| a == "--geometry-only") {
             controls.animate = false;
             controls.camera_motion = false;
+        }
+        if orbit_camera { controls.camera_motion = true; }
+        if sun_orbit > 0.0 {
+            controls.animate = true;
+            controls.azimuth = (225.0 + sun_orbit * rt.tick as f32 / 60.0) % 360.0;
         }
         if args.iter().any(|a|a=="--quality-geometry-motion") {
             controls.rigid_motion=rt.tick>=120 && rt.tick<quality_stop;
@@ -960,7 +1006,9 @@ fn main() {
                 rc.cache.table.freelist_index.copy_to_vec(), rc.cache.table.table_data_start.copy_to_vec());
         }
         let timer = profiler.begin("Cache freelists and readback");
+        let wall_reset = Instant::now();
         let mut capacity_ok = rc.try_reset_table(&mut commands, false);
+        RESET_NS.fetch_add(wall_reset.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
         if !capacity_ok {
             capacity_recoveries += 1;
             gi_availability.update(false);
@@ -984,6 +1032,20 @@ fn main() {
             // Split ray tracing starts at G-buffer surface points. Average probe
             // positions are used only by the alternate trace_deposit renderer.
             commands += trace.reset();
+            // Frame-budget governor: refinement is incremental, so when a frame runs
+            // long the cheapest honest lever is to trace a fraction of it this frame
+            // and let later frames cover the rest. Without a budget the ray count
+            // swings by 4x between views and the frame rate follows it.
+            if refine_budget > 0.0 {
+                let target = 1.0 / refine_budget;
+                let elapsed = rt.frame_time_f64();
+                if elapsed > target * 1.04 {
+                    refine_scale = refine_scale.saturating_sub(40).max(120);
+                } else if elapsed < target * 0.9 {
+                    refine_scale = (refine_scale + 12).min(1000);
+                }
+                commands.push(trace.refine_scale.write_host(refine_scale));
+            }
             commands += trace.compute_ray_count_base(&core, &rc);
             for c in 1..rc.num_cascades { commands += trace.compute_ray_count(&rc, c); }
             for c in (0..rc.num_cascades).rev() { commands += trace.compute_ray_offset(&rc, c); }
@@ -1064,20 +1126,30 @@ fn main() {
         }
         let warmed = gi_availability.update(capacity_ok);
         let gi_available = capacity_ok && ((single_frame && capacity_recoveries == 0) || warmed);
-        let previous_reflection_view=previous_diffuse_camera.view();
-        let mut composition_history_valid=false;
         if controls.reflections && let Some(data)=&cached_specular {
             let light_now=controls.lighting().sun_dir;
             let light_before=previous.lighting().sun_dir;
             let light_jump=light_now.x*light_before.x+light_now.y*light_before.y+light_now.z*light_before.z<5_f32.to_radians().cos();
             let reset=energy_changed || light_jump || !swept.is_empty();
             let valid=specular_history_valid && diffuse_history_valid && !reset;
-            composition_history_valid=valid && controls.mode==previous.mode;
+            // Rebuilt every frame: alternating atlas age is a two-frame periodic
+            // signal, which is exactly what reads as highlight flicker.
             if gi_available { commands+=data.prefilter(&rc); }
             profiler.checkpoint("Reflection RC prefilter",&mut commands);
-            commands+=data.trace(&core,&rc,&splat,rt.tick,gi_available);
+            // Under budget pressure, spend fewer reflection rays per frame rather
+            // than alternating the shading path: the half-resolution history is a
+            // temporal average, so a lower per-frame spp stays smooth, while
+            // switching the bounce path on and off between frames would flicker.
+            // Two rays is the floor: at that point the 64-frame history still keeps
+            // highlight noise below the pre-change level, whereas a single ray in a
+            // paused near view is visibly rougher than the frame rate is worth.
+            let reflection_spp = if refine_scale >= 800 { specular_spp } else { specular_spp.min(2) };
+            commands+=data.trace(&core,&rc,&splat,rt.tick,gi_available,reflection_spp);
             profiler.checkpoint("Reflection bounded GGX",&mut commands);
-            let frames=if reset {1.0} else if camera_moving || response.retention<1.0 {6.0} else {16.0};
+            // The half-resolution history is the only temporal accumulator. A static
+            // surface converges over many frames, so the limit is high; motion and
+            // lighting response shorten it instead of clipping single highlights.
+            let frames=if reset {1.0} else if camera_moving || response.retention<1.0 {8.0} else {64.0};
             for (stage,command) in data.reconstruct(&core,&rc,&splat,rt.tick,previous_diffuse_camera.view(),valid,(frames/60.0/dt).max(1.0),gi_available) {
                 commands+=command; profiler.checkpoint(stage,&mut commands);
             }
@@ -1119,12 +1191,9 @@ fn main() {
         commands += invalid_pixels.write_host(0);
         commands.push(draw.dispatch_async([size[0], size[1], 1], &camera.view(), &controls.mode, &2_f32.powf(controls.exposure), &gi_available,&controls.reflections));
         profiler.checkpoint("Direct and compose", &mut commands);
-        if controls.reflections && controls.mode==0 && let Some(data)=&cached_specular {
-            commands+=data.compose(&core,rt.tick,previous_reflection_view,composition_history_valid);
-            commands.push(present_cached.as_ref().unwrap().dispatch_async(core.screen_dispatch_size(),&2_f32.powf(controls.exposure)));
-            profiler.checkpoint("Reflection composition TAA",&mut commands);
-        }
+        let wall_exec = Instant::now();
         commands.execute();
+        EXEC_NS.fetch_add(wall_exec.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
 
         if quality_check && ([0, 1, 2, 16, 64, 200].contains(&rt.tick) || rt.tick == quality_frames
             || (quality_tail > 0 && rt.tick > quality_frames.saturating_sub(quality_tail))) {
@@ -1182,13 +1251,39 @@ fn main() {
             if rt.tick == quality_frames { rt.exit(); }
         }
 
-        ui_pixels.fill([0; 4]);
-        let primitives = ui_context.tessellate(output.shapes, output.pixels_per_point);
-        ui_renderer.render(&mut BufferMutRef::new(&mut ui_pixels, size[0] as usize, size[1] as usize),
-            &primitives, &output.textures_delta, output.pixels_per_point);
-        ui_texture.view(0).copy_from(&ui_pixels);
-        composite_ui.dispatch([size[0], size[1], 1]);
+        // Software UI rasterisation plus the full-screen texture upload costs more
+        // CPU time per frame than the whole GPU frame, which makes the renderer
+        // CPU-bound. The panel is a static overlay: rasterising it every other frame
+        // keeps it readable while leaving the GPU as the limit.
+        if ui_raster && rt.tick % ui_period == 0 {
+            let wall_ui = Instant::now();
+            ui_pixels.fill([0; 4]);
+            let primitives = ui_context.tessellate(output.shapes, output.pixels_per_point);
+            ui_renderer.render(&mut BufferMutRef::new(&mut ui_pixels, size[0] as usize, size[1] as usize),
+                &primitives, &output.textures_delta, output.pixels_per_point);
+            ui_texture.view(0).copy_from(&ui_pixels);
+            composite_ui.dispatch([size[0], size[1], 1]);
+            UI_NS.fetch_add(wall_ui.elapsed().as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
+        WALL_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         profiler.finish_frame(rt.tick >= 200 && rt.tick < 200 + profile_frames);
+        // The probe window must start after the GPU has clocked up. Kernel
+        // compilation and the first frames after it run at idle clocks (600-700 MHz
+        // instead of 2700), so measuring a window that opens at frame 200 reports
+        // roughly a quarter of the real frame rate on a cold start.
+        if fps_probe {
+            if rt.tick > fps_probe_start { FPS_PROBE.lock().unwrap().push(rt.frame_time_f64()); }
+            if rt.tick == fps_probe_start + 120 {
+                let mut times = FPS_PROBE.lock().unwrap().clone();
+                times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                let mean = times.iter().sum::<f64>() / times.len().max(1) as f64;
+                let p95 = times[(times.len() as f64 * 0.95) as usize % times.len().max(1)];
+                println!("FPS probe (900p/target): mean {:.3} ms, p95 {:.3} ms, {:.1} FPS, max {:.3} ms over {} frames",
+                    mean * 1e3, p95 * 1e3, 1.0 / mean, times.last().copied().unwrap_or(0.0) * 1e3, times.len());
+                println!("  probes {:?}, traced rays {}", rc.num_probes, trace.next_traced_ray.read_blocking());
+                rt.exit();
+            }
+        }
         // At frame N, the runtime interval covers the completed frame N-1,
         // including presentation. Pair intervals 200..319 with GPU samples.
         if profiling && rt.tick > 200 && rt.tick <= 200 + profile_frames {
@@ -1198,6 +1293,12 @@ fn main() {
             assert_eq!(invalid_pixels.read_blocking(), 0, "Nonfinite rendered pixel during profiling");
         }
         if profiling && rt.tick == 200 + profile_frames {
+            let n = WALL_FRAMES.load(std::sync::atomic::Ordering::Relaxed).max(1) as f64;
+            println!("wall per frame (CPU-side): reset {:.3} ms, ui {:.3} ms, execute {:.3} ms over {:.0} frames",
+                RESET_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / n / 1e6,
+                UI_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / n / 1e6,
+                EXEC_NS.load(std::sync::atomic::Ordering::Relaxed) as f64 / n / 1e6,
+                n);
             let directory = output_dir.as_deref().unwrap_or(".local/gpu-profile");
             profiler.save(directory);
             let image: Vec<[u8; 4]> = rt.final_display().view(0).copy_to_vec();

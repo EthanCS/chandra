@@ -43,6 +43,14 @@ pub struct TraceData {
     pub stable_samples: Option<StableSamples>,
     frame_primary: Option<Buffer<FrameRay>>,
     pub min_probe_rays: u32,
+    /// Fraction of the adaptive refinement work actually traced this frame, in
+    /// per-mille. Refinement is an incremental improvement on top of temporally
+    /// accumulated probe radiance, so tracing a random subset of it each frame
+    /// converges to the same image while bounding the per-frame ray count. Without
+    /// this the scheduler can emit several times the baseline ray count on frames
+    /// where many pixels were never sampled (near views, newly visible geometry),
+    /// which is what makes the frame rate swing with the view.
+    pub refine_scale: Singleton<u32>,
     adaptive_work: Option<Buffer<Vec2<u32>>>,
     diffuse_work: Option<DiffuseWork>,
     primary_registers: u32,
@@ -88,12 +96,22 @@ impl TraceData {
             count:Singleton::new(0),
         });
     }
-    fn prepare_diffuse_work(&self,core:&CoreData,rc:&RcData,budget:&Buffer<u32>)->NodeConfigs<'static> {
+    fn prepare_diffuse_work(&self,core:&CoreData,rc:&RcData,budget:&Buffer<u32>,tick:u32)->NodeConfigs<'static> {
         let work=self.diffuse_work.as_ref().unwrap();
-        let prepare=memo((), || DEVICE.create_kernel::<fn()>(&track!(|| {
+        let prepare=memo((), || DEVICE.create_kernel::<fn(u32)>(&track!(|tick| {
             let pixel=dispatch_id().xy();
             let i=core.pixel_to_linear(pixel);
             if core.read_depth(pixel)==0.0 {self.traced_hits.write(i,Hit::invalid().expr());return;}
+            // Keep only a per-mille fraction of the refinement work. The choice is
+            // hashed from (pixel, frame) so every pixel is served evenly over time
+            // instead of starving a fixed subset, which would leave patchy areas.
+            let scale=self.refine_scale.read();
+            if scale < 1000u32 {
+                let h=(i * 2654435761u32 + tick * 1013904223u32);
+                let h=(h ^ (h >> 15u32)) * 2246822519u32;
+                let h=h ^ (h >> 13u32);
+                if h % 1000u32 >= scale {return;}
+            }
             let pos=core.get_world_pos(pixel);
             let node=rc.cache.get(rc.cache.quantize(pos,rc.cache.estimate_lod(pos),0u32.expr()));
             if node.invalid() {return;}
@@ -105,7 +123,7 @@ impl TraceData {
             if warp_is_first_active_lane() {*start=work.count.atomic().fetch_add(total);}
             let start=warp_read_first_active_lane(**start)+warp_prefix_sum_exclusive(count);
             for batch in 0u32.expr()..count {work.items.write(start+batch,Vec2::expr(i,batch*8u32));}
-        }))).dispatch_async(core.screen_dispatch_size());
+        }))).dispatch_async(core.screen_dispatch_size(),&tick);
         (work.count.write_host(0),prepare).chain()
     }
     pub fn new(core: &CoreData, rc: &RcData, max_rays: usize) -> Self {
@@ -132,6 +150,7 @@ impl TraceData {
             stable_samples: None,
             frame_primary: None,
             min_probe_rays: 0,
+            refine_scale: Singleton::new(1000u32),
             adaptive_work: None,
             diffuse_work: None,
             primary_registers: 0,
@@ -428,7 +447,7 @@ impl TraceData {
         multibounce:bool,path_depth:u32,samples:u32,budget:Option<&Buffer<u32>>,irradiance:Option<&super::splat::SplatData>)->NodeConfigs<'static> {
         assert!(samples > 0);
         let diffuse_work=self.diffuse_work.as_ref().filter(|_|budget.is_some() && path_depth==0 && self.frame_primary.is_none() && self.min_probe_rays==0);
-        let prepare=if diffuse_work.is_some() {self.prepare_diffuse_work(core,rc,budget.unwrap())} else {Default::default()};
+        let prepare=if diffuse_work.is_some() {self.prepare_diffuse_work(core,rc,budget.unwrap(),tick)} else {Default::default()};
         let trace=memo((multibounce, self.fused_deposit, path_depth, samples, self.frame_primary.is_some(), self.min_probe_rays,budget.is_some(),diffuse_work.is_some(),self.primary_registers,irradiance.is_some()), || {
             DEVICE.create_kernel_with_options::<fn(u32, f32)>(KernelBuildOptions {max_registers:self.primary_registers,..Default::default()}, &track!(|tick, c0_len| {
                 let pixel = if let Some(work) = diffuse_work {
